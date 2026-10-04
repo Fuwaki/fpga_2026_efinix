@@ -1,0 +1,4 @@
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/out_leaf_layer_desc
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/work_leaf_layer_desc
+Running: efx_run_map.py layer_desc --family Titanium --device Ti60F225 --flist synth_layer_desc.f --output_dir out_leaf_layer_desc --work_dir work_leaf_layer_desc
+[91m   map :	FAIL [0m

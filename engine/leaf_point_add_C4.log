@@ -1,0 +1,10 @@
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/out_point_add_C4
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/work_point_add_C4
+Running: efx_run_map.py point_add --family Titanium --device Ti60F225 --flist synth_point_add.f --output_dir out_point_add_C4 --work_dir work_point_add_C4
+[92m   map :	PASS [0m
+Running: efx_run_pt_unified.py point_add Titanium Ti60F225 --output_dir out_point_add_C4 --timing_model C4 --work_dir work_point_add_C4
+[92m   interface :	PASS [0m
+Running: efx_run_pnr.py point_add --family Titanium --device Ti60F225 --timing_model C4 --output_dir out_point_add_C4 --work_dir work_point_add_C4
+[92m   pnr :	PASS [0m
+Running: efx_run_pgm.py point_add --family Titanium --device Ti60F225 --output_dir out_point_add_C4 --work_dir work_point_add_C4
+[92m   pgm :	PASS [0m

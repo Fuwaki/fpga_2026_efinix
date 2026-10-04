@@ -1,0 +1,32 @@
+# =============================================================================
+# fpga_src .gitignore
+# 只忽略"可以重新生成"的东西；IP 生成结果 (ip/riscv_soc0) 和固件 hex 保留，
+# 这样 clone 下来不需要重跑 IP Manager 就能直接构建。
+# =============================================================================
+
+# --- Efinity 构建产物 ---
+/outflow/
+/work_syn/
+/work_pnr/
+/work_dbg/
+*.proj_state.ini
+*.lbf
+*.primplace
+
+# --- RISC-V 固件编译产物 (源文件保留) ---
+**/software/standalone/**/build/
+**/software/standalone/**/obj_files/
+
+# --- engine/ 子工程 (与本工程无关的早期 conv-engine 实验) 的构建产物 ---
+engine/out*/
+engine/work_*/
+engine/outflow*/
+
+# --- 杂项 ---
+__pycache__/
+*.pyc
+*.o
+*.a
+*.d
+*.wlf
+vsim.wlf

@@ -1,0 +1,10 @@
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/out_leaf_rq
+Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/work_leaf_rq
+Running: efx_run_map.py requant_unit --family Titanium --device Ti60F225 --flist synth_requant_unit.f --output_dir out_leaf_rq --work_dir work_leaf_rq
+[92m   map :	PASS [0m
+Running: efx_run_pt_unified.py requant_unit Titanium Ti60F225 --output_dir out_leaf_rq --timing_model I3 --work_dir work_leaf_rq
+[92m   interface :	PASS [0m
+Running: efx_run_pnr.py requant_unit --family Titanium --device Ti60F225 --timing_model I3 --output_dir out_leaf_rq --work_dir work_leaf_rq
+[92m   pnr :	PASS [0m
+Running: efx_run_pgm.py requant_unit --family Titanium --device Ti60F225 --output_dir out_leaf_rq --work_dir work_leaf_rq
+[92m   pgm :	PASS [0m
