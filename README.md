@@ -248,3 +248,71 @@ make BSP=efinix/EfxSapphireSoc
 | 固件编译 | 9472 B / 64 KB（14.45%），`riscv-none-elf-gcc` rv32imc/ilp32 |
 | 寄存器表一致性 | 固件 `.data` 里 656 B 表与参考工程 ROM **逐字节一致**（164 条） |
 | SoC 片上 RAM 初值 | `ip/riscv_soc0/*_system_ramA_logic_ram_symbol*.bin` 随固件更新（md5 变化已确认） |
+
+---
+
+## 11. 和"用 IDE 的人"协作 / 怎么改 IP
+
+### 11.1 IP 生成产物就是一套固定结构
+
+`ip/riscv_soc0/` 与 IDE 生成的 `ip/<模块名>/` **逐项一致**（对照参考工程的
+`ip/csi_rx_controller/`）：
+
+```
+<模块名>.v            生成出来的 HDL 源（SoC 是 SpinalHDL 生成的全部明文 Verilog）
+<模块名>_define.vh    宏/地址定义
+<模块名>_tmpl.v/.sv/.vhd   例化模板
+settings.json         【核心】该 IP 的全部参数记录
+ipm/component.pickle  IP Manager 内部缓存（重新配置时用）
+ipm/graph.pickle
+<器件>_devkit/        交付的示例工程（可以不管）
+Testbench/            交付的仿真文件
+```
+
+参数**不在工程 XML 里**（`fpga_src.xml` 的 `<efx:ip_info/>` 是空的，参考工程也是空的），
+而在每个 IP 自己的 `settings.json` 里。我们的 SoC 那份记了 **152 项**参数：
+
+```json
+{ "args": [ ..., {"name":"efx_soc","version":"3.4.0"} ],
+  "conf": { "DDR": "1'b0", "OCRSize": "65536", "I2C0": "1'b1",
+            "HexFile_PathEnable": "1'b1",
+            "HexFile_Path": "embedded_sw/riscv_soc0/camera_i2c.hex", ... } }
+```
+
+另外，**引脚/PLL/DDR PHY/LVDS 这些"硬"配置不在 IP 里**，在
+`fpga_src.peri.xml`（Interface Designer）。那个才相当于"CubeMX 的单个工程配置文件"。
+
+### 11.2 改 IP 的正确方式（IDE 用户）
+
+生成的 `.v` **不要手改**（下次 Generate 会被覆盖，而且 Efinity 官方明确说
+不要手工把 IP 的 .v 加进工程）。正确姿势：
+
+- IDE：Project 面板右键 `ip` 目录 → **Import IP** → 选 `settings.json`
+  → 向导带着现有参数打开 → 改 → Generate。
+- 命令行（本工程用的方式）：
+
+  ```sh
+  python3 tools/gen_ip.py --vlnv soc/efx_soc:3.4.0 --dump-params   # 看参数
+  # 改 tools/build_all.sh 里的 SOC_PARAMS 然后：
+  tools/build_all.sh
+  ```
+
+两条路走的是**同一个 IP Manager API**，改完都会重写 `settings.json`，所以能互相接管。
+
+### 11.3 哪些是加密的（改不了内部逻辑）
+
+| 文件 | 加密比例 | 说明 |
+|---|---|---|
+| `rtl/csi_rx_controller.sv` | 20 块，约 73% 行 | MIPI CSI-2 RX 核，只有参数和端口是明文 |
+| `rtl/dvi_tx/dvi_encoder.v_encrypted.v` | 1 块，约 87% | TMDS 编码核 |
+| `ip/riscv_soc0/riscv_soc0.v` | **2 块，约 1%** | SoC 基本全是明文 Verilog（只有 `EfxCPUSp1/Sp2` 两个小块受保护） |
+
+所以 SoC 侧想看懂/改内部实现是可行的，MIPI/HDMI 核只能改参数。
+
+### 11.4 本工程与"纯 IDE 流程"的两点差异
+
+1. **生成的 `.v` 直接放在 `ip/` 下并写进 `design_file` 列表。**
+   参考工程的习惯是把 IP 的 .v 拷到 `rtl/` 再手工维护。放在 `ip/` 更符合
+   Efinity 的组织方式，IDE 会把它当 IP 实例显示；重新 Generate 会自动生效。
+2. **`HexFile_Path` 用项目内相对路径**（`embedded_sw/riscv_soc0/camera_i2c.hex`），
+   不是绝对路径 —— 保证 clone 到别人机器上重新生成 IP 时路径仍然有效。

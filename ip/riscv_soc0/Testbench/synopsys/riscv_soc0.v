@@ -43,7 +43,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-`define IP_UUID _1af3d684b9394716a3a326e36081df1d
+`define IP_UUID _eaefe125cd18487da998ca9b5ff7908f
 `define IP_NAME_CONCAT(a,b) a``b
 `define IP_MODULE_NAME(name) `IP_NAME_CONCAT(name,`IP_UUID)
 module riscv_soc0
@@ -113,11 +113,12 @@ module riscv_soc0
 endmodule
 
 // Generator : SpinalHDL dev    git head : a69f4b9a329be784802c37cd8038b7dc9aec3094
-// Component : EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d
+// Component : EfxSapphireSoc_eaefe125cd18487da998ca9b5ff7908f
+// Git hash  : 1caea053d15f77a56002da532c908b42d78ade5f
 
 `timescale 1ns/1ps
 
-module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
+module EfxSapphireSoc_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_systemClk,
   input  wire          io_asyncReset,
   input  wire          jtagCtrl_tck,
@@ -1167,19 +1168,19 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
 
   assign _zz_system_hardJtag_debug_logic_mmMaster_cmd_payload_fragment_address = (system_hardJtag_debug_logic_debugger_io_mem_cmd_payload_address >>> 2'd2);
   assign _zz_system_hardJtag_debug_logic_mmMaster_cmd_payload_fragment_mask_1 = ({3'd0,_zz_system_hardJtag_debug_logic_mmMaster_cmd_payload_fragment_mask} <<< system_hardJtag_debug_logic_debugger_io_mem_cmd_payload_address[1 : 0]);
-  (* keep_hierarchy = "TRUE" *) BufferCC_4_1af3d684b9394716a3a326e36081df1d io_asyncReset_asyncAssertSyncDeassert_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_4_eaefe125cd18487da998ca9b5ff7908f io_asyncReset_asyncAssertSyncDeassert_buffercc (
     .io_dataIn     (io_asyncReset_asyncAssertSyncDeassert                    ), //i
     .io_dataOut    (io_asyncReset_asyncAssertSyncDeassert_buffercc_io_dataOut), //o
     .io_systemClk  (io_systemClk                                             ), //i
     .io_asyncReset (io_asyncReset                                            )  //i
   );
-  (* keep_hierarchy = "TRUE" *) BufferCC_5_1af3d684b9394716a3a326e36081df1d debugCd_logic_outputReset_asyncAssertSyncDeassert_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_5_eaefe125cd18487da998ca9b5ff7908f debugCd_logic_outputReset_asyncAssertSyncDeassert_buffercc (
     .io_dataIn                 (debugCd_logic_outputReset_asyncAssertSyncDeassert                    ), //i
     .io_dataOut                (debugCd_logic_outputReset_asyncAssertSyncDeassert_buffercc_io_dataOut), //o
     .io_systemClk              (io_systemClk                                                         ), //i
     .debugCd_logic_outputReset (debugCd_logic_outputReset                                            )  //i
   );
-  VexRiscv_1af3d684b9394716a3a326e36081df1d system_cores_0_logic_cpu (
+  VexRiscv_eaefe125cd18487da998ca9b5ff7908f system_cores_0_logic_cpu (
     .dBus_cmd_valid                (system_cores_0_logic_cpu_dBus_cmd_valid                  ), //o
     .dBus_cmd_ready                (dBus_Bridge_bus_cmd_ready                                ), //i
     .dBus_cmd_payload_wr           (system_cores_0_logic_cpu_dBus_cmd_payload_wr             ), //o
@@ -1215,19 +1216,19 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .systemCd_logic_outputReset    (systemCd_logic_outputReset                               ), //i
     .debugCd_logic_outputReset     (debugCd_logic_outputReset                                )  //i
   );
-  (* keep_hierarchy = "TRUE" *) BufferCC_6_1af3d684b9394716a3a326e36081df1d system_coreStopTime_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_6_eaefe125cd18487da998ca9b5ff7908f system_coreStopTime_buffercc (
     .io_dataIn                  (system_coreStopTime                    ), //i
     .io_dataOut                 (system_coreStopTime_buffercc_io_dataOut), //o
     .io_systemClk               (io_systemClk                           ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset             )  //i
   );
-  (* keep_hierarchy = "TRUE" *) BufferCC_6_1af3d684b9394716a3a326e36081df1d userInterruptA_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_6_eaefe125cd18487da998ca9b5ff7908f userInterruptA_buffercc (
     .io_dataIn                  (userInterruptA                    ), //i
     .io_dataOut                 (userInterruptA_buffercc_io_dataOut), //o
     .io_systemClk               (io_systemClk                      ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset        )  //i
   );
-  JtagBridgeNoTap_1af3d684b9394716a3a326e36081df1d system_hardJtag_debug_logic_jtagBridge (
+  JtagBridgeNoTap_eaefe125cd18487da998ca9b5ff7908f system_hardJtag_debug_logic_jtagBridge (
     .io_ctrl_tdi                    (jtagCtrl_tdi                                                         ), //i
     .io_ctrl_enable                 (jtagCtrl_enable                                                      ), //i
     .io_ctrl_capture                (jtagCtrl_capture                                                     ), //i
@@ -1247,7 +1248,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .debugCd_logic_outputReset      (debugCd_logic_outputReset                                            ), //i
     .jtagCtrl_tck                   (jtagCtrl_tck                                                         )  //i
   );
-  SystemDebugger_1af3d684b9394716a3a326e36081df1d system_hardJtag_debug_logic_debugger (
+  SystemDebugger_eaefe125cd18487da998ca9b5ff7908f system_hardJtag_debug_logic_debugger (
     .io_remote_cmd_valid            (system_hardJtag_debug_logic_jtagBridge_io_remote_cmd_valid           ), //i
     .io_remote_cmd_ready            (system_hardJtag_debug_logic_debugger_io_remote_cmd_ready             ), //o
     .io_remote_cmd_payload_last     (system_hardJtag_debug_logic_jtagBridge_io_remote_cmd_payload_last    ), //i
@@ -1267,13 +1268,13 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                   (io_systemClk                                                         ), //i
     .debugCd_logic_outputReset      (debugCd_logic_outputReset                                            )  //i
   );
-  (* keep_hierarchy = "TRUE" *) BufferCC_8_1af3d684b9394716a3a326e36081df1d system_cores_0_debugReset_asyncAssertSyncDeassert_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_8_eaefe125cd18487da998ca9b5ff7908f system_cores_0_debugReset_asyncAssertSyncDeassert_buffercc (
     .io_dataIn                 (system_cores_0_debugReset_asyncAssertSyncDeassert                    ), //i
     .io_dataOut                (system_cores_0_debugReset_asyncAssertSyncDeassert_buffercc_io_dataOut), //o
     .io_systemClk              (io_systemClk                                                         ), //i
     .system_cores_0_debugReset (system_cores_0_debugReset                                            )  //i
   );
-  BmbDecoder_1af3d684b9394716a3a326e36081df1d bmbDecoder_4 (
+  BmbDecoder_eaefe125cd18487da998ca9b5ff7908f bmbDecoder_4 (
     .io_input_cmd_valid                        (system_hardJtag_debug_bmb_connector_decoder_cmd_valid                                         ), //i
     .io_input_cmd_ready                        (bmbDecoder_4_io_input_cmd_ready                                                               ), //o
     .io_input_cmd_payload_last                 (system_hardJtag_debug_bmb_connector_decoder_cmd_payload_last                                  ), //i
@@ -1303,7 +1304,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                              (io_systemClk                                                                                  ), //i
     .debugCd_logic_outputReset                 (debugCd_logic_outputReset                                                                     )  //i
   );
-  BmbDecoder_1_1af3d684b9394716a3a326e36081df1d system_fabric_iBus_bmb_decoder (
+  BmbDecoder_1_eaefe125cd18487da998ca9b5ff7908f system_fabric_iBus_bmb_decoder (
     .io_input_cmd_valid                        (system_fabric_iBus_bmb_cmd_m2sPipe_valid                                      ), //i
     .io_input_cmd_ready                        (system_fabric_iBus_bmb_decoder_io_input_cmd_ready                             ), //o
     .io_input_cmd_payload_last                 (system_fabric_iBus_bmb_cmd_m2sPipe_payload_last                               ), //i
@@ -1327,7 +1328,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_outputs_0_rsp_payload_fragment_opcode  (system_bridge_bmb_arbiter_io_inputs_1_rsp_payload_fragment_opcode             ), //i
     .io_outputs_0_rsp_payload_fragment_data    (system_bridge_bmb_arbiter_io_inputs_1_rsp_payload_fragment_data[31:0]         )  //i
   );
-  BmbArbiter_1af3d684b9394716a3a326e36081df1d system_bridge_bmb_arbiter (
+  BmbArbiter_eaefe125cd18487da998ca9b5ff7908f system_bridge_bmb_arbiter (
     .io_inputs_0_cmd_valid                    (system_bridge_bmb_slaveModel_arbiterGen_logic_sorted_0_decoder_cmd_valid                         ), //i
     .io_inputs_0_cmd_ready                    (system_bridge_bmb_arbiter_io_inputs_0_cmd_ready                                                  ), //o
     .io_inputs_0_cmd_payload_last             (system_bridge_bmb_slaveModel_arbiterGen_logic_sorted_0_decoder_cmd_payload_last                  ), //i
@@ -1376,7 +1377,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                             (io_systemClk                                                                                     ), //i
     .systemCd_logic_outputReset               (systemCd_logic_outputReset                                                                       )  //i
   );
-  BmbDecoder_2_1af3d684b9394716a3a326e36081df1d system_bridge_bmb_decoder (
+  BmbDecoder_2_eaefe125cd18487da998ca9b5ff7908f system_bridge_bmb_decoder (
     .io_input_cmd_valid                        (system_bridge_bmb_cmd_s2mPipe_m2sPipe_valid                              ), //i
     .io_input_cmd_ready                        (system_bridge_bmb_decoder_io_input_cmd_ready                             ), //o
     .io_input_cmd_payload_last                 (system_bridge_bmb_cmd_s2mPipe_m2sPipe_payload_last                       ), //i
@@ -1431,7 +1432,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                              (io_systemClk                                                             ), //i
     .systemCd_logic_outputReset                (systemCd_logic_outputReset                                               )  //i
   );
-  BmbOnChipRam_1af3d684b9394716a3a326e36081df1d system_ramA_logic (
+  BmbOnChipRam_eaefe125cd18487da998ca9b5ff7908f system_ramA_logic (
     .io_bus_cmd_valid                    (system_ramA_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_combStage_valid                         ), //i
     .io_bus_cmd_ready                    (system_ramA_logic_io_bus_cmd_ready                                                                  ), //o
     .io_bus_cmd_payload_last             (system_ramA_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_combStage_payload_last                  ), //i
@@ -1450,7 +1451,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                        (io_systemClk                                                                                        ), //i
     .systemCd_logic_outputReset          (systemCd_logic_outputReset                                                                          )  //i
   );
-  BmbUnburstify_1af3d684b9394716a3a326e36081df1d system_bridge_bmb_unburstify (
+  BmbUnburstify_eaefe125cd18487da998ca9b5ff7908f system_bridge_bmb_unburstify (
     .io_input_cmd_valid                     (system_bridge_bmb_decoder_io_outputs_1_cmd_valid                                                 ), //i
     .io_input_cmd_ready                     (system_bridge_bmb_unburstify_io_input_cmd_ready                                                  ), //o
     .io_input_cmd_payload_last              (system_bridge_bmb_decoder_io_outputs_1_cmd_payload_last                                          ), //i
@@ -1486,7 +1487,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                           (io_systemClk                                                                                     ), //i
     .systemCd_logic_outputReset             (systemCd_logic_outputReset                                                                       )  //i
   );
-  BmbUnburstify_1af3d684b9394716a3a326e36081df1d system_bridge_bmb_unburstify_1 (
+  BmbUnburstify_eaefe125cd18487da998ca9b5ff7908f system_bridge_bmb_unburstify_1 (
     .io_input_cmd_valid                     (system_bridge_bmb_decoder_io_outputs_0_cmd_valid                                         ), //i
     .io_input_cmd_ready                     (system_bridge_bmb_unburstify_1_io_input_cmd_ready                                        ), //o
     .io_input_cmd_payload_last              (system_bridge_bmb_decoder_io_outputs_0_cmd_payload_last                                  ), //i
@@ -1522,7 +1523,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                           (io_systemClk                                                                             ), //i
     .systemCd_logic_outputReset             (systemCd_logic_outputReset                                                               )  //i
   );
-  BmbDecoder_3_1af3d684b9394716a3a326e36081df1d system_bmbPeripheral_bmb_decoder (
+  BmbDecoder_3_eaefe125cd18487da998ca9b5ff7908f system_bmbPeripheral_bmb_decoder (
     .io_input_cmd_valid                        (system_bmbPeripheral_bmb_cmd_combStage_valid                                    ), //i
     .io_input_cmd_ready                        (system_bmbPeripheral_bmb_decoder_io_input_cmd_ready                             ), //o
     .io_input_cmd_payload_last                 (system_bmbPeripheral_bmb_cmd_combStage_payload_last                             ), //i
@@ -1631,7 +1632,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                              (io_systemClk                                                                    ), //i
     .systemCd_logic_outputReset                (systemCd_logic_outputReset                                                      )  //i
   );
-  BmbClint_1af3d684b9394716a3a326e36081df1d system_clint_logic (
+  BmbClint_eaefe125cd18487da998ca9b5ff7908f system_clint_logic (
     .io_bus_cmd_valid                    (system_clint_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_valid                         ), //i
     .io_bus_cmd_ready                    (system_clint_logic_io_bus_cmd_ready                                                        ), //o
     .io_bus_cmd_payload_last             (system_clint_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_payload_last                  ), //i
@@ -1653,7 +1654,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                        (io_systemClk                                                                               ), //i
     .systemCd_logic_outputReset          (systemCd_logic_outputReset                                                                 )  //i
   );
-  BmbUartCtrl_1af3d684b9394716a3a326e36081df1d system_uart_0_io_logic (
+  BmbUartCtrl_eaefe125cd18487da998ca9b5ff7908f system_uart_0_io_logic (
     .io_bus_cmd_valid                    (system_uart_0_io_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_halfPipe_valid                        ), //i
     .io_bus_cmd_ready                    (system_uart_0_io_logic_io_bus_cmd_ready                                                                ), //o
     .io_bus_cmd_payload_last             (system_uart_0_io_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_halfPipe_payload_last                 ), //i
@@ -1674,7 +1675,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                        (io_systemClk                                                                                           ), //i
     .systemCd_logic_outputReset          (systemCd_logic_outputReset                                                                             )  //i
   );
-  BmbI2cCtrl_1af3d684b9394716a3a326e36081df1d system_i2c_0_io_logic (
+  BmbI2cCtrl_eaefe125cd18487da998ca9b5ff7908f system_i2c_0_io_logic (
     .io_ctrl_cmd_valid                    (system_i2c_0_io_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_halfPipe_valid                        ), //i
     .io_ctrl_cmd_ready                    (system_i2c_0_io_logic_io_ctrl_cmd_ready                                                               ), //o
     .io_ctrl_cmd_payload_last             (system_i2c_0_io_ctrl_slaveModel_arbiterGen_oneToOne_arbiter_cmd_halfPipe_payload_last                 ), //i
@@ -1697,7 +1698,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                         (io_systemClk                                                                                          ), //i
     .systemCd_logic_outputReset           (systemCd_logic_outputReset                                                                            )  //i
   );
-  BmbGpio2_1af3d684b9394716a3a326e36081df1d system_gpio_0_io_logic (
+  BmbGpio2_eaefe125cd18487da998ca9b5ff7908f system_gpio_0_io_logic (
     .io_gpio_read                        (system_gpio_0_io_read[3:0]                                                                    ), //i
     .io_gpio_write                       (system_gpio_0_io_logic_io_gpio_write[3:0]                                                     ), //o
     .io_gpio_writeEnable                 (system_gpio_0_io_logic_io_gpio_writeEnable[3:0]                                               ), //o
@@ -1719,7 +1720,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                        (io_systemClk                                                                                  ), //i
     .systemCd_logic_outputReset          (systemCd_logic_outputReset                                                                    )  //i
   );
-  BmbToApb3Bridge_1af3d684b9394716a3a326e36081df1d io_apbSlave_0_logic (
+  BmbToApb3Bridge_eaefe125cd18487da998ca9b5ff7908f io_apbSlave_0_logic (
     .io_input_cmd_valid                    (io_apbSlave_0_input_slaveModel_arbiterGen_oneToOne_arbiter_cmd_valid                         ), //i
     .io_input_cmd_ready                    (io_apbSlave_0_logic_io_input_cmd_ready                                                       ), //o
     .io_input_cmd_payload_last             (io_apbSlave_0_input_slaveModel_arbiterGen_oneToOne_arbiter_cmd_payload_last                  ), //i
@@ -2983,7 +2984,7 @@ module EfxSapphireSoc_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbToApb3Bridge_1af3d684b9394716a3a326e36081df1d (
+module BmbToApb3Bridge_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output wire          io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -3134,7 +3135,7 @@ module BmbToApb3Bridge_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbGpio2_1af3d684b9394716a3a326e36081df1d (
+module BmbGpio2_eaefe125cd18487da998ca9b5ff7908f (
   input  wire [3:0]    io_gpio_read,
   output reg  [3:0]    io_gpio_write,
   output reg  [3:0]    io_gpio_writeEnable,
@@ -3428,7 +3429,7 @@ module BmbGpio2_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbI2cCtrl_1af3d684b9394716a3a326e36081df1d (
+module BmbI2cCtrl_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_ctrl_cmd_valid,
   output wire          io_ctrl_cmd_ready,
   input  wire          io_ctrl_cmd_payload_last,
@@ -3727,7 +3728,7 @@ module BmbI2cCtrl_1af3d684b9394716a3a326e36081df1d (
   assign _zz_bridge_interruptCtrl_filterGen_flag = 1'b0;
   assign _zz_bridge_interruptCtrl_clockGenExit_flag = 1'b0;
   assign _zz_bridge_interruptCtrl_clockGenEnter_flag = 1'b0;
-  I2cSlave_1af3d684b9394716a3a326e36081df1d i2cCtrl (
+  I2cSlave_eaefe125cd18487da998ca9b5ff7908f i2cCtrl (
     .io_i2c_sda_write               (i2cCtrl_io_i2c_sda_write               ), //o
     .io_i2c_sda_read                (bridge_i2cBuffer_sda_read              ), //i
     .io_i2c_scl_write               (i2cCtrl_io_i2c_scl_write               ), //o
@@ -5078,7 +5079,7 @@ module BmbI2cCtrl_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbUartCtrl_1af3d684b9394716a3a326e36081df1d (
+module BmbUartCtrl_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_bus_cmd_valid,
   output wire          io_bus_cmd_ready,
   input  wire          io_bus_cmd_payload_last,
@@ -5206,7 +5207,7 @@ module BmbUartCtrl_1af3d684b9394716a3a326e36081df1d (
   assign _zz_bridge_misc_doBreak = 1'b1;
   assign _zz_bridge_misc_doBreak_1 = 1'b0;
   assign _zz_busCtrl_rsp_payload_fragment_data = (8'h80 - bridge_write_streamUnbuffered_queueWithOccupancy_io_occupancy);
-  UartCtrl_1af3d684b9394716a3a326e36081df1d uartCtrl_1 (
+  UartCtrl_eaefe125cd18487da998ca9b5ff7908f uartCtrl_1 (
     .io_config_frame_dataLength (bridge_uartConfigReg_frame_dataLength[2:0]                          ), //i
     .io_config_frame_stop       (bridge_uartConfigReg_frame_stop                                     ), //i
     .io_config_frame_parity     (bridge_uartConfigReg_frame_parity[1:0]                              ), //i
@@ -5225,7 +5226,7 @@ module BmbUartCtrl_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk               (io_systemClk                                                        ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset                                          )  //i
   );
-  StreamFifo_1af3d684b9394716a3a326e36081df1d bridge_write_streamUnbuffered_queueWithOccupancy (
+  StreamFifo_eaefe125cd18487da998ca9b5ff7908f bridge_write_streamUnbuffered_queueWithOccupancy (
     .io_push_valid              (bridge_write_streamUnbuffered_valid                                  ), //i
     .io_push_ready              (bridge_write_streamUnbuffered_queueWithOccupancy_io_push_ready       ), //o
     .io_push_payload            (bridge_write_streamUnbuffered_payload[7:0]                           ), //i
@@ -5238,7 +5239,7 @@ module BmbUartCtrl_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk               (io_systemClk                                                         ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset                                           )  //i
   );
-  StreamFifo_1af3d684b9394716a3a326e36081df1d uartCtrl_1_io_read_queueWithOccupancy (
+  StreamFifo_eaefe125cd18487da998ca9b5ff7908f uartCtrl_1_io_read_queueWithOccupancy (
     .io_push_valid              (uartCtrl_1_io_read_valid                                  ), //i
     .io_push_ready              (uartCtrl_1_io_read_queueWithOccupancy_io_push_ready       ), //o
     .io_push_payload            (uartCtrl_1_io_read_payload[7:0]                           ), //i
@@ -5570,7 +5571,7 @@ module BmbUartCtrl_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbClint_1af3d684b9394716a3a326e36081df1d (
+module BmbClint_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_bus_cmd_valid,
   output wire          io_bus_cmd_ready,
   input  wire          io_bus_cmd_payload_last,
@@ -5754,7 +5755,7 @@ module BmbClint_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbDecoder_3_1af3d684b9394716a3a326e36081df1d (
+module BmbDecoder_3_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output wire          io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -6203,9 +6204,9 @@ module BmbDecoder_3_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-//BmbUnburstify_1 replaced by BmbUnburstify_1af3d684b9394716a3a326e36081df1d
+//BmbUnburstify_1 replaced by BmbUnburstify_eaefe125cd18487da998ca9b5ff7908f
 
-module BmbUnburstify_1af3d684b9394716a3a326e36081df1d (
+module BmbUnburstify_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output reg           io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -6431,7 +6432,7 @@ module BmbUnburstify_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbOnChipRam_1af3d684b9394716a3a326e36081df1d (
+module BmbOnChipRam_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_bus_cmd_valid,
   output wire          io_bus_cmd_ready,
   input  wire          io_bus_cmd_payload_last,
@@ -6539,7 +6540,7 @@ module BmbOnChipRam_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbDecoder_2_1af3d684b9394716a3a326e36081df1d (
+module BmbDecoder_2_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output wire          io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -6811,7 +6812,7 @@ module BmbDecoder_2_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbArbiter_1af3d684b9394716a3a326e36081df1d (
+module BmbArbiter_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_inputs_0_cmd_valid,
   output wire          io_inputs_0_cmd_ready,
   input  wire          io_inputs_0_cmd_payload_last,
@@ -6879,7 +6880,7 @@ module BmbArbiter_1af3d684b9394716a3a326e36081df1d (
   wire       [0:0]    memory_rspSel;
 
   assign _zz_io_output_cmd_payload_fragment_source = {memory_arbiter_io_output_payload_fragment_source,memory_arbiter_io_chosen};
-  StreamArbiter_1af3d684b9394716a3a326e36081df1d memory_arbiter (
+  StreamArbiter_eaefe125cd18487da998ca9b5ff7908f memory_arbiter (
     .io_inputs_0_valid                    (io_inputs_0_cmd_valid                                  ), //i
     .io_inputs_0_ready                    (memory_arbiter_io_inputs_0_ready                       ), //o
     .io_inputs_0_payload_last             (io_inputs_0_cmd_payload_last                           ), //i
@@ -6947,7 +6948,7 @@ module BmbArbiter_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbDecoder_1_1af3d684b9394716a3a326e36081df1d (
+module BmbDecoder_1_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output wire          io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -6987,7 +6988,7 @@ module BmbDecoder_1_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BmbDecoder_1af3d684b9394716a3a326e36081df1d (
+module BmbDecoder_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_cmd_valid,
   output wire          io_input_cmd_ready,
   input  wire          io_input_cmd_payload_last,
@@ -7141,7 +7142,7 @@ module BmbDecoder_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BufferCC_8_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_8_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -7165,7 +7166,7 @@ module BufferCC_8_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module SystemDebugger_1af3d684b9394716a3a326e36081df1d (
+module SystemDebugger_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_remote_cmd_valid,
   output wire          io_remote_cmd_ready,
   input  wire          io_remote_cmd_payload_last,
@@ -7252,7 +7253,7 @@ module SystemDebugger_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module JtagBridgeNoTap_1af3d684b9394716a3a326e36081df1d (
+module JtagBridgeNoTap_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_ctrl_tdi,
   input  wire          io_ctrl_enable,
   input  wire          io_ctrl_capture,
@@ -7326,7 +7327,7 @@ module JtagBridgeNoTap_1af3d684b9394716a3a326e36081df1d (
   reg        [33:0]   jtag_readArea_full_shifter;
   wire                when_JtagTapInstructions_l209_1;
 
-  FlowCCUnsafeByToggle_1af3d684b9394716a3a326e36081df1d flowCCUnsafeByToggle_1 (
+  FlowCCUnsafeByToggle_eaefe125cd18487da998ca9b5ff7908f flowCCUnsafeByToggle_1 (
     .io_input_valid             (jtag_writeArea_source_valid                      ), //i
     .io_input_payload_last      (jtag_writeArea_source_payload_last               ), //i
     .io_input_payload_fragment  (jtag_writeArea_source_payload_fragment           ), //i
@@ -7463,9 +7464,9 @@ module JtagBridgeNoTap_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-//BufferCC_7 replaced by BufferCC_6_1af3d684b9394716a3a326e36081df1d
+//BufferCC_7 replaced by BufferCC_6_eaefe125cd18487da998ca9b5ff7908f
 
-module BufferCC_6_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_6_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -7484,7 +7485,7 @@ module BufferCC_6_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module VexRiscv_1af3d684b9394716a3a326e36081df1d (
+module VexRiscv_eaefe125cd18487da998ca9b5ff7908f (
   output wire          dBus_cmd_valid,
   input  wire          dBus_cmd_ready,
   output wire          dBus_cmd_payload_wr,
@@ -9022,7 +9023,7 @@ module VexRiscv_1af3d684b9394716a3a326e36081df1d (
     end
   end
 
-  InstructionCache_1af3d684b9394716a3a326e36081df1d IBusCachedPlugin_cache (
+  InstructionCache_eaefe125cd18487da998ca9b5ff7908f IBusCachedPlugin_cache (
     .io_flush                              (IBusCachedPlugin_cache_io_flush                           ), //i
     .io_cpu_prefetch_isValid               (IBusCachedPlugin_cache_io_cpu_prefetch_isValid            ), //i
     .io_cpu_prefetch_haltIt                (IBusCachedPlugin_cache_io_cpu_prefetch_haltIt             ), //o
@@ -9064,7 +9065,7 @@ module VexRiscv_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                          (io_systemClk                                              ), //i
     .systemCd_logic_outputReset            (systemCd_logic_outputReset                                )  //i
   );
-  DataCache_1af3d684b9394716a3a326e36081df1d dataCache_1 (
+  DataCache_eaefe125cd18487da998ca9b5ff7908f dataCache_1 (
     .io_cpu_execute_isValid                 (dataCache_1_io_cpu_execute_isValid               ), //i
     .io_cpu_execute_address                 (dataCache_1_io_cpu_execute_address[31:0]         ), //i
     .io_cpu_execute_haltIt                  (dataCache_1_io_cpu_execute_haltIt                ), //o
@@ -9130,7 +9131,7 @@ module VexRiscv_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk                           (io_systemClk                                     ), //i
     .systemCd_logic_outputReset             (systemCd_logic_outputReset                       )  //i
   );
-  EfxCPUSp1_1af3d684b9394716a3a326e36081df1d EfxCPUSp1_inst (
+  EfxCPUSp1_eaefe125cd18487da998ca9b5ff7908f EfxCPUSp1_inst (
     .src1    (execute_SRC1[31:0]           ), //i
     .src2    (execute_SRC2[31:0]           ), //i
     .bitCtrl (execute_ALU_BITWISE_CTRL[1:0]), //i
@@ -9139,7 +9140,7 @@ module VexRiscv_1af3d684b9394716a3a326e36081df1d (
     .addSub  (execute_SRC_ADD_SUB[31:0]    ), //i
     .result  (EfxCPUSp1_inst_result[31:0]  )  //o
   );
-  EfxCPUSp2_1af3d684b9394716a3a326e36081df1d EfxCPUSp2_inst (
+  EfxCPUSp2_eaefe125cd18487da998ca9b5ff7908f EfxCPUSp2_inst (
     .ctrl   (execute_SHIFT_CTRL[1:0]    ), //i
     .src1   (execute_SRC1[31:0]         ), //i
     .src2   (execute_SRC2[31:0]         ), //i
@@ -12598,7 +12599,7 @@ module VexRiscv_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BufferCC_5_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_5_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -12622,7 +12623,7 @@ module BufferCC_5_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BufferCC_4_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_4_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -12646,7 +12647,7 @@ module BufferCC_4_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module I2cSlave_1af3d684b9394716a3a326e36081df1d (
+module I2cSlave_eaefe125cd18487da998ca9b5ff7908f (
   output wire          io_i2c_sda_write,
   input  wire          io_i2c_sda_read,
   output wire          io_i2c_scl_write,
@@ -12747,13 +12748,13 @@ module I2cSlave_1af3d684b9394716a3a326e36081df1d (
   `endif
 
 
-  (* keep_hierarchy = "TRUE" *) BufferCC_2_1af3d684b9394716a3a326e36081df1d io_i2c_scl_read_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_2_eaefe125cd18487da998ca9b5ff7908f io_i2c_scl_read_buffercc (
     .io_dataIn                  (io_i2c_scl_read                    ), //i
     .io_dataOut                 (io_i2c_scl_read_buffercc_io_dataOut), //o
     .io_systemClk               (io_systemClk                       ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset         )  //i
   );
-  (* keep_hierarchy = "TRUE" *) BufferCC_2_1af3d684b9394716a3a326e36081df1d io_i2c_sda_read_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_2_eaefe125cd18487da998ca9b5ff7908f io_i2c_sda_read_buffercc (
     .io_dataIn                  (io_i2c_sda_read                    ), //i
     .io_dataOut                 (io_i2c_sda_read_buffercc_io_dataOut), //o
     .io_systemClk               (io_systemClk                       ), //i
@@ -12992,9 +12993,9 @@ module I2cSlave_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-//StreamFifo_1 replaced by StreamFifo_1af3d684b9394716a3a326e36081df1d
+//StreamFifo_1 replaced by StreamFifo_eaefe125cd18487da998ca9b5ff7908f
 
-module StreamFifo_1af3d684b9394716a3a326e36081df1d (
+module StreamFifo_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_push_valid,
   output wire          io_push_ready,
   input  wire [7:0]    io_push_payload,
@@ -13148,7 +13149,7 @@ module StreamFifo_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module UartCtrl_1af3d684b9394716a3a326e36081df1d (
+module UartCtrl_eaefe125cd18487da998ca9b5ff7908f (
   input  wire [2:0]    io_config_frame_dataLength,
   input  wire [0:0]    io_config_frame_stop,
   input  wire [1:0]    io_config_frame_parity,
@@ -13192,7 +13193,7 @@ module UartCtrl_1af3d684b9394716a3a326e36081df1d (
   `endif
 
 
-  UartCtrlTx_1af3d684b9394716a3a326e36081df1d tx (
+  UartCtrlTx_eaefe125cd18487da998ca9b5ff7908f tx (
     .io_configFrame_dataLength  (io_config_frame_dataLength[2:0]), //i
     .io_configFrame_stop        (io_config_frame_stop           ), //i
     .io_configFrame_parity      (io_config_frame_parity[1:0]    ), //i
@@ -13206,7 +13207,7 @@ module UartCtrl_1af3d684b9394716a3a326e36081df1d (
     .io_systemClk               (io_systemClk                   ), //i
     .systemCd_logic_outputReset (systemCd_logic_outputReset     )  //i
   );
-  UartCtrlRx_1af3d684b9394716a3a326e36081df1d rx (
+  UartCtrlRx_eaefe125cd18487da998ca9b5ff7908f rx (
     .io_configFrame_dataLength  (io_config_frame_dataLength[2:0]), //i
     .io_configFrame_stop        (io_config_frame_stop           ), //i
     .io_configFrame_parity      (io_config_frame_parity[1:0]    ), //i
@@ -13277,7 +13278,7 @@ module UartCtrl_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module StreamArbiter_1af3d684b9394716a3a326e36081df1d (
+module StreamArbiter_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_inputs_0_valid,
   output wire          io_inputs_0_ready,
   input  wire          io_inputs_0_payload_last,
@@ -13381,7 +13382,7 @@ module StreamArbiter_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module FlowCCUnsafeByToggle_1af3d684b9394716a3a326e36081df1d (
+module FlowCCUnsafeByToggle_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_input_valid,
   input  wire          io_input_payload_last,
   input  wire [0:0]    io_input_payload_fragment,
@@ -13406,7 +13407,7 @@ module FlowCCUnsafeByToggle_1af3d684b9394716a3a326e36081df1d (
   (* async_reg = "true" *) reg                 outputArea_flow_m2sPipe_payload_last;
   (* async_reg = "true" *) reg        [0:0]    outputArea_flow_m2sPipe_payload_fragment;
 
-  (* keep_hierarchy = "TRUE" *) BufferCC_1af3d684b9394716a3a326e36081df1d inputArea_target_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_eaefe125cd18487da998ca9b5ff7908f inputArea_target_buffercc (
     .io_dataIn                 (inputArea_target                    ), //i
     .io_dataOut                (inputArea_target_buffercc_io_dataOut), //o
     .io_systemClk              (io_systemClk                        ), //i
@@ -13453,7 +13454,7 @@ module FlowCCUnsafeByToggle_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module DataCache_1af3d684b9394716a3a326e36081df1d (
+module DataCache_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_cpu_execute_isValid,
   input  wire [31:0]   io_cpu_execute_address,
   output reg           io_cpu_execute_haltIt,
@@ -14276,10 +14277,10 @@ module DataCache_1af3d684b9394716a3a326e36081df1d (
       end
       `ifndef SYNTHESIS
         `ifdef FORMAL
-          assert((! ((io_cpu_writeBack_isValid && (! io_cpu_writeBack_haltIt)) && io_cpu_writeBack_isStuck))); // DataCache_1af3d684b9394716a3a326e36081df1d.scala:L1084
+          assert((! ((io_cpu_writeBack_isValid && (! io_cpu_writeBack_haltIt)) && io_cpu_writeBack_isStuck))); // DataCache_eaefe125cd18487da998ca9b5ff7908f.scala:L1084
         `else
           if(!(! ((io_cpu_writeBack_isValid && (! io_cpu_writeBack_haltIt)) && io_cpu_writeBack_isStuck))) begin
-            $display("ERROR writeBack stuck by another plugin is not allowed"); // DataCache_1af3d684b9394716a3a326e36081df1d.scala:L1084
+            $display("ERROR writeBack stuck by another plugin is not allowed"); // DataCache_eaefe125cd18487da998ca9b5ff7908f.scala:L1084
           end
         `endif
       `endif
@@ -14307,7 +14308,7 @@ module DataCache_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module InstructionCache_1af3d684b9394716a3a326e36081df1d (
+module InstructionCache_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_flush,
   input  wire          io_cpu_prefetch_isValid,
   output reg           io_cpu_prefetch_haltIt,
@@ -14605,9 +14606,9 @@ module InstructionCache_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-//BufferCC_3 replaced by BufferCC_2_1af3d684b9394716a3a326e36081df1d
+//BufferCC_3 replaced by BufferCC_2_eaefe125cd18487da998ca9b5ff7908f
 
-module BufferCC_2_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_2_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -14631,7 +14632,7 @@ module BufferCC_2_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module UartCtrlRx_1af3d684b9394716a3a326e36081df1d (
+module UartCtrlRx_eaefe125cd18487da998ca9b5ff7908f (
   input  wire [2:0]    io_configFrame_dataLength,
   input  wire [0:0]    io_configFrame_stop,
   input  wire [1:0]    io_configFrame_parity,
@@ -14710,7 +14711,7 @@ module UartCtrlRx_1af3d684b9394716a3a326e36081df1d (
   assign _zz_sampler_value_6 = 1'b1;
   assign _zz_sampler_value_1 = (1'b1 && sampler_samples_0);
   assign _zz_sampler_value_2 = 1'b1;
-  (* keep_hierarchy = "TRUE" *) BufferCC_1_1af3d684b9394716a3a326e36081df1d io_rxd_buffercc (
+  (* keep_hierarchy = "TRUE" *) BufferCC_1_eaefe125cd18487da998ca9b5ff7908f io_rxd_buffercc (
     .io_dataIn                  (io_rxd                    ), //i
     .io_dataOut                 (io_rxd_buffercc_io_dataOut), //o
     .io_systemClk               (io_systemClk              ), //i
@@ -14925,7 +14926,7 @@ module UartCtrlRx_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module UartCtrlTx_1af3d684b9394716a3a326e36081df1d (
+module UartCtrlTx_eaefe125cd18487da998ca9b5ff7908f (
   input  wire [2:0]    io_configFrame_dataLength,
   input  wire [0:0]    io_configFrame_stop,
   input  wire [1:0]    io_configFrame_parity,
@@ -15165,7 +15166,7 @@ module UartCtrlTx_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BufferCC_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -15191,7 +15192,7 @@ module BufferCC_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module BufferCC_1_1af3d684b9394716a3a326e36081df1d (
+module BufferCC_1_eaefe125cd18487da998ca9b5ff7908f (
   input  wire          io_dataIn,
   output wire          io_dataOut,
   input  wire          io_systemClk,
@@ -15215,7 +15216,7 @@ module BufferCC_1_1af3d684b9394716a3a326e36081df1d (
 
 endmodule
 
-module EfxCPUSp1_1af3d684b9394716a3a326e36081df1d (
+module EfxCPUSp1_eaefe125cd18487da998ca9b5ff7908f (
   input      [31:0]   src1,
   input      [31:0]   src2,
   input      [1:0]    bitCtrl,
@@ -15268,7 +15269,7 @@ B&g5BF)VDC(0+$
 
 //pragma protect end
 
-module EfxCPUSp2_1af3d684b9394716a3a326e36081df1d (
+module EfxCPUSp2_eaefe125cd18487da998ca9b5ff7908f (
   input      [1:0]    ctrl,
   input      [31:0]   src1,
   input      [31:0]   src2,
