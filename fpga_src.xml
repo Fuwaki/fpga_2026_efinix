@@ -56,6 +56,13 @@
         <efx:design_file name="rtl/true_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="rtl/user_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="ip/riscv_soc0/riscv_soc0.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/efx_mac8.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_accel.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_vid_pipe.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/axi2_pri_arb.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_layer_sel.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_layer_desc.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_axi_mm.v" version="default" library="default" />
         <efx:design_file name="rtl/fpga_src_top.v" version="default" library="default" />
         <efx:top_vhdl_arch name="" />
         <efx:msg_config name="" />

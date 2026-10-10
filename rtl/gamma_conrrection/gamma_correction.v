@@ -6,14 +6,12 @@ module gamma_correction
 (
 	input						i_pclk,
 	input						i_rstn,
-			
 	input 						i_valid,
 	input 						i_hs,
 	input 						i_vs,
 	input 	[DATA_WIDTH-1:0]	i_red,
 	input 	[DATA_WIDTH-1:0]	i_green,
 	input 	[DATA_WIDTH-1:0]	i_blue,
-		
 	output	reg[DATA_WIDTH-1:0]	o_red,
 	output	reg[DATA_WIDTH-1:0]	o_green,
 	output	reg[DATA_WIDTH-1:0]	o_blue,
@@ -21,95 +19,44 @@ module gamma_correction
 	output  reg  				o_hs,
 	output 	reg 				o_vs
 );
+	wire [9:0] addr_r = (DATA_WIDTH == 10) ? i_red[9:0] : {i_red[7:0], i_red[7:6]};
+	wire [9:0] addr_g = (DATA_WIDTH == 10) ? i_green[9:0] : {i_green[7:0], i_green[7:6]};
+	wire [9:0] addr_b = (DATA_WIDTH == 10) ? i_blue[9:0]  : {i_blue[7:0],  i_blue[7:6]};
+	wire [9:0] gam_r, gam_g, gam_b;
 
-wire	[9:0]w_gamma;
+	simple_dual_port_ram #(.DATA_WIDTH(10), .ADDR_WIDTH(10), .OUTPUT_REG("TRUE"),
+		.RAM_INIT_FILE(GAMMA_CURVE), .RAM_INIT_RADIX("HEX")) u_rom_r (
+		.wdata(10'd0), .waddr(10'd0), .raddr(addr_r), .we(1'b0),
+		.wclk(i_pclk), .re(1'b1), .rclk(i_pclk), .rdata(gam_r));
+	simple_dual_port_ram #(.DATA_WIDTH(10), .ADDR_WIDTH(10), .OUTPUT_REG("TRUE"),
+		.RAM_INIT_FILE(GAMMA_CURVE), .RAM_INIT_RADIX("HEX")) u_rom_g (
+		.wdata(10'd0), .waddr(10'd0), .raddr(addr_g), .we(1'b0),
+		.wclk(i_pclk), .re(1'b1), .rclk(i_pclk), .rdata(gam_g));
+	simple_dual_port_ram #(.DATA_WIDTH(10), .ADDR_WIDTH(10), .OUTPUT_REG("TRUE"),
+		.RAM_INIT_FILE(GAMMA_CURVE), .RAM_INIT_RADIX("HEX")) u_rom_b (
+		.wdata(10'd0), .waddr(10'd0), .raddr(addr_b), .we(1'b0),
+		.wclk(i_pclk), .re(1'b1), .rclk(i_pclk), .rdata(gam_b));
 
-reg		[9:0]r_addr;
-reg		[9:0]r_addr_1P;
-reg		[9:0]r_addr_2P;
-reg		[9:0]r_gamma_2P	[0:1023];
-
-true_dual_port_ram
-#(
-	.DATA_WIDTH(10),
-	.ADDR_WIDTH(10),
-	.WRITE_MODE_1("WRITE_FIRST"),
-	.WRITE_MODE_2("WRITE_FIRST"),
-	.OUTPUT_REG_1("TRUE"),
-	.OUTPUT_REG_2("TRUE"),
-	.RAM_INIT_FILE(GAMMA_CURVE)		// Initial code file
-)
-inst_gamma
-(
-	.we1(1'b0),
-	.we2(1'b0),
-	.clka(i_pclk),
-	.clkb(1'b0),
-	.din1({10{1'b0}}),
-	.din2({10{1'b0}}),
-	.addr1(r_addr[9:0]),
-	.addr2({10{1'b0}}),
-	.dout1(w_gamma),
-	.dout2()
-);
-
-always @(posedge i_pclk)
-begin
-	if (~i_rstn) 
-	begin
-		r_addr		<= 10'b0;
-		r_addr_1P	<= 10'b0;
-		r_addr_2P	<= 10'b0;
-	end
-	else 
-	begin
-		r_addr		<= r_addr + 1'b1;
-		r_addr_1P	<= r_addr;
-		r_addr_2P	<= r_addr_1P;
-		
-		r_gamma_2P[r_addr_2P]	<= w_gamma;
-	end
-end
-
-//Curve Fitting
-always @(posedge i_pclk)
-begin
-	if (~i_rstn) 
-	begin
-		o_red	<= {DATA_WIDTH{1'b0}};
-		o_green	<= {DATA_WIDTH{1'b0}};
-		o_blue	<= {DATA_WIDTH{1'b0}};
-		o_valid	<= 1'b0;
-		o_hs <= 'd0;
-		o_vs <= 'd0;
-	end
-	else 
-	begin
-		o_valid	<= i_valid;
-		o_hs <= i_hs;
-		o_vs <= i_vs;
-		
-		if (i_valid)
-		begin
-			if (DATA_WIDTH == 10)
-			begin
-				o_red	<= r_gamma_2P[i_red];
-				o_green	<= r_gamma_2P[i_green];		
-				o_blue	<= r_gamma_2P[i_blue];
+	reg v0,v1,v2, h0,h1,h2, s0,s1,s2;
+	always @(posedge i_pclk or negedge i_rstn) begin
+		if (!i_rstn) begin
+			{v0,v1,v2,h0,h1,h2,s0,s1,s2} <= 0;
+			o_red <= 0; o_green <= 0; o_blue <= 0;
+			o_valid <= 0; o_hs <= 0; o_vs <= 0;
+		end else begin
+			v0 <= i_valid; v1 <= v0; v2 <= v1;
+			h0 <= i_hs;    h1 <= h0; h2 <= h1;
+			s0 <= i_vs;    s1 <= s0; s2 <= s1;
+			o_valid <= v2; o_hs <= h2; o_vs <= s2;
+			if (v2) begin
+				if (DATA_WIDTH == 10) begin
+					o_red <= gam_r; o_green <= gam_g; o_blue <= gam_b;
+				end else begin
+					o_red <= gam_r[9:2]; o_green <= gam_g[9:2]; o_blue <= gam_b[9:2];
+				end
+			end else begin
+				o_red <= 0; o_green <= 0; o_blue <= 0;
 			end
-			else
-			begin
-				o_red	<= r_gamma_2P[{i_red, i_red[7:6]}][9:2];
-				o_green	<= r_gamma_2P[{i_green, i_green[7:6]}][9:2];		
-				o_blue	<= r_gamma_2P[{i_blue, i_blue[7:6]}][9:2];
-			end	
-		end
-		else
-		begin
-			o_red	<= {DATA_WIDTH{1'b0}};
-			o_green	<= {DATA_WIDTH{1'b0}};
-			o_blue	<= {DATA_WIDTH{1'b0}};
 		end
 	end
-end
 endmodule

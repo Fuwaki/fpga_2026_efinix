@@ -1,6 +1,6 @@
 // Generator : SpinalHDL dev    git head : a69f4b9a329be784802c37cd8038b7dc9aec3094
 // Component : EfxSapphireSoc
-// Git hash  : 1caea053d15f77a56002da532c908b42d78ade5f
+// Git hash  : 7587192cdb81d84251132dc5be69157d3229e6c0
 
 `timescale 1ns/1ps
 

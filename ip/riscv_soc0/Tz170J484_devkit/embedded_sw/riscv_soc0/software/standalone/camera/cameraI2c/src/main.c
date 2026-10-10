@@ -42,7 +42,6 @@ void main(void)
 {
     bsp_init();
 
-    /* GPIO0[0] 输出，初始为 0（配置中） */
     gpio_setOutputEnable(GPIO_CTRL, LED_DONE_MASK);
     camLed(0);
 

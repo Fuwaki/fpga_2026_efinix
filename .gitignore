@@ -30,3 +30,9 @@ __pycache__/
 *.d
 *.wlf
 vsim.wlf
+
+# --- 编辑器/临时工作目录/备份 ---
+.ccls-cache/
+/work_pm/
+/work_pt/
+*.bak_*

@@ -1,0 +1,7 @@
+Programming using Board Profile: Generic Board Profile Using FT4232H
+Connecting to JTAG_TAP: efx_ti
+jtag programming started!
+JTAG Programming on ftdi://0x0403:0x6011:1:13/2
+Programming 'outflow/fpga_src.bit' via JTAG at freq 3.0 MHz
+Device ID read from JTAG: 0x10660A79
+... finished with JTAG programming

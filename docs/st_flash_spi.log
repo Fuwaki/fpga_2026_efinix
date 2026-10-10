@@ -1,0 +1,7 @@
+****** Python exception running: /opt/efinity/2026.1/scripts/efx_run.py --prj fpga_src.xml -f program --dir . --pgm_opts mode=jtag_bridge
+Programming using Board Profile: Generic Board Profile Using FT4232H
+Connecting to JTAG_TAP: efx_ti
+Connecting to JTAG_TAP: efx_ti
+Unsupported JTAG Bridge version: 0.0. Please choose the latest bundled JTAG Bridge image and then try again., aborting flash programming
+[91m    :	FAIL [0m
+An exception occurred: 

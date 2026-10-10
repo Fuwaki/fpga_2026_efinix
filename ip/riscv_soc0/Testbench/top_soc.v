@@ -18,17 +18,17 @@
 `timescale 1ns / 1ps
 
 module top_soc (
-output		system_uart_0_io_txd,
-input		system_uart_0_io_rxd,
-input [3:0] system_gpio_0_io_read,
-output [3:0] system_gpio_0_io_write,
-output [3:0] system_gpio_0_io_writeEnable,
 output		system_i2c_0_io_sda_writeEnable,
 output		system_i2c_0_io_sda_write,
 input		system_i2c_0_io_sda_read,
 output		system_i2c_0_io_scl_writeEnable,
 output		system_i2c_0_io_scl_write,
 input		system_i2c_0_io_scl_read,
+input [3:0] system_gpio_0_io_read,
+output [3:0] system_gpio_0_io_write,
+output [3:0] system_gpio_0_io_writeEnable,
+output		system_uart_0_io_txd,
+input		system_uart_0_io_rxd,
 
 output      memoryCheckerPass,
 output      systemClk_rstn,
@@ -63,15 +63,6 @@ assign system_i2c_0_io_scl_writeEnable = !system_i2c_0_io_scl_write;
 
 
 /////////////////////////////////////////////////////////////////////////////
-timer_start #(
-.MHZ(100),
-.SECOND(10),
-.PULSE(1)
-) intr_s0 (
-.clk(io_systemClk),
-.rst_n(~io_systemReset),
-.start(userInterrupt_0));
-
 apb3_slave #(
 .ADDR_WIDTH(16)) apb_slave_0 (
 .clk(io_systemClk),
@@ -85,19 +76,21 @@ apb3_slave #(
 .PRDATA(io_apbSlave_0_PRDATA),
 .PSLVERROR(io_apbSlave_0_PSLVERROR));
 
+timer_start #(
+.MHZ(100),
+.SECOND(10),
+.PULSE(1)
+) intr_s0 (
+.clk(io_systemClk),
+.rst_n(~io_systemReset),
+.start(userInterrupt_0));
+
 
 
 /////////////////////////////////////////////////////////////////////////////
 
 riscv_soc0 soc_inst
 (
-.system_i2c_0_io_sda_write(system_i2c_0_io_sda_write),
-.system_i2c_0_io_sda_read(system_i2c_0_io_sda_read),
-.system_i2c_0_io_scl_write(system_i2c_0_io_scl_write),
-.system_i2c_0_io_scl_read(system_i2c_0_io_scl_read),
-.system_gpio_0_io_read(system_gpio_0_io_read),
-.system_gpio_0_io_write(system_gpio_0_io_write),
-.system_gpio_0_io_writeEnable(system_gpio_0_io_writeEnable),
 .jtagCtrl_tck(),
 .jtagCtrl_tdi(),
 .jtagCtrl_tdo(),
@@ -106,9 +99,15 @@ riscv_soc0 soc_inst
 .jtagCtrl_shift(),
 .jtagCtrl_update(),
 .jtagCtrl_reset(),
-.userInterruptA(userInterrupt_0),
 .system_uart_0_io_txd(system_uart_0_io_txd),
 .system_uart_0_io_rxd(system_uart_0_io_rxd),
+.system_i2c_0_io_sda_write(system_i2c_0_io_sda_write),
+.system_i2c_0_io_sda_read(system_i2c_0_io_sda_read),
+.system_i2c_0_io_scl_write(system_i2c_0_io_scl_write),
+.system_i2c_0_io_scl_read(system_i2c_0_io_scl_read),
+.system_gpio_0_io_read(system_gpio_0_io_read),
+.system_gpio_0_io_write(system_gpio_0_io_write),
+.system_gpio_0_io_writeEnable(system_gpio_0_io_writeEnable),
 .io_apbSlave_0_PADDR(io_apbSlave_0_PADDR),
 .io_apbSlave_0_PSEL(io_apbSlave_0_PSEL),
 .io_apbSlave_0_PENABLE(io_apbSlave_0_PENABLE),
@@ -117,6 +116,7 @@ riscv_soc0 soc_inst
 .io_apbSlave_0_PWDATA(io_apbSlave_0_PWDATA),
 .io_apbSlave_0_PRDATA(io_apbSlave_0_PRDATA),
 .io_apbSlave_0_PSLVERROR(io_apbSlave_0_PSLVERROR),
+.userInterruptA(userInterrupt_0),
 
 .io_systemClk(io_systemClk),
 .io_asyncReset(reset),

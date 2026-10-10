@@ -1,0 +1,8 @@
+Running: efx_run_map.py fpga_src --family Titanium --device Ti60F225 --project_xml /data/competition/2026fpga/fpga_src/fpga_src.xml --dir . --output_dir outflow --work_dir work_syn --opt root=fpga_src --opt veri_options=verilog_mode=sv_09,vhdl_mode=vhdl_2008 work-dir=work_syn write_efx_verilog=on
+[92m   map :	PASS [0m
+Running: efx_run_pt_unified.py fpga_src Titanium Ti60F225 --output_dir outflow --timing_model I3 --project_xml fpga_src.xml
+[92m   interface :	PASS [0m
+Running: efx_run_pnr.py fpga_src --prj /data/competition/2026fpga/fpga_src/fpga_src.xml --family Titanium --device Ti60F225 --timing_model I3 --dir . --output_dir outflow --work_dir work_pnr --opt sdc_file=fpga_src.sdc
+[92m   pnr :	PASS [0m
+Running: efx_run_pgm.py fpga_src --family Titanium --device Ti60F225 --output_dir outflow --work_dir work_pnr --opt mode=active width=1 enable_roms=smart spi_low_power_mode=on io_weak_pullup=on oscillator_clock_divider=DIV8 bitstream_compression=on enable_external_master_clock=off active_capture_clk_edge=posedge jtag_usercode=0xFFFFFFFF release_tri_then_reset=on
+[92m   pgm :	PASS [0m

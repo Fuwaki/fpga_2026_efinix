@@ -508,12 +508,24 @@ wire mdebug_receive_error      = mipi_debug_out[14];
 //   - 时钟: core_clk @100MHz（SoC 配置 Frequency=100）
 //   - I2C0 : 接摄像头排线的 io_cam_scl / io_cam_sda（开漏，靠外部上拉）
 //   - GPIO0: 4 位，留给后面的按键/拨码
-//   - APB0 : 预留给后面挂自定义寄存器（按键消抖等）
+//   - APB0 : st_accel @ IO_APB_SLAVE_0_INPUT (0xF810_0000)
+//   - userInterruptA : st_accel DONE&IRQ_EN
 //==============================================================================
-wire w_soc_async_reset;      // 高有效异步复位
+wire w_soc_async_reset;      // 高有效异步复位（接 SoC io_asyncReset）
 wire w_soc_system_reset;     // SoC 输出的系统复位（高有效），给用户逻辑用
+wire w_soc_rst_n_release;    // PLL 锁定且 DDR 校准后再释放 SoC
 
-assign w_soc_async_reset = ~w_arstn;
+assign w_soc_rst_n_release = w_arstn & cal_done;
+
+// 与 Ti60F225_devkit/top_soc.v 一致：asyncReset 相对 systemClk 做同步释放
+reg [4:0] soc_rst_sync;
+always @(posedge core_clk or negedge w_soc_rst_n_release) begin
+	if (!w_soc_rst_n_release)
+		soc_rst_sync <= 5'b0;
+	else
+		soc_rst_sync <= {soc_rst_sync[3:0], 1'b1};
+end
+assign w_soc_async_reset = ~soc_rst_sync[4];
 
 wire w_soc_i2c_scl_write;
 wire w_soc_i2c_sda_write;
@@ -521,8 +533,52 @@ wire [3:0] w_soc_gpio_write;
 wire [3:0] w_soc_gpio_write_en;
 wire [31:0] w_soc_apb_paddr, w_soc_apb_pwdata, w_soc_apb_prdata;
 wire        w_soc_apb_psel, w_soc_apb_penable, w_soc_apb_pwrite;
-wire        w_soc_apb_pready = 1'b1;
-wire        w_soc_apb_pslverror = 1'b0;
+wire        w_soc_apb_pready;
+wire        w_soc_apb_pslverror;
+wire        w_st_irq;
+
+// Phase-2 ST conv PE: EFX_DSP24 x16 + HW layer sequencer + on-chip X/W/Y (no DDR AXI yet).
+wire        w_hw_x_we;
+wire [9:0]  w_hw_x_addr; wire [7:0] w_hw_x_data;
+wire        w_hw_load_w, w_hw_start, w_hw_busy, w_hw_done;
+wire [11:0] w_hw_y_addr; wire [7:0] w_hw_y_data;
+wire [31:0] w_st_frame_cnt;
+wire        w_st_pipe_busy;
+
+st_accel #(
+	.N_PE(16)
+) u_st_accel (
+	.clk       (core_clk),
+	.rst_n     (~w_soc_async_reset),
+	.PADDR     (w_soc_apb_paddr),
+	.PSEL      (w_soc_apb_psel),
+	.PENABLE   (w_soc_apb_penable),
+	.PWRITE    (w_soc_apb_pwrite),
+	.PWDATA    (w_soc_apb_pwdata),
+	.PRDATA    (w_soc_apb_prdata),
+	.PREADY    (w_soc_apb_pready),
+	.PSLVERROR (w_soc_apb_pslverror),
+	.irq       (w_st_irq),
+	.hw_x_we   (w_hw_x_we),
+	.hw_x_addr (w_hw_x_addr),
+	.hw_x_data (w_hw_x_data),
+	.hw_load_w (w_hw_load_w),
+	.hw_start  (w_hw_start),
+	.hw_busy   (w_hw_busy),
+	.hw_done   (w_hw_done),
+	.hw_y_addr (w_hw_y_addr),
+	.hw_y_data (w_hw_y_data),
+	.m_awid(st_awid), .m_awaddr(st_awaddr), .m_awlen(st_awlen), .m_awsize(st_awsize),
+	.m_awburst(st_awburst), .m_awlock(st_awlock), .m_awcache(st_awcache), .m_awprot(st_awprot),
+	.m_awvalid(st_awvalid), .m_awready(st_awready),
+	.m_wdata(st_wdata), .m_wstrb(st_wstrb), .m_wlast(st_wlast), .m_wvalid(st_wvalid), .m_wready(st_wready),
+	.m_bid(st_bid), .m_bresp(st_bresp), .m_bvalid(st_bvalid), .m_bready(st_bready),
+	.m_arid(st_arid), .m_araddr(st_araddr), .m_arlen(st_arlen), .m_arsize(st_arsize),
+	.m_arburst(st_arburst), .m_arlock(st_arlock), .m_arcache(st_arcache), .m_arprot(st_arprot),
+	.m_arvalid(st_arvalid), .m_arready(st_arready),
+	.m_rid(st_rid), .m_rdata(st_rdata), .m_rresp(st_rresp), .m_rlast(st_rlast),
+	.m_rvalid(st_rvalid), .m_rready(st_rready)
+);
 
 riscv_soc0 u_riscv_soc0
 (
@@ -540,7 +596,7 @@ riscv_soc0 u_riscv_soc0
 	.jtagCtrl_tck                 (1'b0                ),
 	.jtagCtrl_tdo                 (                    ),
 
-	.userInterruptA               (1'b0                ),
+	.userInterruptA               (w_st_irq            ),
 
 	// APB3 从机（预留）
 	.io_apbSlave_0_PADDR          (w_soc_apb_paddr     ),
@@ -568,9 +624,8 @@ riscv_soc0 u_riscv_soc0
 	.system_gpio_0_io_read        (4'h0                )
 );
 
-// SoC GPIO0[0] -> led[1]：固件把摄像头寄存器表写完后点亮，用来区分
-// "I2C 没跑起来" 和 "视频通路有问题"。led[0] 仍是参考工程的 DDR 校准心跳。
-assign led[1]   = w_soc_gpio_write_en[0] ? w_soc_gpio_write[0] : 1'b0;
+// SoC GPIO0[0] -> led[1]：固件写完摄像头寄存器后常亮。led[0] 为 DDR 校准心跳。
+assign led[1] = w_soc_gpio_write[0];
 assign led[3:2] = 2'b00;
 
 assign io_cam_scl_OUT = 1'b0;
@@ -579,6 +634,48 @@ assign io_cam_sda_OUT = 1'b0;
 assign io_cam_sda_OE  = ~w_soc_i2c_sda_write;
 
 assign o_cam_rst_p = ~w_arstn;
+
+
+//=====================================================================================
+// AXI2 priority arbiter: M0=frame_buffer (hi), M1=st (lo) -> DDR
+//=====================================================================================
+wire [AXI_ID_WIDTH-1:0]  fb_awid; wire [AXI_ADDR_WIDTH-1:0] fb_awaddr; wire [7:0] fb_awlen;
+wire [2:0]  fb_awsize; wire [1:0] fb_awburst; wire fb_awlock; wire [3:0] fb_awcache;
+wire [2:0]  fb_awprot; wire fb_awvalid, fb_awready;
+wire [AXI_DATA_WIDTH-1:0] fb_wdata; wire [AXI_DATA_WIDTH/8-1:0] fb_wstrb;
+wire fb_wlast, fb_wvalid, fb_wready;
+wire [AXI_ID_WIDTH-1:0] fb_bid; wire [1:0] fb_bresp; wire fb_bvalid, fb_bready;
+wire [AXI_ID_WIDTH-1:0] fb_arid; wire [AXI_ADDR_WIDTH-1:0] fb_araddr; wire [7:0] fb_arlen;
+wire [2:0] fb_arsize; wire [1:0] fb_arburst; wire fb_arlock; wire [3:0] fb_arcache;
+wire [2:0] fb_arprot; wire fb_arvalid, fb_arready;
+wire [AXI_ID_WIDTH-1:0] fb_rid; wire [AXI_DATA_WIDTH-1:0] fb_rdata; wire [1:0] fb_rresp;
+wire fb_rlast, fb_rvalid, fb_rready;
+
+// ST AXI master (driven by u_st_accel when USE_DDR=1; idle tie-offs until connected below)
+wire [AXI_ID_WIDTH-1:0] st_awid;
+wire [AXI_ADDR_WIDTH-1:0] st_awaddr;
+wire [7:0] st_awlen;
+wire [2:0] st_awsize;
+wire [1:0] st_awburst;
+wire st_awlock;
+wire [3:0] st_awcache;
+wire [2:0] st_awprot;
+wire st_awvalid, st_awready;
+wire [AXI_DATA_WIDTH-1:0] st_wdata;
+wire [AXI_DATA_WIDTH/8-1:0] st_wstrb;
+wire st_wlast, st_wvalid, st_wready;
+wire [AXI_ID_WIDTH-1:0] st_bid; wire [1:0] st_bresp; wire st_bvalid, st_bready;
+wire [AXI_ID_WIDTH-1:0] st_arid;
+wire [AXI_ADDR_WIDTH-1:0] st_araddr;
+wire [7:0] st_arlen;
+wire [2:0] st_arsize;
+wire [1:0] st_arburst;
+wire st_arlock;
+wire [3:0] st_arcache;
+wire [2:0] st_arprot;
+wire st_arvalid, st_arready;
+wire [AXI_ID_WIDTH-1:0] st_rid; wire [AXI_DATA_WIDTH-1:0] st_rdata; wire [1:0] st_rresp;
+wire st_rlast, st_rvalid, st_rready;
 
 //=====================================================================================
 //frame buffer
@@ -628,48 +725,86 @@ wire ch0_de;
 /*i*/.V_VALID 	 	  (MAX_VRES     ),//		
 /*i*/.V_BACK_PORCH	(VBP		),//		
 
-       .awid			(s_axi_awid	),      
-       .awaddr		(s_axi_awaddr	),
-       .awlen			(s_axi_awlen	),
-       .awsize		(s_axi_awsize	),
-       .awburst		(s_axi_awburst),
-       .awprot    (s_axi_awprot ),
-       .awcache   (s_axi_awcache),
-       .awlock		(s_axi_awlock	),
-       .awvalid		(s_axi_awvalid),
-       .awready		(s_axi_awready),
+       .awid			(fb_awid	),      
+       .awaddr		(fb_awaddr	),
+       .awlen			(fb_awlen	),
+       .awsize		(fb_awsize	),
+       .awburst		(fb_awburst),
+       .awprot    (fb_awprot ),
+       .awcache   (fb_awcache),
+       .awlock		(fb_awlock	),
+       .awvalid		(fb_awvalid),
+       .awready		(fb_awready),
 
-       .arid			(s_axi_arid	  ),
-       .araddr		(s_axi_araddr	),
-       .arlen			(s_axi_arlen	),
-       .arsize		(s_axi_arsize	),
-       .arburst 	(s_axi_arburst),
+       .arid			(fb_arid	  ),
+       .araddr		(fb_araddr	),
+       .arlen			(fb_arlen	),
+       .arsize		(fb_arsize	),
+       .arburst 	(fb_arburst),
 
-       .arprot    (s_axi_arprot ),
-       .arcache   (s_axi_arcache),
-       .arlock 		(s_axi_arlock	),
-       .arvalid		(s_axi_arvalid),
-       .arready		(s_axi_arready),
+       .arprot    (fb_arprot ),
+       .arcache   (fb_arcache),
+       .arlock 		(fb_arlock	),
+       .arvalid		(fb_arvalid),
+       .arready		(fb_arready),
 
-       .wdata			(s_axi_wdata	),
-       .wstrb			(s_axi_wstrb	),
-       .wlast			(s_axi_wlast	),
-       .wvalid		(s_axi_wvalid	),
-       .wready		(s_axi_wready	),
+       .wdata			(fb_wdata	),
+       .wstrb			(fb_wstrb	),
+       .wlast			(fb_wlast	),
+       .wvalid		(fb_wvalid	),
+       .wready		(fb_wready	),
 
 
-       .rid			  (s_axi_rid	),
-       .rdata			(s_axi_rdata	),
-       .rlast			(s_axi_rlast	),
-       .rvalid 		(s_axi_rvalid	),
-       .rready		(s_axi_rready	),
-       .rresp			(s_axi_rresp	),
+       .rid			  (fb_rid	),
+       .rdata			(fb_rdata	),
+       .rlast			(fb_rlast	),
+       .rvalid 		(fb_rvalid	),
+       .rready		(fb_rready	),
+       .rresp			(fb_rresp	),
 
-       .bid			  (s_axi_bid	),
-       .bvalid		(s_axi_bvalid	),
-       .bready	  (s_axi_bready	)
+       .bid			  (fb_bid	),
+       .bvalid		(fb_bvalid	),
+       .bready	  (fb_bready	)
 );
 
+
+
+
+axi2_pri_arb #(
+    .AW(AXI_ADDR_WIDTH), .DW(AXI_DATA_WIDTH), .IW(AXI_ID_WIDTH)
+) u_axi2_pri_arb (
+    .clk(core_clk), .rst_n(vid_rst_n),
+    .m0_awid(fb_awid), .m0_awaddr(fb_awaddr), .m0_awlen(fb_awlen), .m0_awsize(fb_awsize),
+    .m0_awburst(fb_awburst), .m0_awlock(fb_awlock), .m0_awcache(fb_awcache), .m0_awprot(fb_awprot),
+    .m0_awvalid(fb_awvalid), .m0_awready(fb_awready),
+    .m0_wdata(fb_wdata), .m0_wstrb(fb_wstrb), .m0_wlast(fb_wlast), .m0_wvalid(fb_wvalid), .m0_wready(fb_wready),
+    .m0_bid(fb_bid), .m0_bresp(fb_bresp), .m0_bvalid(fb_bvalid), .m0_bready(fb_bready),
+    .m0_arid(fb_arid), .m0_araddr(fb_araddr), .m0_arlen(fb_arlen), .m0_arsize(fb_arsize),
+    .m0_arburst(fb_arburst), .m0_arlock(fb_arlock), .m0_arcache(fb_arcache), .m0_arprot(fb_arprot),
+    .m0_arvalid(fb_arvalid), .m0_arready(fb_arready),
+    .m0_rid(fb_rid), .m0_rdata(fb_rdata), .m0_rresp(fb_rresp), .m0_rlast(fb_rlast),
+    .m0_rvalid(fb_rvalid), .m0_rready(fb_rready),
+    .m1_awid(st_awid), .m1_awaddr(st_awaddr), .m1_awlen(st_awlen), .m1_awsize(st_awsize),
+    .m1_awburst(st_awburst), .m1_awlock(st_awlock), .m1_awcache(st_awcache), .m1_awprot(st_awprot),
+    .m1_awvalid(st_awvalid), .m1_awready(st_awready),
+    .m1_wdata(st_wdata), .m1_wstrb(st_wstrb), .m1_wlast(st_wlast), .m1_wvalid(st_wvalid), .m1_wready(st_wready),
+    .m1_bid(st_bid), .m1_bresp(st_bresp), .m1_bvalid(st_bvalid), .m1_bready(st_bready),
+    .m1_arid(st_arid), .m1_araddr(st_araddr), .m1_arlen(st_arlen), .m1_arsize(st_arsize),
+    .m1_arburst(st_arburst), .m1_arlock(st_arlock), .m1_arcache(st_arcache), .m1_arprot(st_arprot),
+    .m1_arvalid(st_arvalid), .m1_arready(st_arready),
+    .m1_rid(st_rid), .m1_rdata(st_rdata), .m1_rresp(st_rresp), .m1_rlast(st_rlast),
+    .m1_rvalid(st_rvalid), .m1_rready(st_rready),
+    .s_awid(s_axi_awid), .s_awaddr(s_axi_awaddr), .s_awlen(s_axi_awlen), .s_awsize(s_axi_awsize),
+    .s_awburst(s_axi_awburst), .s_awlock(s_axi_awlock), .s_awcache(s_axi_awcache), .s_awprot(s_axi_awprot),
+    .s_awvalid(s_axi_awvalid), .s_awready(s_axi_awready),
+    .s_wdata(s_axi_wdata), .s_wstrb(s_axi_wstrb), .s_wlast(s_axi_wlast), .s_wvalid(s_axi_wvalid), .s_wready(s_axi_wready),
+    .s_bid(s_axi_bid), .s_bresp(s_axi_bresp), .s_bvalid(s_axi_bvalid), .s_bready(s_axi_bready),
+    .s_arid(s_axi_arid), .s_araddr(s_axi_araddr), .s_arlen(s_axi_arlen), .s_arsize(s_axi_arsize),
+    .s_arburst(s_axi_arburst), .s_arlock(s_axi_arlock), .s_arcache(s_axi_arcache), .s_arprot(s_axi_arprot),
+    .s_arvalid(s_axi_arvalid), .s_arready(s_axi_arready),
+    .s_rid(s_axi_rid), .s_rdata(s_axi_rdata), .s_rresp(s_axi_rresp), .s_rlast(s_axi_rlast),
+    .s_rvalid(s_axi_rvalid), .s_rready(s_axi_rready)
+);
 
 ddr3_top                 u_ddr3_top
 (
@@ -1210,16 +1345,38 @@ begin
   sat_vs    <= s1_vs;
 end
 
+
+// ---- ST video pipe: downscale capture -> st_accel sharpen -> PiP overlay ----
+wire [7:0] st_r, st_g, st_b;
+wire       st_de, st_hs, st_vs;
+st_vid_pipe #(
+    .TILE(16), .SCALE(16), .H_FULL(MAX_HRES), .V_FULL(MAX_VRES)
+) u_st_vid_pipe (
+    .vid_clk (hdmi_tx_slow_clk),
+    .vid_rst_n(vid_rst_n),
+    .sys_clk (core_clk),
+    .sys_rst_n(~w_soc_async_reset),
+    .in_de (sat_de), .in_hs(sat_hs), .in_vs(sat_vs),
+    .in_r  (sat_rdata), .in_g(sat_gdata), .in_b(sat_bdata),
+    .out_de(st_de), .out_hs(st_hs), .out_vs(st_vs),
+    .out_r (st_r), .out_g(st_g), .out_b(st_b),
+    .hw_x_we(w_hw_x_we), .hw_x_addr(w_hw_x_addr), .hw_x_data(w_hw_x_data),
+    .hw_load_w(w_hw_load_w), .hw_start(w_hw_start),
+    .hw_busy(w_hw_busy), .hw_done(w_hw_done),
+    .hw_y_addr(w_hw_y_addr), .hw_y_data(w_hw_y_data),
+    .frame_cnt(w_st_frame_cnt), .pipe_busy(w_st_pipe_busy)
+);
+
 dvi_encoder dvi_encoder_m0
 (
 	.pixelclk      		(hdmi_tx_slow_clk          ),// system clock
 	.rst_p         		(~vid_rst_n      ),// reset
-	.i_bdata      		(sat_bdata 	),//(hdmi_tx_rdata ),//(video_b            ),//(bdata_in	),   //
-	.i_gdata     		  (sat_gdata   ),//(hdmi_tx_gdata ),//(video_g            ),//(gdata_in	),   //   
-	.i_rdata       		(sat_rdata 	),//(hdmi_tx_bdata ),//(video_r            ),//(rdata_in	),   //   
-  .i_de            	(sat_de      ),//(hdmi_tx_de    ),//(video_de           ),//(rx_de		  ),   //
-	.i_hs         		(sat_hs    ),//(video_hs           ),//(rx_hsync	),   //   
-	.i_vs         		(sat_vs    ),//(video_vs           ),//(rx_vsync	),   //  
+	.i_bdata      		(st_b 	),
+	.i_gdata     		  (st_g   ),
+	.i_rdata       		(st_r 	),
+  .i_de            	(st_de      ),
+	.i_hs         		(st_hs    ),
+	.i_vs         		(st_vs    ),  
 	
   .video_format     (video_format), //// 00 = RGB, 01 = YCbCr 4:2:2, 10 = YCbCr 4:4:4
   .video_VIC        (0),

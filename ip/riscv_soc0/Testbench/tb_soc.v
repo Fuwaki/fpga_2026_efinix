@@ -19,8 +19,8 @@
 
 module tb_soc ();
 
-localparam PMHZ=50000000;
 localparam  MHZ=100000000;
+localparam PMHZ=50000000;
 
 /////////////////////////////////////////////////////////////////////////////
 wire		io_systemClk; 
@@ -236,11 +236,11 @@ end
 //////////////////////////////////////////////////////////////////////////////
 
 top_soc_wrapper dut_wrapper(
+.system_uart_0_io_txd(system_uart_0_io_txd),
+.system_uart_0_io_rxd(system_uart_0_io_rxd),
 .system_gpio_0_io(system_gpio_0_io),
 .system_i2c_0_io_sda(system_i2c_0_io_sda),
 .system_i2c_0_io_scl(system_i2c_0_io_scl),
-.system_uart_0_io_txd(system_uart_0_io_txd),
-.system_uart_0_io_rxd(system_uart_0_io_rxd),
 
 //clock and reset
 .io_asyncResetn(~rst),
@@ -267,11 +267,11 @@ endmodule
 //////////////////////////////////////////////////////////////////////////////
 
 module top_soc_wrapper(
-inout		system_i2c_0_io_sda,
-inout		system_i2c_0_io_scl,
+inout [3:0]	system_gpio_0_io,
 output		system_uart_0_io_txd,
 input		system_uart_0_io_rxd,
-inout [3:0]	system_gpio_0_io,
+inout		system_i2c_0_io_sda,
+inout		system_i2c_0_io_scl,
 
 output      systemClk_rstn,
 input       systemClk_locked,
@@ -292,13 +292,6 @@ wire  [3:0]	system_gpio_0_io_writeEnable;
 
 
 
-io_sim  #(.WIDTH(4),.REG(0)) gpio0_io_data ( 
-.clk(io_systemClk),
-.out_pad(system_gpio_0_io_write),
-.out_oe(system_gpio_0_io_writeEnable),
-.in_pad(system_gpio_0_io_read),
-.io(system_gpio_0_io));
-
 io_sim  #(.WIDTH(2),.REG(0)) i2c0_io_data ( 
 .clk(io_systemClk),
 .out_pad({system_i2c_0_io_sda_write,system_i2c_0_io_scl_write}),
@@ -306,17 +299,24 @@ io_sim  #(.WIDTH(2),.REG(0)) i2c0_io_data (
 .in_pad({system_i2c_0_io_sda_read,system_i2c_0_io_scl_read}),
 .io({system_i2c_0_io_sda,system_i2c_0_io_scl}));
 
+io_sim  #(.WIDTH(4),.REG(0)) gpio0_io_data ( 
+.clk(io_systemClk),
+.out_pad(system_gpio_0_io_write),
+.out_oe(system_gpio_0_io_writeEnable),
+.in_pad(system_gpio_0_io_read),
+.io(system_gpio_0_io));
+
 //////////////////////////////////////////////////////////////////////////////
 top_soc dut (
-.system_gpio_0_io_read(system_gpio_0_io_read),
-.system_gpio_0_io_write(system_gpio_0_io_write),
-.system_gpio_0_io_writeEnable(system_gpio_0_io_writeEnable),
 .system_i2c_0_io_sda_writeEnable(system_i2c_0_io_sda_writeEnable),
 .system_i2c_0_io_sda_write(system_i2c_0_io_sda_write),
 .system_i2c_0_io_sda_read(system_i2c_0_io_sda_read),
 .system_i2c_0_io_scl_writeEnable(system_i2c_0_io_scl_writeEnable),
 .system_i2c_0_io_scl_write(system_i2c_0_io_scl_write),
 .system_i2c_0_io_scl_read(system_i2c_0_io_scl_read),
+.system_gpio_0_io_read(system_gpio_0_io_read),
+.system_gpio_0_io_write(system_gpio_0_io_write),
+.system_gpio_0_io_writeEnable(system_gpio_0_io_writeEnable),
 .system_uart_0_io_txd(system_uart_0_io_txd),
 .system_uart_0_io_rxd(system_uart_0_io_rxd),
 
