@@ -1,5 +1,19 @@
 # fpga_src — Ti60F225 + SC431HAI 摄像头 → HDMI
 
+## 快速执行
+
+从工作区根目录运行 `tools/fpga-flow.sh`，或在本目录运行：
+
+```sh
+tools/build_all.sh --fpga-only          # 综合、布局布线并生成 bit/hex
+tools/build_all.sh --fpga-only --program # 同上，并经 JTAG 临时下载，不写 Flash
+python3 tools/board_smoke_test.py --port /dev/ttyUSB2 --json
+```
+
+模型资源预检：`python3 tools/st_480p10_preflight.py`。它只生成规划报告，
+不会把 NNgen 专用流式 RTL 复制到板级工程；当前 480p/10fps 共享 DDR tile
+引擎尚未完成。
+
 在 Titanium **Ti60F225** 上实现：**MIPI CSI-2 摄像头采集 + DDR3 帧缓冲 + 图像处理 + HDMI 输出**，
 并把**摄像头的 I2C 配置交给片上 RISC-V (Efinix Sapphire RV32 SoC)**。
 
@@ -15,7 +29,7 @@
 graph LR
   CAM[SC431HAI 4-lane CSI-2] -->|LVDS| CSI[csi_rx_controller]
   CSI -->|40bit RAW10 取高 8 位| FB[frame_buffer V3 + ddr3_top]
-  FB -->|960x1080 @74.25M| DB[debayer + 白平衡 rgb_gain_v1]
+  FB -->|1920x1080 HDMI pixel stream| DB[debayer + 白平衡 rgb_gain_v1]
   DB --> G[gamma 校正 SRGB_ENC.mem]
   G --> SAT[饱和度增强]
   SAT --> ENC[dvi_encoder]
@@ -231,6 +245,8 @@ make BSP=efinix/EfxSapphireSoc
   片上 RAM 已占 64 KB（79 个 BRAM），再加大 SoC 空间要留意 Memory Block。
 - UART0 已在 SoC 里使能但**未接引脚**（`rxd` 固定 1），所以固件里的
   `CAM_I2C_VERBOSE` 打开也看不到输出。
+  （注意别和 §12 的**片上状态 UART** 搞混：那个是 FPGA 侧驱动 `GPIOR_28`
+  → FT4232 通道 C，不是 SoC 的 UART0。）
 - SoC **没有 JTAG 调试核**（`DEBUG=0`）。要用 OpenOCD 单步调试固件，需要
   重新生成 SoC（`DEBUG=1'b1`）并在 `peri.xml` 里加 JTAG 引脚，同时把顶层的
   `pin keep` 段让位给调试核的 TDO。
@@ -316,3 +332,192 @@ Testbench/            交付的仿真文件
    Efinity 的组织方式，IDE 会把它当 IP 实例显示；重新 Generate 会自动生效。
 2. **`HexFile_Path` 用项目内相对路径**（`embedded_sw/riscv_soc0/camera_i2c.hex`），
    不是绝对路径 —— 保证 clone 到别人机器上重新生成 IP 时路径仍然有效。
+
+---
+
+## 12. 板载状态 UART（led[2] 其实是串口）
+
+### 12.1 硬件事实
+
+`peri.xml` 里叫 `led[2]` 的 **`GPIOR_28` 根本没接 LED**，它接的是板载 FT4232HL
+通道 C 的 **RXD**：
+
+```
+GPIOR_28 (球号 R14) -- R243 33R -- UART_RX_3V3 -- FT4232HL CDBUS1 (RXD)
+GPIOL_02 (球号 N3)  -- R242 33R -- UART_TX_3V3 -- FT4232HL CDBUS0 (TXD)  ← FPGA 未用
+```
+
+依据是 `Ti60F225A_V4_SCH.pdf` sheet7 与 `outflow/fpga_src.pinout.csv` 的
+**7/7 球号一一对应**：
+
+| 球号 | peri 里的名字 | 原理图网络 |
+|---|---|---|
+| N14 | `led[0]` | LED0 |
+| P14 | `led[1]` | LED1 |
+| P15 | `led[3]` | LED3 |
+| P13 | `i_arstn` | KEY1 |
+| R14 | **`led[2]`** | **`UART_RX_3V3`** |
+| R13 | （未用） | CLK_50M |
+
+所以板上只有 LED0/LED1/LED3 三个灯；原代码 `assign led[3:2] = 2'b00;`
+实际是把 FTDI 的 RXD 拉死在低电平。
+
+四个 FTDI 通道对应 `/dev/ttyUSB0..3`（接口 00..03）：**通道 C = `/dev/ttyUSB2`**。
+（通道 B 是 JTAG，`efx_run` 编程用的就是它，别去占用。）
+
+### 12.2 怎么用
+
+`rtl/fpga_src_top.v` 里把 `DBG_UART_EN` 改成 `1'b1` 重新编译即可
+（默认 `1'b0`，综合会整块裁掉，见 12.4 的代价）：
+
+```sh
+tools/build_all.sh --rtl-only && efx_run --prj fpga_src.xml -f program --pgm_opts mode=jtag --dir .
+python3 -c "
+import serial,time
+s=serial.Serial('/dev/ttyUSB2',115200,timeout=0.2); s.reset_input_buffer()
+t0=time.time(); b=b''
+while time.time()-t0<4: b+=s.read(4096)
+open('/tmp/st.bin','wb').write(b); print(len(b))"
+```
+
+115200 8N1，每 **0.5 s** 一帧 **28 字节**：
+
+```
+AA 55 | D[4] H[4] V[4] | SH[2] XH[2] | R | SEQ | ST_TILES[4] | ST_BUSY | RSV[3]
+```
+
+| 字段 | 含义 | 标称值（1080p60 正常） |
+|---|---|---|
+| `D` | `enc_de` 上升沿 / s | **64800** = 1080 行 × 60 fps |
+| `H` | `enc_hs` 上升沿 / s | **67500** = 1125 行 × 60 fps |
+| `V` | `enc_vs` 上升沿 / s | **60.0** |
+| `SH` | `hdmi_tx_slow_clk` 心跳 / 0.5s | **567** ⇒ 148.5 MHz |
+| `XH` | `vid_clk_dvi2` 心跳 / 0.5s | **283** ⇒ 74.25 MHz |
+| `R` | `{w_arstn, cal_done, vid_rst_n, SoC_GPIO0[0]}` | **0x0F** |
+| `SEQ` | 帧序号 | 连续递增 |
+| `ST_TILES` | 已完成的 16×16 推理 tile 数 | 持续递增 |
+| `ST_BUSY` | 推理管线忙 | 运行期间通常为 1 |
+
+心跳算法是各自时钟域内每 2¹⁶ 周期翻转一次，core_clk 侧 2-FF 同步后数沿：
+`148.5e6 / 2¹⁷ = 1132.9 Hz` → 每 0.5 s 上升沿 566.5 次（实测 567）。
+**心跳停了 = 那个时钟停了**；`D/H/V` 不对 = 时序产生器有问题。
+
+CDC 约定：所有要被 `core_clk` 采样的计数一律在 `core_clk` 域产生、跨域信号走
+2-FF 同步，否则时序报告里会多出 `-1.193 ns` 的假违例（踩过）。
+
+### 12.3 2026-10-11 上板实测
+
+```
+D=64800/s  H=67500/s  V=60.0/s  SH=567  XH=283  R=0x0F  SEQ 连续
+```
+
+即：全 PLL 锁定、DDR 校准完成、视频复位释放、**SoC 已完成摄像头 I2C 配置**、
+TMDS 像素钟 148.5 MHz、视频钟 74.25 MHz、编码器收到的正是标准 CEA-1080p60。
+**FPGA 侧输出链路全部正常。**
+
+### 12.4 为什么默认关掉
+
+`DBG_UART_EN=1` 时诊断逻辑会把 DDR 命令 FIFO 的 `raddr→CE` 挤出
+**10 条 -0.054 ~ -0.006 ns 负 slack**；关掉后全部回到正。整块逻辑一裁，
+时序只剩 1 条 `st_vid_pipe/cap_tog_vid→cap_tog_sync` 的 CDC 假路径（原设计就有）。
+所以**交付基线是 0**，现场排障时再临时打开。
+
+---
+
+## 13. HDMI 采集卡排障记录（2026-10-11）
+
+现象：接显示器正常，接 **MS2109 采集卡（534d:2109）** 只有采集卡自身的默认彩条。
+
+### 13.1 已证实正常（FPGA 侧，§12 上板实测）
+
+| 项 | 证据 |
+|---|---|
+| 时序 | `D=64800/s`、`H=67500/s`、`V=60.0/s` ⇒ 1080 行 ×60、1125 行 ×60，标准 CEA-1080p60 |
+| 时钟 | `SH=567` ⇒ 148.5 MHz；`XH=283` ⇒ 74.25 MHz；PLL `CLK_27M×2×55=2970 MHz`，`/20 /40 /4` = 148.5/74.25/742.5，与 SDC 6.734/13.468/1.347 ns 一致 |
+| 复位/外设 | `R=0x0F`：全 PLL 锁定、DDR 校准完成、视频复位释放、SoC 完成摄像头 I2C 配置 |
+| TMDS 发送 | `TX_OE=1'b1` 常使能、`PCR_LVDSOE_SEL=CORE`、`PCR_LVDSTX_EN=ENABLE`、`serial_width=10` + `is_half_rate` |
+| 外围配置 | `peri.xml` 与参考工程一致（`pre_emphasis=medium low`，`vod` 按参考取 large/typical） |
+
+### 13.2 已排除
+
+| 试过的变量 | 结果 |
+|---|---|
+| 电气驱动强度（实验A/C）：四 lane `vod=large` + `pre_emphasis=high`，与厂商参数各测一轮 | 采集卡输出 **md5 不变** |
+| TMDS 速率（实验B）：480p / 720p / 1080p | 采集卡输出 **md5 不变** |
+| AVI `video_VIC`：0 / 4 / 16 | 采集卡输出 **md5 不变** |
+| 本地测试图案 `TP_EN=1`（256 px 分界） | 采集卡仍是 240 px 彩条，**逐字节相同** |
+
+⇒ **MS2109 没锁到任何 TMDS**，不是"锁到了但模式不对"。FPGA 在正常吐标准 1080p60。
+
+### 13.3 待现场确认（FPGA 侧无法判断）
+
+板底丝印有两个 HDMI 口：**`TX`(U17)** 和 **`RX`(U15)**。TX 口的 HPD / DDC / +5V
+都**没有进 FPGA**，插在 RX 口的设备也驱动不出任何 FPGA 可读的信号，所以只能上手测：
+
+1. 采集卡插的是 **TX 还是 RX** 口（"显示器有、采集卡没有"与"插错到 RX"完全吻合）
+2. 把**显示器那根线原样**换到采集卡上（同口同线，排除线/头）
+3. 万用表量 **TX 口 pin18 有没有 5V**（`VCC_5V` → 磁珠 L8 → `VCC_5V_TX`，磁珠开路就会是"显示器认、采集卡不认"）
+4. 用 PC 的 HDMI 输出喂一次采集卡，排除卡本身和它的线
+
+若确认是插错口，可把 TMDS 镜像到 RX 口（用 RX 口的 `HDMI_RX_5V_N0` 检测做门控，
+避免与外部信源对打）—— 未确认前不要驱动那 4 对差分线。
+
+---
+
+## 14. 主线开发与板上自动验收
+
+HDMI 采集卡不作为 RTL 回归的必要条件。主线开发使用 JTAG 临时下载、板载
+UART 遥测和仿真三层验证；JTAG 下载不会修改 SPI Flash。
+
+```sh
+# RTL 修改后的最快流程：综合/P&R/bitstream，然后临时下载到板上
+tools/build_all.sh --fpga-only --program
+
+# 读取板载 FT4232 通道 C 的状态帧；返回非零表示板上状态不合格
+python3 tools/board_smoke_test.py --port /dev/ttyUSB2 --json
+```
+
+`board_smoke_test.py` 检查 PLL、DDR 校准、视频复位、摄像头 I2C 完成标志，以及
+DE/HS/VS、每行 DE 宽度、两个视频时钟心跳和 ST tile 推进。输出是一行 JSON，适合 CI 或 agent 直接解析：
+
+```json
+{"ok":true,"frames":5,"latest":{"de":64800,"hs":67500,"vs":60,"slow_hb":567,"video_hb":283,"status":15,"seq":4,"st_tiles":1139,"st_busy":true}}
+```
+
+当前运行版本打开 UART 遥测以验证 ST tile 完成计数；它用于 JTAG 调试版，不能
+作为最终时序基线。`DBG_UART_EN=1` 曾让 DDR FIFO 路径出现约 0.05ns 负 slack；
+完成遥测后恢复到 `1'b0` 并重新综合，再作为 release bitstream。不要把 debug
+bitstream 烧入 Flash。
+
+最近一次 JTAG 下载后的实测为 `DE_WIDTH=1293` 个 core_clk 周期，即约 1920 个
+HDMI 像素时钟；`ΔST=4`/0.5s，说明推理管线持续完成 tile。此前顶层误用
+`MAX_HRES/2`，只按 960 个有效周期采样，已经改为 `MAX_HRES`。输出缓存首样本
+的额外读延迟也已在 `st_vid_pipe` 中补齐，离线仿真验证了每个 tile 的输出序列。
+
+Efinity 也支持通过 JTAG 插入片上 Logic Analyzer/Virtual I/O。当前 release 为了
+资源和时序将 SoC `DEBUG=1'b0` 且未插入 debug core；若遇到偶发的 MIPI/DDR 问题，
+应建立独立的 `ila` debug 配置，在 `core_clk`、`vid_clk_dvi2`、
+`hdmi_tx_slow_clk` 三个时钟域分别抓取错误计数、FIFO 状态和帧边界。这样不会把
+调试逻辑带回正常交付配置。
+
+## 15. ST 加速器方向（480p / 10 fps）
+
+当前 `ink_dw` 基线、Ti60 资源约束和建议的共享 MAC + tile 调度架构见
+[`docs/st_accel_architecture.md`](docs/st_accel_architecture.md)。nngen `st-stream` 的
+真实模型逐层折叠配置位于 `../nngen/examples/st_stream/configs/ink_dw_480p10.json`；
+它用于周期/DSP探索，当前全网静态行缓存仍超出板上 RAM，尚不能直接下载。
+
+## 16. 离线质检门
+
+RTL 改动先运行统一质检门；它不需要开发板，且不会下载或修改 Flash：
+
+```sh
+tools/quality_gate.sh all       # 生成文件、几何、RTL、lint、协议仿真、Yosys
+tools/quality_gate.sh synth     # 以上检查 + Efinity 综合/P&R/bitstream
+QUALITY_GATE_EFINITY=1 tools/quality_gate.sh all
+```
+
+单项检查也可独立执行：`manifest`、`geometry`、`rtl`、`sim`、`formal`。仿真使用
+缩小参数驱动四个 tile，验证输入三通道写入顺序、加速器启动/完成握手、输出复制
+计数和拼接缓存地址边界。日志保存在 `/tmp/fpga-quality-gate`。只有质检门通过后
+才建议执行 `tools/build_all.sh --fpga-only --program`；program 仍是显式操作。

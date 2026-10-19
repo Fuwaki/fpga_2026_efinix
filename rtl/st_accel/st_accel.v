@@ -12,6 +12,11 @@ module st_accel #(
     input wire hw_x_we, input wire [9:0] hw_x_addr, input wire [7:0] hw_x_data,
     input wire hw_load_w, hw_start, output wire hw_busy, hw_done,
     input wire [11:0] hw_y_addr, output reg [7:0] hw_y_data,
+    // Read-only board telemetry, exposed through the CPU APB window.
+    input wire [31:0] dbg_cap_samples, dbg_cap_tiles, dbg_commit_count,
+    input wire [15:0] dbg_last_x, dbg_last_y,
+    input wire [7:0] dbg_last_cap_addr, dbg_last_commit_addr,
+    output reg [15:0] cpu_dbg_heartbeat,
     output wire [IW-1:0] m_awid, output wire [AW-1:0] m_awaddr, output wire [7:0] m_awlen,
     output wire [2:0] m_awsize, output wire [1:0] m_awburst, output wire m_awlock,
     output wire [3:0] m_awcache, output wire [2:0] m_awprot, output wire m_awvalid, input wire m_awready,
@@ -34,7 +39,8 @@ module st_accel #(
 
     // Weight ROM — sync read
     (* ram_style="block" *) reg [7:0] wrom [0:WROM_DEPTH-1];
-    initial $readmemh("st_w8_sel_weights.hex", wrom);
+    // Generated from the selected NNgen manifest profile by build_all.sh.
+    initial $readmemh("st_w8_sel_weights_generated.hex", wrom);
     reg [16:0] w_raddr; reg [7:0] w_rdata;
     always @(posedge clk) w_rdata <= wrom[w_raddr];
 
@@ -127,7 +133,7 @@ module st_accel #(
         irq_en<=0;busy<=0;done<=0;soft_rst<=0;start_pulse<=0;hw_start_pulse<=0;in_ch<=0;
         cycles<=0;state<=S_IDLE;layer_i<=0;pe_ce<=0;pe_rst<=1;axi_req<=0;axi_write<=0;
         axi_addr<=0;axi_beats<=1;axi_wdata_r<=0;in_we<=0;out_we<=0;b_we<=0;b_rd_bank<=0;
-        PRDATA<=0;hw_y_data<=0;src_h<=16;src_w<=16;tick<=0;
+        PRDATA<=0;hw_y_data<=0;src_h<=16;src_w<=16;tick<=0;cpu_dbg_heartbeat<=0;
         for(ii=0;ii<16;ii=ii+1) begin pe_a[ii]<=0;pe_b[ii]<=0; end
       end else begin
         start_pulse<=0;soft_rst<=0;pe_ce<=0;pe_rst<=0;in_we<=0;out_we<=0;b_we<=0;axi_req<=0;hw_start_pulse<=0;
@@ -140,6 +146,7 @@ module st_accel #(
         if(apb_wr) case(reg_addr)
           8'h04: begin if(PWDATA[0]) start_pulse<=1; irq_en<=PWDATA[1]; if(PWDATA[8]) soft_rst<=1; end
           8'h0C: if(PWDATA[1]) done<=0;
+          8'h54: cpu_dbg_heartbeat <= PWDATA[15:0];
           default:;
         endcase
         if(apb_rd) case(reg_addr)
@@ -147,6 +154,11 @@ module st_accel #(
           8'h08: PRDATA<={30'd0,done,busy};
           8'h10: PRDATA<=cycles;
           8'h34: PRDATA<={8'd0,state,layer_i,oy};
+          8'h40: PRDATA<=dbg_cap_samples;
+          8'h44: PRDATA<=dbg_cap_tiles;
+          8'h48: PRDATA<=dbg_commit_count;
+          8'h4C: PRDATA<={dbg_last_y,dbg_last_x};
+          8'h50: PRDATA<={16'd0,dbg_last_commit_addr,dbg_last_cap_addr};
           default: PRDATA<=0;
         endcase
 

@@ -529,6 +529,7 @@ assign w_soc_async_reset = ~soc_rst_sync[4];
 
 wire w_soc_i2c_scl_write;
 wire w_soc_i2c_sda_write;
+wire w_soc_uart_tx;
 wire [3:0] w_soc_gpio_write;
 wire [3:0] w_soc_gpio_write_en;
 wire [31:0] w_soc_apb_paddr, w_soc_apb_pwdata, w_soc_apb_prdata;
@@ -544,6 +545,10 @@ wire        w_hw_load_w, w_hw_start, w_hw_busy, w_hw_done;
 wire [11:0] w_hw_y_addr; wire [7:0] w_hw_y_data;
 wire [31:0] w_st_frame_cnt;
 wire        w_st_pipe_busy;
+wire [31:0] st_dbg_cap_samples, st_dbg_cap_tiles, st_dbg_commit_count;
+wire [15:0] st_dbg_last_x, st_dbg_last_y;
+wire [7:0]  st_dbg_last_cap_addr, st_dbg_last_commit_addr;
+wire [15:0] st_cpu_dbg_heartbeat;
 
 st_accel #(
 	.N_PE(16)
@@ -568,6 +573,10 @@ st_accel #(
 	.hw_done   (w_hw_done),
 	.hw_y_addr (w_hw_y_addr),
 	.hw_y_data (w_hw_y_data),
+	.dbg_cap_samples(st_dbg_cap_samples), .dbg_cap_tiles(st_dbg_cap_tiles),
+	.dbg_commit_count(st_dbg_commit_count), .dbg_last_x(st_dbg_last_x),
+	.dbg_last_y(st_dbg_last_y), .dbg_last_cap_addr(st_dbg_last_cap_addr),
+	.dbg_last_commit_addr(st_dbg_last_commit_addr), .cpu_dbg_heartbeat(st_cpu_dbg_heartbeat),
 	.m_awid(st_awid), .m_awaddr(st_awaddr), .m_awlen(st_awlen), .m_awsize(st_awsize),
 	.m_awburst(st_awburst), .m_awlock(st_awlock), .m_awcache(st_awcache), .m_awprot(st_awprot),
 	.m_awvalid(st_awvalid), .m_awready(st_awready),
@@ -608,8 +617,9 @@ riscv_soc0 u_riscv_soc0
 	.io_apbSlave_0_PREADY         (w_soc_apb_pready    ),
 	.io_apbSlave_0_PSLVERROR      (w_soc_apb_pslverror ),
 
-	// UART 本工程未引出（板上没有空闲串口脚），rxd 固定为高（空闲）
-	.system_uart_0_io_txd         (                    ),
+	// UART0 is routed to the FT4232 channel-C RX pin in the diagnostic build.
+	// The normal build multiplexes this pin with the hardware telemetry sender.
+	.system_uart_0_io_txd         (w_soc_uart_tx       ),
 	.system_uart_0_io_rxd         (1'b1                ),
 
 	// I2C0 -> 摄像头排线，开漏：write=0 时驱动低，write=1 时释放线上拉为高
@@ -626,7 +636,9 @@ riscv_soc0 u_riscv_soc0
 
 // SoC GPIO0[0] -> led[1]：固件写完摄像头寄存器后常亮。led[0] 为 DDR 校准心跳。
 assign led[1] = w_soc_gpio_write[0];
-assign led[3:2] = 2'b00;
+// led[2]（GPIOR_28）在原理图上是 UART_RX_3V3 -> FT4232 通道 C RXD，不是 LED。
+// 由文末的调试 UART 驱动，把 HDMI 内部状态发回 PC；led[3] 仍为 0。
+assign led[3]   = 1'b0;
 
 assign io_cam_scl_OUT = 1'b0;
 assign io_cam_scl_OE  = ~w_soc_i2c_scl_write;
@@ -1347,10 +1359,18 @@ end
 
 
 // ---- ST video pipe: downscale capture -> st_accel sharpen -> PiP overlay ----
+// 0 = live network output; 1 = coordinate diagnostic pattern.  The diagnostic
+// mode is deliberately compile-time so it cannot be changed by a corrupt
+// camera/SoC register and gives a clean A/B bitstream for blind debugging.
+localparam ST_DIAG_MODE = 1'b0;
 wire [7:0] st_r, st_g, st_b;
 wire       st_de, st_hs, st_vs;
 st_vid_pipe #(
-    .TILE(16), .SCALE(16), .H_FULL(MAX_HRES), .V_FULL(MAX_VRES)
+    // sat_* is the final HDMI pixel stream: DE is high for the full 1920
+    // active pixel clocks.  rgb_datax2 is unpacked before this point, so
+    // using MAX_HRES/2 here would sample only the left half of every frame.
+    .TILE(16), .SCALE(8), .GRID(4), .H_FULL(MAX_HRES), .V_FULL(MAX_VRES),
+    .DEBUG_PATTERN(ST_DIAG_MODE)
 ) u_st_vid_pipe (
     .vid_clk (hdmi_tx_slow_clk),
     .vid_rst_n(vid_rst_n),
@@ -1364,29 +1384,87 @@ st_vid_pipe #(
     .hw_load_w(w_hw_load_w), .hw_start(w_hw_start),
     .hw_busy(w_hw_busy), .hw_done(w_hw_done),
     .hw_y_addr(w_hw_y_addr), .hw_y_data(w_hw_y_data),
-    .frame_cnt(w_st_frame_cnt), .pipe_busy(w_st_pipe_busy)
+    .frame_cnt(w_st_frame_cnt), .pipe_busy(w_st_pipe_busy),
+    .dbg_cap_samples(st_dbg_cap_samples), .dbg_cap_tiles(st_dbg_cap_tiles),
+    .dbg_last_x(st_dbg_last_x), .dbg_last_y(st_dbg_last_y),
+    .dbg_last_cap_addr(st_dbg_last_cap_addr), .dbg_commit_count(st_dbg_commit_count),
+    .dbg_last_commit_addr(st_dbg_last_commit_addr)
 );
+
+//==============================================================================
+// HDMI 自测图样 (TP_EN)
+//
+// 目的: 把"摄像头/DDR/debayer/后处理这条视频通路"和"TMDS 物理发送"分开。
+//   TP_EN=1 时, dvi_encoder 的输入完全由本地计数器产生标准 1080p60 时序 +
+//   8 条竖彩条, 与摄像头、DDR、frame_buffer 全部无关。
+//   接采集卡:
+//     - 采集卡锁定并出图   -> TMDS 发送没问题, 问题在视频通路(时序/数据)
+//     - 采集卡仍显示自身彩条 -> 问题在 TMDS 发送侧(电气/编码/时钟)
+//==============================================================================
+localparam TP_EN = 1'b0;
+
+reg [11:0] tp_hcnt = 12'd0;
+reg [11:0] tp_vcnt = 12'd0;
+
+// CEA-861 1080p60 (format 16): H 1920/88/44/148 (总 2200), V 1080/4/5/36 (总 1125)
+wire tp_hs = TP_EN & (tp_hcnt >= 12'd2008) & (tp_hcnt < 12'd2052);
+wire tp_vs = TP_EN & (tp_vcnt >= 12'd1084) & (tp_vcnt < 12'd1089);
+wire tp_de = TP_EN & (tp_hcnt < 12'd1920) & (tp_vcnt < 12'd1080);
+
+always @(posedge hdmi_tx_slow_clk or negedge vid_rst_n) begin
+  if (!vid_rst_n) begin
+    tp_hcnt <= 12'd0;
+    tp_vcnt <= 12'd0;
+  end else if (tp_hcnt == 12'd2199) begin
+    tp_hcnt <= 12'd0;
+    tp_vcnt <= (tp_vcnt == 12'd1124) ? 12'd0 : tp_vcnt + 12'd1;
+  end else begin
+    tp_hcnt <= tp_hcnt + 12'd1;
+  end
+end
+
+// 8 条竖彩条: 白 黄 青 绿 品红 红 蓝 黑, 每条 240 像素
+reg [7:0] tp_r, tp_g, tp_b;
+always @(*) begin
+  case (tp_hcnt[10:8])
+    3'd0: begin tp_r = 8'hFF; tp_g = 8'hFF; tp_b = 8'hFF; end
+    3'd1: begin tp_r = 8'hFF; tp_g = 8'hFF; tp_b = 8'h00; end
+    3'd2: begin tp_r = 8'h00; tp_g = 8'hFF; tp_b = 8'hFF; end
+    3'd3: begin tp_r = 8'h00; tp_g = 8'hFF; tp_b = 8'h00; end
+    3'd4: begin tp_r = 8'hFF; tp_g = 8'h00; tp_b = 8'hFF; end
+    3'd5: begin tp_r = 8'hFF; tp_g = 8'h00; tp_b = 8'h00; end
+    3'd6: begin tp_r = 8'h00; tp_g = 8'h00; tp_b = 8'hFF; end
+    default: begin tp_r = 8'h00; tp_g = 8'h00; tp_b = 8'h00; end
+  endcase
+end
+
+wire [7:0] enc_r = TP_EN ? tp_r   : st_r;
+wire [7:0] enc_g = TP_EN ? tp_g   : st_g;
+wire [7:0] enc_b = TP_EN ? tp_b   : st_b;
+wire       enc_de = TP_EN ? tp_de  : st_de;
+wire       enc_hs = TP_EN ? tp_hs  : st_hs;
+wire       enc_vs = TP_EN ? tp_vs  : st_vs;
 
 dvi_encoder dvi_encoder_m0
 (
 	.pixelclk      		(hdmi_tx_slow_clk          ),// system clock
 	.rst_p         		(~vid_rst_n      ),// reset
-	.i_bdata      		(st_b 	),
-	.i_gdata     		  (st_g   ),
-	.i_rdata       		(st_r 	),
-  .i_de            	(st_de      ),
-	.i_hs         		(st_hs    ),
-	.i_vs         		(st_vs    ),  
+	.i_bdata      		(enc_b 	),
+	.i_gdata     		  (enc_g   ),
+	.i_rdata       		(enc_r 	),
+  .i_de            	(enc_de      ),
+	.i_hs         		(enc_hs    ),
+	.i_vs         		(enc_vs    ),
 	
-  .video_format     (video_format), //// 00 = RGB, 01 = YCbCr 4:2:2, 10 = YCbCr 4:4:4
-  .video_VIC        (0),
-	.audio_L			    (audio_L),
-  .audio_R			    (audio_R),
-  .audio_valid		  (audio_valid),
+  .video_format     (2'b00), //// 00 = RGB, 01 = YCbCr 4:2:2, 10 = YCbCr 4:4:4
+  .video_VIC        (16),
+	.audio_L			    (16'd0),
+  .audio_R			    (16'd0),
+  .audio_valid		  (1'b0),
   .audio_N                (6144),     //(20'h01880),//     
   .audio_CTS              (148500),      //(20'h28488),//      
-  .audio_sample_frequency (audio_samp_freq),    //(3'b000),// 
-  .audio_word_length      ({audio_samp_word_len,audio_max_word_length}),//(4'b1011),//
+  .audio_sample_frequency (3'b000),    //(3'b000),//
+  .audio_word_length      (4'b0000),//(4'b1011),//
 
 	.tmds_data0    		(tmds_data0),
   .tmds_data1    		(tmds_data1),
@@ -1421,5 +1499,252 @@ wire [12:0] w_unused_peri_in = {
 	pll_inst4_LOCKED
 };
 assign jtag_inst1_TDO = ^w_unused_peri_in;
+
+//=============================================================================
+// 板载 FT4232HL UART 状态回传（HDMI 调试）
+//
+// 原理图 Ti60F225A_V4_SCH.pdf sheet7 与本工程 outflow/fpga_src.pinout.csv
+// 7/7 球号对齐：
+//   N14=GPIOR_21=LED0   P14=GPIOR_22=LED1   P15=GPIOR_25=LED3
+//   P13=GPIOR_27=KEY1   R14=GPIOR_28=UART_RX_3V3   R13=GPIOR_29=CLK_50M
+// 即 peri 里叫 "led[2]" 的 GPIOR_28 实际经 R243 接到 FT4232 通道 C 的 RXD，
+// 不是 LED。原代码 `assign led[3:2] = 2'b00;` 等于把 FTDI RXD 拉死在低电平。
+//
+// 现用它把 HDMI 关键内部状态发回 PC：115200 8N1，每 0.5s 一帧 48 字节
+//   AA 55 | D[4] H[4] V[4] | SH[2] XH[2] | R | SEQ | ST_TILES[4] | ST_BUSY | DE_WIDTH[2] | RSV
+//   D/H/V  enc_de/enc_hs/enc_vs 上升沿计数（core_clk 域，已 2-FF 同步）
+//          1080p60 标称值：D=64800/s  H=67500/s  V=60/s
+//   SH     hdmi_tx_slow_clk(148.5MHz) 心跳计数，标称约 566 次/0.5s
+//   XH     vid_clk_dvi2(74.25MHz)    心跳计数，标称约 283 次/0.5s
+//          心跳不再增长 => 该时钟停了
+//   R      {w_arstn(PLL全锁), cal_done(DDR校准), vid_rst_n(视频复位释放),
+//           SoC_GPIO0[0](摄像头I2C配置完成)}   标称 0x0F
+//   SEQ    帧序号，用于发现丢帧
+//=============================================================================
+localparam integer UART_DIV = 868;              // 100MHz / 115200 = 868.06
+localparam integer MSG_LEN  = 48;
+localparam [25:0]  RELOAD   = 26'd50_000_000;   // 0.5s @ core_clk=100MHz
+// 0 = 关闭诊断（综合会整块裁掉，时序回到基线）；1 = 打开，led[2] 输出状态帧。
+// 注意实测：打开时 DDR 命令 FIFO 的 raddr->CE 会掉出 ~0.05ns 负 slack，
+// 所以交付基线保持 0，需要现场排查 HDMI 时再置 1。
+localparam DBG_UART_EN      = 1'b1;
+// Temporary board bring-up switch: expose Sapphire RV32 UART0 on the same
+// FT4232 RX pin so firmware can report camera-I2C progress.  Set to 0 for the
+// normal binary telemetry protocol below.
+localparam SOC_UART_DEBUG   = 1'b0;
+
+// CDC 约定：所有要被 core_clk 采样的计数一律在 core_clk 域产生，跨域信号走
+// 2-FF 同步；否则会在时序报告里留下 -1.193ns 的假违例（已实测踩过）。
+// enc_* 是视频域电平信号，高/低电平分别维持 296ns~12.9µs，远大于 10ns 采样周期，
+// 2-FF 同步不会丢沿。
+reg [2:0] sync_de = 3'd0, sync_hs = 3'd0, sync_vs = 3'd0;
+always @(posedge core_clk) begin
+	sync_de <= {sync_de[1:0], enc_de};
+	sync_hs <= {sync_hs[1:0], enc_hs};
+	sync_vs <= {sync_vs[1:0], enc_vs};
+end
+wire de_q = sync_de[2], hs_q = sync_hs[2], vs_q = sync_vs[2];
+
+// DE/HS/VS 上升沿计数（core_clk 域）
+reg [31:0] dbg_d_cnt = 32'd0, dbg_h_cnt = 32'd0, dbg_v_cnt = 32'd0;
+reg        dbg_d_r = 1'b0,    dbg_h_r = 1'b0,    dbg_v_r = 1'b0;
+reg [15:0] dbg_de_width = 16'd0, dbg_de_last_width = 16'd0;
+always @(posedge core_clk) begin
+	dbg_d_r <= de_q;
+	dbg_h_r <= hs_q;
+	dbg_v_r <= vs_q;
+	if ( de_q & ~dbg_d_r) dbg_d_cnt <= dbg_d_cnt + 32'd1;
+	if ( hs_q & ~dbg_h_r) dbg_h_cnt <= dbg_h_cnt + 32'd1;
+	if ( vs_q & ~dbg_v_r) dbg_v_cnt <= dbg_v_cnt + 32'd1;
+	if (de_q) dbg_de_width <= dbg_de_width + 16'd1;
+	else if (dbg_d_r) begin dbg_de_last_width <= dbg_de_width; dbg_de_width <= 16'd0; end
+end
+
+// 时钟心跳：各自域内每 2^16 周期翻转一次，core_clk 侧同步后数上升沿。
+// 预期每 0.5s：hdmi_tx_slow_clk(148.5MHz) 约 566 次，vid_clk_dvi2(74.25MHz) 约 283 次。
+// 时钟一停该计数就不再增长 —— 这是判断 TMDS 像素钟/视频钟是否在跑的直接依据。
+reg [15:0] dbg_s_div = 16'd0, dbg_x_div = 16'd0;
+reg        dbg_s_hb = 1'b0,   dbg_x_hb = 1'b0;
+always @(posedge hdmi_tx_slow_clk) begin
+	if (dbg_s_div == 16'hFFFF) begin dbg_s_div <= 16'd0; dbg_s_hb <= ~dbg_s_hb; end
+	else dbg_s_div <= dbg_s_div + 16'd1;
+end
+always @(posedge vid_clk_dvi2) begin
+	if (dbg_x_div == 16'hFFFF) begin dbg_x_div <= 16'd0; dbg_x_hb <= ~dbg_x_hb; end
+	else dbg_x_div <= dbg_x_div + 16'd1;
+end
+
+reg [2:0] sync_shb = 3'd0, sync_xhb = 3'd0;
+reg       dbg_shb_r = 1'b0, dbg_xhb_r = 1'b0;
+reg [15:0] dbg_s_hb_cnt = 16'd0, dbg_x_hb_cnt = 16'd0;
+always @(posedge core_clk) begin
+	sync_shb <= {sync_shb[1:0], dbg_s_hb};
+	sync_xhb <= {sync_xhb[1:0], dbg_x_hb};
+	dbg_shb_r <= sync_shb[2];
+	dbg_xhb_r <= sync_xhb[2];
+	if ( sync_shb[2] & ~dbg_shb_r) dbg_s_hb_cnt <= dbg_s_hb_cnt + 16'd1;
+	if ( sync_xhb[2] & ~dbg_xhb_r) dbg_x_hb_cnt <= dbg_x_hb_cnt + 16'd1;
+end
+
+// ST accelerator telemetry crosses from core_clk (accelerator control) into
+// the UART/core domain.  The frame counter increments once per completed
+// 16x16 inference tile; it is the direct proof that the network is making
+// forward progress even when no display is attached.
+reg [31:0] st_frame_sync1 = 32'd0, st_frame_sync2 = 32'd0;
+reg st_busy_sync1 = 1'b0, st_busy_sync2 = 1'b0;
+reg [31:0] cap_samples_sync1 = 32'd0, cap_samples_sync2 = 32'd0;
+reg [31:0] cap_tiles_sync1 = 32'd0, cap_tiles_sync2 = 32'd0;
+reg [31:0] commit_sync1 = 32'd0, commit_sync2 = 32'd0;
+reg [15:0] last_x_sync1 = 16'd0, last_x_sync2 = 16'd0;
+reg [15:0] last_y_sync1 = 16'd0, last_y_sync2 = 16'd0;
+reg [7:0] last_cap_addr_sync1 = 8'd0, last_cap_addr_sync2 = 8'd0;
+reg [7:0] last_commit_addr_sync1 = 8'd0, last_commit_addr_sync2 = 8'd0;
+reg [15:0] cpu_hb_sync1 = 16'd0, cpu_hb_sync2 = 16'd0;
+always @(posedge core_clk) begin
+	st_frame_sync1 <= w_st_frame_cnt;
+	st_frame_sync2 <= st_frame_sync1;
+	st_busy_sync1 <= w_st_pipe_busy;
+	st_busy_sync2 <= st_busy_sync1;
+	cap_samples_sync1 <= st_dbg_cap_samples;
+	cap_samples_sync2 <= cap_samples_sync1;
+	cap_tiles_sync1 <= st_dbg_cap_tiles;
+	cap_tiles_sync2 <= cap_tiles_sync1;
+	commit_sync1 <= st_dbg_commit_count;
+	commit_sync2 <= commit_sync1;
+	last_x_sync1 <= st_dbg_last_x;
+	last_x_sync2 <= last_x_sync1;
+	last_y_sync1 <= st_dbg_last_y;
+	last_y_sync2 <= last_y_sync1;
+	last_cap_addr_sync1 <= st_dbg_last_cap_addr;
+	last_cap_addr_sync2 <= last_cap_addr_sync1;
+	last_commit_addr_sync1 <= st_dbg_last_commit_addr;
+	last_commit_addr_sync2 <= last_commit_addr_sync1;
+	cpu_hb_sync1 <= st_cpu_dbg_heartbeat;
+	cpu_hb_sync2 <= cpu_hb_sync1;
+end
+
+// --- 报文（组合逻辑，取自最近一次锁存值） -----------------------------------
+//   AA 55 | D[4] H[4] V[4] | SH[2] XH[2] | R | SEQ
+reg [31:0] c_d, c_h, c_v;
+reg [15:0] c_s, c_x;
+reg [3:0]  c_r;
+reg [7:0]  c_q;
+reg [31:0] c_st_frame;
+reg        c_st_busy;
+reg [15:0] c_de_width;
+reg [31:0] c_cap_samples, c_cap_tiles, c_commit_count;
+reg [15:0] c_last_x, c_last_y;
+reg [7:0] c_last_cap_addr, c_last_commit_addr;
+reg [15:0] c_cpu_hb;
+reg [7:0]  dbg_seq = 8'd0;
+reg [7:0]  dbg_msg [0:MSG_LEN-1];
+integer dbg_i;
+reg [7:0] dbg_crc;
+
+always @(*) begin
+	dbg_msg[0]  = 8'hAA;
+	dbg_msg[1]  = 8'h55;
+	dbg_msg[2]  = c_d[31:24]; dbg_msg[3] = c_d[23:16];
+	dbg_msg[4]  = c_d[15:8];  dbg_msg[5] = c_d[7:0];
+	dbg_msg[6]  = c_h[31:24]; dbg_msg[7] = c_h[23:16];
+	dbg_msg[8]  = c_h[15:8];  dbg_msg[9] = c_h[7:0];
+	dbg_msg[10] = c_v[31:24]; dbg_msg[11] = c_v[23:16];
+	dbg_msg[12] = c_v[15:8];  dbg_msg[13] = c_v[7:0];
+	dbg_msg[14] = c_s[15:8];  dbg_msg[15] = c_s[7:0];
+	dbg_msg[16] = c_x[15:8];  dbg_msg[17] = c_x[7:0];
+	dbg_msg[18] = {4'h0, c_r};
+	dbg_msg[19] = c_q;
+	dbg_msg[20] = c_st_frame[31:24]; dbg_msg[21] = c_st_frame[23:16];
+	dbg_msg[22] = c_st_frame[15:8];  dbg_msg[23] = c_st_frame[7:0];
+	dbg_msg[24] = {7'd0, c_st_busy};
+	dbg_msg[25] = c_de_width[15:8]; dbg_msg[26] = c_de_width[7:0];
+	dbg_msg[27] = 8'd0;
+	dbg_msg[28] = c_cap_samples[31:24]; dbg_msg[29] = c_cap_samples[23:16];
+	dbg_msg[30] = c_cap_samples[15:8];  dbg_msg[31] = c_cap_samples[7:0];
+	dbg_msg[32] = c_cap_tiles[31:24]; dbg_msg[33] = c_cap_tiles[23:16];
+	dbg_msg[34] = c_cap_tiles[15:8];  dbg_msg[35] = c_cap_tiles[7:0];
+	dbg_msg[36] = c_commit_count[31:24]; dbg_msg[37] = c_commit_count[23:16];
+	dbg_msg[38] = c_commit_count[15:8];  dbg_msg[39] = c_commit_count[7:0];
+	dbg_msg[40] = c_last_x[15:8]; dbg_msg[41] = c_last_x[7:0];
+	dbg_msg[42] = c_last_y[15:8]; dbg_msg[43] = c_last_y[7:0];
+	dbg_msg[44] = c_last_cap_addr;
+	dbg_msg[45] = c_last_commit_addr;
+	dbg_crc = 8'd0;
+	for (dbg_i=0; dbg_i<46; dbg_i=dbg_i+1) dbg_crc = dbg_crc ^ dbg_msg[dbg_i];
+	dbg_msg[46] = dbg_crc;
+	dbg_msg[47] = c_cpu_hb[15:8];
+end
+
+// --- 115200 8N1 发送器（core_clk 域） ---------------------------------------
+reg [25:0] dbg_tick    = 26'd0;
+reg        dbg_pend    = 1'b0;
+reg        dbg_sending = 1'b0;
+// 48-byte diagnostic frame needs a 6-bit byte index; 5 bits silently wrapped
+// at byte 32 and made the host parser wait forever for the checksum.
+reg [5:0]  dbg_cidx    = 6'd0;
+reg [9:0]  dbg_shift   = 10'h3FF;
+reg [3:0]  dbg_bit     = 4'd0;
+reg [15:0] dbg_baud    = 16'd0;
+reg        dbg_uart_tx = 1'b1;
+
+always @(posedge core_clk) begin
+	// 每 0.5s：锁存计数并请求发送一帧
+	if (dbg_tick == 26'd0) begin
+		dbg_tick <= RELOAD;
+		c_d <= dbg_d_cnt;  c_h <= dbg_h_cnt;  c_v <= dbg_v_cnt;
+		c_s <= dbg_s_hb_cnt; c_x <= dbg_x_hb_cnt;
+		c_st_frame <= st_frame_sync2; c_st_busy <= st_busy_sync2;
+		c_de_width <= dbg_de_last_width;
+		c_cap_samples <= cap_samples_sync2;
+		c_cap_tiles <= cap_tiles_sync2;
+		c_commit_count <= commit_sync2;
+		c_last_x <= last_x_sync2; c_last_y <= last_y_sync2;
+		c_last_cap_addr <= last_cap_addr_sync2;
+		c_last_commit_addr <= last_commit_addr_sync2;
+		c_cpu_hb <= cpu_hb_sync2;
+		// R = {w_arstn(PLL全锁), cal_done(DDR校准), vid_rst_n(视频复位释放),
+		//      SoC_GPIO0[0](摄像头 I2C 配置完成)}
+		c_r <= {w_arstn, cal_done, vid_rst_n, w_soc_gpio_write[0]};
+		c_q <= dbg_seq;
+		dbg_seq <= dbg_seq + 8'd1;
+		dbg_pend <= 1'b1;
+	end else begin
+		dbg_tick <= dbg_tick - 26'd1;
+	end
+
+	if (dbg_pend & ~dbg_sending) begin
+		dbg_pend    <= 1'b0;
+		dbg_sending <= 1'b1;
+		dbg_cidx    <= 6'd0;
+	end
+
+	if (!dbg_sending) begin
+		dbg_uart_tx <= 1'b1;
+		dbg_bit     <= 4'd0;
+	end else if (dbg_bit == 4'd0) begin
+		// 装载下一字节：{stop, data[7:0], start}
+		dbg_uart_tx <= 1'b1;
+		if (dbg_cidx == MSG_LEN) begin
+			dbg_sending <= 1'b0;
+		end else begin
+			dbg_shift <= {1'b1, dbg_msg[dbg_cidx], 1'b0};
+			dbg_cidx  <= dbg_cidx + 6'd1;
+			dbg_bit   <= 4'd10;
+			dbg_baud  <= 16'd0;
+		end
+	end else begin
+		dbg_uart_tx <= dbg_shift[0];
+		if (dbg_baud == UART_DIV-1) begin
+			dbg_baud <= 16'd0;
+			dbg_shift<= {1'b1, dbg_shift[9:1]};
+			dbg_bit  <= dbg_bit - 4'd1;
+		end else begin
+			dbg_baud <= dbg_baud + 16'd1;
+		end
+	end
+end
+
+assign led[2] = SOC_UART_DEBUG ? w_soc_uart_tx :
+               (DBG_UART_EN ? dbg_uart_tx : 1'b0);
 
 endmodule

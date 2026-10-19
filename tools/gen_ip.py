@@ -24,6 +24,7 @@ python API (gui.api_wrapper -> efx_ipmgr.api_v2.IPManagerBackend)，在命令行
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -125,6 +126,19 @@ def main():
     print(f'[gen_ip] load 完成 (pickle={from_pickle}), 参数 {len(ct.parameters)} 项')
 
     overrides = {}
+    # --settings-json is an IP Manager export.  It must provide the actual
+    # parameter values, not just the VLNV; otherwise generation silently uses
+    # the vendor defaults (which enable DDR/DEBUG and shrink OCR on this SoC).
+    # Keep this import before command-line overrides so --param remains the
+    # explicit final override.
+    if args.settings_json:
+        with open(args.settings_json, encoding='utf-8') as sf:
+            saved = json.load(sf)
+        saved_conf = saved.get('conf', {})
+        known = {p.name for p in api_wrapper.get_ip_params(
+            vlnv, device_name=args.device, family_name=args.family)}
+        overrides.update({k: str(v) for k, v in saved_conf.items()
+                          if k in known})
     for kv in args.param:
         k, _, v = kv.partition('=')
         overrides[k.strip()] = v.strip()
@@ -154,7 +168,7 @@ def main():
     vr, params, comp, graph = api_wrapper.validate_params(
         vlnv, params, device_name=args.device, family_name=args.family)
     if not vr.result:
-        print('[gen_ip] 参数校验失败:\n' + vr.error_tuple_msg, file=sys.stderr)
+        print('[gen_ip] 参数校验失败:', vr.error_tuple_msg, file=sys.stderr)
         return 1
     params = apply_params(params, overrides)
 

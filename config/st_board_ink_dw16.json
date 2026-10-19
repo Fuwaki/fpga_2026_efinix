@@ -1,0 +1,19 @@
+{
+  "manifest": "../st_work/fst/runs/ink_dw/quant/w8a8/manifest.json",
+  "layers": [
+    "stem",
+    "enc.0.dw",
+    "enc.0.pw",
+    "up3.0.dw",
+    "up3.0.pw",
+    "up1.0",
+    "up3.1.dw",
+    "up3.1.pw",
+    "up1.1",
+    "head.dw",
+    "head.pw"
+  ],
+  "max_channels": 64,
+  "max_spatial": 16,
+  "weight_capacity_bytes": 8192
+}

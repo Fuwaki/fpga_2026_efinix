@@ -33,6 +33,7 @@ vsim.wlf
 
 # --- 编辑器/临时工作目录/备份 ---
 .ccls-cache/
+.codegraph/
 /work_pm/
 /work_pt/
 *.bak_*

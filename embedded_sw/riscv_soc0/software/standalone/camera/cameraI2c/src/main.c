@@ -17,9 +17,11 @@
 #include "userDef.h"
 
 /* 想通过串口看进度就打开；本板 UART 未引出，打开只会白等波特率时间 */
-#define CAM_I2C_VERBOSE 0
+#define CAM_I2C_VERBOSE 1
 
 #define LED_DONE_MASK 0x1u   /* GPIO0[0] -> led[1] */
+#define ST_DBG_BASE   IO_APB_SLAVE_0_INPUT
+#define ST_DBG32(off) (*(volatile uint32_t *)(ST_DBG_BASE + (off)))
 
 static void camLed(u32 on)
 {
@@ -65,6 +67,14 @@ void main(void)
     camLed(1);      /* 配置完成 */
 
     while (1) {
-        /* 后续按键/状态逻辑挂在这里 */
+        /* CPU 作为板上调试跳板：读取硬件 tile 管线的 APB 只读窗口。 */
+        uint32_t hb = ST_DBG32(0x54) + 1u;
+        ST_DBG32(0x54) = hb;
+        bsp_printf("[st] cap=%x tiles=%x commit=%x xy=%x addr=%x state=%x hb=%x\r\n",
+                   ST_DBG32(0x40), ST_DBG32(0x44), ST_DBG32(0x48),
+                   ST_DBG32(0x4c), ST_DBG32(0x50), ST_DBG32(0x34), hb);
+        for (volatile uint32_t delay = 0; delay < 5000000u; ++delay) {
+            __asm__ volatile ("nop");
+        }
     }
 }

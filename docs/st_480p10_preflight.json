@@ -1,0 +1,292 @@
+{
+  "model": "/data/competition/2026fpga/st_work/fst/runs/ink_dw/quant/w8a8",
+  "resolution": [
+    640,
+    480
+  ],
+  "fps_target": 10.0,
+  "clock_mhz": 100.0,
+  "target_cycles": 10000000,
+  "layers": 29,
+  "cycles_max": 9866272,
+  "estimated_fps": 10.135540556757405,
+  "bottleneck": "up3.1.dw",
+  "dsp48_estimate": 142,
+  "dsp_budget": 160,
+  "memory_bytes": {
+    "line_buffers": 396000.0,
+    "branch_fifos": 588708.0,
+    "upsample": 46080.0,
+    "weights": 50144.0
+  },
+  "memory_total_bytes": 1080932,
+  "ram10_estimate": 106,
+  "ram10_budget": 256,
+  "ram10_free_in_fpga_src": 88,
+  "dedicated_stream_rtl": true,
+  "board_integration_allowed": false,
+  "reason": "Use a shared DDR tile engine for fpga_src; this plan is budgeting only.",
+  "layer_plan": [
+    {
+      "name": "stem",
+      "kind": "dense3",
+      "C": 3,
+      "OC": 32,
+      "simd": 27,
+      "pe": 1,
+      "cycles": 9830400
+    },
+    {
+      "name": "enc.0.dw",
+      "kind": "dw",
+      "C": 32,
+      "OC": 32,
+      "simd": 2,
+      "tp": 3,
+      "cycles": 7372800
+    },
+    {
+      "name": "enc.0.pw",
+      "kind": "pw",
+      "C": 32,
+      "OC": 64,
+      "simd": 1,
+      "pe": 16,
+      "cycles": 9830400
+    },
+    {
+      "name": "enc.1.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "tp": 3,
+      "cycles": 7372800
+    },
+    {
+      "name": "enc.1.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.0.s1.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.0.s1.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.0.s2.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.0.s2.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.1.s1.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.1.s1.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.1.s2.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.1.s2.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.2.s1.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.2.s1.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.2.s2.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.2.s2.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.3.s1.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.3.s1.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "res.3.s2.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 1,
+      "cycles": 5529600
+    },
+    {
+      "name": "res.3.s2.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 64,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "up3.0.dw",
+      "kind": "dw",
+      "C": 64,
+      "OC": 64,
+      "simd": 2,
+      "tp": 3,
+      "cycles": 7372800
+    },
+    {
+      "name": "up3.0.pw",
+      "kind": "pw",
+      "C": 64,
+      "OC": 32,
+      "simd": 1,
+      "pe": 16,
+      "cycles": 9830400
+    },
+    {
+      "name": "up1.0",
+      "kind": "pw",
+      "C": 32,
+      "OC": 32,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "up3.1.dw",
+      "kind": "dw",
+      "C": 32,
+      "OC": 32,
+      "simd": 1,
+      "tp": 9,
+      "cycles": 9866272
+    },
+    {
+      "name": "up3.1.pw",
+      "kind": "pw",
+      "C": 32,
+      "OC": 16,
+      "simd": 1,
+      "pe": 16,
+      "cycles": 9830400
+    },
+    {
+      "name": "up1.1",
+      "kind": "pw",
+      "C": 16,
+      "OC": 16,
+      "simd": 1,
+      "pe": 8,
+      "cycles": 9830400
+    },
+    {
+      "name": "head.dw",
+      "kind": "dw",
+      "C": 16,
+      "OC": 16,
+      "simd": 2,
+      "tp": 3,
+      "cycles": 7372800
+    },
+    {
+      "name": "head.pw",
+      "kind": "pw",
+      "C": 16,
+      "OC": 3,
+      "simd": 2,
+      "pe": 1,
+      "cycles": 7372800
+    }
+  ]
+}
