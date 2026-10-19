@@ -66,19 +66,22 @@ rtl/
   dvi_tx/               HDMI TMDS 编码器（加密核）
   gamma_conrrection/    gamma 校正 + 曲线 mem
   st_accel/             ST 加速器、tile 视频管线和生成物
-ip/riscv_soc0/          最小 SoC 生成集合（*.v / settings.json / RAM .bin / ipm）
+ip/riscv_soc0/          SoC 生成物（不跟踪；由 config/riscv_soc0_settings.json 生成）
 embedded_sw/riscv_soc0/ BSP + 固件；camera_i2c.hex 直接嵌入 SoC
 config/
   st_board_ink_dw16.json       板级 ST 层选择
   manifest/ink_dw_w8a8/        仓库内 manifest + weights.bin
   weights/st_w8_sel_meta.json  bias/requant 的量化源数据
+  riscv_soc0_settings.json     SoC IP 参数源
 tools/                  构建、IP 生成、质检、预检
 docs/                   架构/预检文档；历史 bring-up 记录在 docs/archive/
 docs/reference/         I2C 寄存器 ROM 和 SoC 例化参考
 ```
 
 旧版根目录的 9 个 `.hex` 符号链接、`engine/`、ST 旧测试图/旧权重、未使用的
-视频 RTL、IP 的 devkit/Testbench 已删除；`ip/` 只保留构建必需的 SoC 核心。
+视频 RTL、IP 的 devkit/Testbench 已删除。`ip/` 是构建生成物，不再跟踪；干净
+clone 第一次运行 `tools/build_all.sh` 会根据 `config/riscv_soc0_settings.json`
+生成 SoC。
 
 ---
 
@@ -131,9 +134,10 @@ python3 tools/gen_ip.py --vlnv soc/efx_soc:3.4.0 --dump-params
 tools/build_all.sh
 
 # 只改了 RTL：跳过固件和 IP 生成，约 2.5 分钟
+# 要求 ip/riscv_soc0/riscv_soc0.v 已存在；干净 clone 先跑一次全流程
 tools/build_all.sh --fpga-only
 
-# 改了固件但没改 SoC 配置
+# 改了固件但没改 SoC 配置（仍需要已有 IP）
 tools/build_all.sh --no-ip
 ```
 
@@ -273,23 +277,26 @@ make BSP=efinix/EfxSapphireSoc
 
 ## 11. 和"用 IDE 的人"协作 / 怎么改 IP
 
-### 11.1 仓库只保留最小 IP 生成集合
+### 11.1 ip/ 是生成物，参数源在 config/
+
+干净 clone 没有 `ip/`。第一次运行 `tools/build_all.sh` 会使用
+`config/riscv_soc0_settings.json` 生成：
 
 ```
 ip/riscv_soc0/
   riscv_soc0.v           生成出来的 HDL 源（SpinalHDL 明文）
   riscv_soc0_define.vh   宏/地址定义
-  settings.json          【核心】该 IP 的全部参数记录
-  ipm/                   IP Manager 内部缓存（重新配置时用）
+  settings.json          本次生成的参数快照
+  ipm/                   IP Manager 内部缓存
   *.bin                  4 个片上 RAM 初始化文件
-  source/soc_config      生成时的 SoC 配置记录
+  source/soc_config      本次生成的 SoC 配置记录
 ```
 
-`<器件>_devkit/`、`Testbench/`、`source/hardware/netlist/` 是 IP Manager 交付的
-示例/仿真/网表，不参与本工程构建；重新生成 IP 时会出现，已在 `.gitignore` 中忽略。
+`<器件>_devkit/`、`Testbench/`、`source/hardware/netlist/` 也会由 IP Manager
+生成，但不参与本工程构建，整个 `ip/` 已在 `.gitignore` 中忽略。
 
 参数**不在工程 XML 里**（`fpga_src.xml` 的 `<efx:ip_info/>` 是空的，参考工程也是空的），
-而在每个 IP 自己的 `settings.json` 里。我们的 SoC 那份记了 **152 项**参数：
+而在 `config/riscv_soc0_settings.json` 里。它记录了 **152 项**参数：
 
 ```json
 { "args": [ ..., {"name":"efx_soc","version":"3.4.0"} ],
@@ -306,7 +313,8 @@ ip/riscv_soc0/
 生成的 `.v` **不要手改**（下次 Generate 会被覆盖，而且 Efinity 官方明确说
 不要手工把 IP 的 .v 加进工程）。正确姿势：
 
-- IDE：Project 面板右键 `ip` 目录 → **Import IP** → 选 `settings.json`
+- IDE：Project 面板右键 `ip` 目录 → **Import IP** → 选
+  `config/riscv_soc0_settings.json`（或生成后的 `ip/riscv_soc0/settings.json`）
   → 向导带着现有参数打开 → 改 → Generate。
 - 命令行（本工程用的方式）：
 

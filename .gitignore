@@ -1,8 +1,7 @@
 # =============================================================================
 # fpga_src .gitignore
-# Only ignore things that can be regenerated.  The minimal SoC IP
-# (ip/riscv_soc0/*.v, settings.json, RAM init images) and the firmware hex are
-# tracked so a clean clone can build without the IP Manager GUI.
+# Only ignore things that can be regenerated.  The SoC IP is generated from
+# config/riscv_soc0_settings.json; the firmware hex stays tracked.
 # =============================================================================
 
 # --- Efinity build outputs ---
@@ -18,13 +17,8 @@
 **/software/standalone/**/build/
 **/software/standalone/**/obj_files/
 
-# --- IP Manager regenerates these vendor deliverables; keep only the core ---
-/ip/*_outflow/
-/ip/*/*_devkit/
-/ip/*/Testbench/
-/ip/*/source/hardware/netlist/
-/ip/riscv_soc0/riscv_soc0_tmpl.v
-/ip/riscv_soc0/riscv_soc0_tmpl.vhd
+# --- generated SoC IP (settings source: config/riscv_soc0_settings.json) ---
+/ip/
 
 # --- misc ---
 __pycache__/

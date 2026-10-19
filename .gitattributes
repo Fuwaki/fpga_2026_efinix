@@ -1,0 +1,4 @@
+# Vendor BSP/IP files carry CRLF.  Do not let Git rewrite line endings;
+# otherwise a fresh clone shows dozens of spurious modifications.
+embedded_sw/** -text
+ip/** -text

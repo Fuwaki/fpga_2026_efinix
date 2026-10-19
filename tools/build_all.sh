@@ -27,6 +27,7 @@ FW_HEX_STABLE="embedded_sw/riscv_soc0/camera_i2c.hex"
 BSP="efinix/EfxSapphireSoc"
 SOC_VLNV="soc/efx_soc:3.4.0"
 SOC_GEN_NAME="riscv_soc0"
+SOC_SETTINGS="$ROOT/config/riscv_soc0_settings.json"
 SOC_V="$ROOT/ip/$SOC_GEN_NAME/riscv_soc0.v"
 BSP_LD="$ROOT/embedded_sw/riscv_soc0/bsp/efinix/EfxSapphireSoc/linker/default.ld"
 BSP_SOC_H="$ROOT/embedded_sw/riscv_soc0/bsp/efinix/EfxSapphireSoc/include/soc.h"
@@ -66,6 +67,12 @@ if [ "$DO_PROGRAM" = 1 ] && [ "$DO_FPGA" != 1 ]; then
   exit 2
 fi
 
+if [ "$DO_IP" = 0 ] && [ "$DO_FPGA" = 1 ] && [ ! -f "$SOC_V" ]; then
+  echo "缺少生成的 SoC IP: $SOC_V" >&2
+  echo "先运行一次 tools/build_all.sh --no-fpga 生成 IP/固件" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------- 1) 固件
 if [ "$DO_FW" = 1 ]; then
   echo "=== [1/3] 编译 RISC-V 固件 ==="
@@ -95,13 +102,13 @@ if [ "$DO_IP" = 1 ]; then
   PARAM_ARGS=()
   for p in "${SOC_PARAMS[@]}"; do PARAM_ARGS+=(--param "$p"); done
   PARAM_ARGS+=(--param "HexFile_PathEnable=1'b1")
-  PARAM_ARGS+=(--param "HexFile_Path=\"$ROOT/$FW_HEX_STABLE\"")
+  PARAM_ARGS+=(--param "HexFile_Path=\"$FW_HEX_STABLE\"")
   # Importing the existing settings.json keeps every parameter that is not
   # listed in SOC_PARAMS at its known-good value.  Without this, a direct
   # gen_ip.py run silently falls back to vendor defaults (4 KiB OCR, DDR AXI
   # and SPI0 enabled), which produced an unusable SoC during bring-up.
-  if [ -f "$ROOT/ip/$SOC_GEN_NAME/settings.json" ]; then
-    PARAM_ARGS+=(--settings-json "$ROOT/ip/$SOC_GEN_NAME/settings.json")
+  if [ -f "$SOC_SETTINGS" ]; then
+    PARAM_ARGS+=(--settings-json "$SOC_SETTINGS")
   fi
   # gen_ip.py imports Efinity's bundled PyQt6; the system Python does not.
   # setup.sh also supplies PYTHONHOME/PYTHONPATH for the private interpreter.
@@ -121,6 +128,12 @@ if [ "$DO_IP" = 1 ]; then
     echo "SoC was generated with DDR/AXI/SPI enabled; top-level does not connect them: $SOC_V" >&2
     exit 1
   fi
+  # IP Manager re-deploys the vendor BSP and the RAM hex with CRLF.  The
+  # repository stores LF; normalize so a build does not dirty tracked files.
+  find "$ROOT/embedded_sw/riscv_soc0" \
+    \( -path '*/build' -o -path '*/obj_files' \) -prune -o \
+    -name '*.bin' -prune -o \
+    -type f -exec sed -i 's/\r$//' {} +
 fi
 
 # ------------------------------------------------------------- 3) FPGA 流程
