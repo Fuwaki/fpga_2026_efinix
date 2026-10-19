@@ -1,10 +1,11 @@
 # =============================================================================
 # fpga_src .gitignore
-# 只忽略"可以重新生成"的东西；IP 生成结果 (ip/riscv_soc0) 和固件 hex 保留，
-# 这样 clone 下来不需要重跑 IP Manager 就能直接构建。
+# Only ignore things that can be regenerated.  The minimal SoC IP
+# (ip/riscv_soc0/*.v, settings.json, RAM init images) and the firmware hex are
+# tracked so a clean clone can build without the IP Manager GUI.
 # =============================================================================
 
-# --- Efinity 构建产物 ---
+# --- Efinity build outputs ---
 /outflow/
 /work_syn/
 /work_pnr/
@@ -13,16 +14,19 @@
 *.lbf
 *.primplace
 
-# --- RISC-V 固件编译产物 (源文件保留) ---
+# --- RISC-V firmware build outputs (sources kept) ---
 **/software/standalone/**/build/
 **/software/standalone/**/obj_files/
 
-# --- engine/ 子工程 (与本工程无关的早期 conv-engine 实验) 的构建产物 ---
-engine/out*/
-engine/work_*/
-engine/outflow*/
+# --- IP Manager regenerates these vendor deliverables; keep only the core ---
+/ip/*_outflow/
+/ip/*/*_devkit/
+/ip/*/Testbench/
+/ip/*/source/hardware/netlist/
+/ip/riscv_soc0/riscv_soc0_tmpl.v
+/ip/riscv_soc0/riscv_soc0_tmpl.vhd
 
-# --- 杂项 ---
+# --- misc ---
 __pycache__/
 *.pyc
 *.o
@@ -31,7 +35,7 @@ __pycache__/
 *.wlf
 vsim.wlf
 
-# --- 编辑器/临时工作目录/备份 ---
+# --- editor / temporary work dirs / backups ---
 .ccls-cache/
 .codegraph/
 /work_pm/

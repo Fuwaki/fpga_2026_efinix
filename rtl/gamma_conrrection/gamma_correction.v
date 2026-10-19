@@ -1,7 +1,7 @@
 module gamma_correction
 #(
 	parameter	DATA_WIDTH	= 10,
-	parameter 	GAMMA_CURVE	= "2P2.mem"
+	parameter 	GAMMA_CURVE	= "SRGB_ENC.mem"
 )
 (
 	input						i_pclk,

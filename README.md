@@ -65,15 +65,20 @@ rtl/
   debayer/              Bayer→RGB + 白平衡增益
   dvi_tx/               HDMI TMDS 编码器（加密核）
   gamma_conrrection/    gamma 校正 + 曲线 mem
-  cam_i2c_ctrl/         【仅存档】原 FPGA 侧 I2C 寄存器表，现已不参与综合，
-                        固件的寄存器表由它导出
-ip/riscv_soc0/          无 IDE 生成的 Sapphire RV32 SoC（含片上 RAM 初始化 .bin）
-embedded_sw/riscv_soc0/ BSP + 固件
-  software/standalone/camera/cameraI2c/   本工程的固件（摄像头 I2C 初始化）
-  camera_i2c.hex                          固件编译产物（嵌进 SoC 用）
-tools/gen_ip.py         无 IDE 生成/重配 IP 的脚本
-tools/build_all.sh      一键构建（固件 → SoC → bitstream）
+  st_accel/             ST 加速器、tile 视频管线和生成物
+ip/riscv_soc0/          最小 SoC 生成集合（*.v / settings.json / RAM .bin / ipm）
+embedded_sw/riscv_soc0/ BSP + 固件；camera_i2c.hex 直接嵌入 SoC
+config/
+  st_board_ink_dw16.json       板级 ST 层选择
+  manifest/ink_dw_w8a8/        仓库内 manifest + weights.bin
+  weights/st_w8_sel_meta.json  bias/requant 的量化源数据
+tools/                  构建、IP 生成、质检、预检
+docs/                   架构/预检文档；历史 bring-up 记录在 docs/archive/
+docs/reference/         I2C 寄存器 ROM 和 SoC 例化参考
 ```
+
+旧版根目录的 9 个 `.hex` 符号链接、`engine/`、ST 旧测试图/旧权重、未使用的
+视频 RTL、IP 的 devkit/Testbench 已删除；`ip/` 只保留构建必需的 SoC 核心。
 
 ---
 
@@ -188,7 +193,7 @@ assign io_cam_sda_OUT = 1'b0;
 assign io_cam_sda_OE  = ~w_soc_i2c_sda_write;
 ```
 
-极性依据：Efinity 自带示例 `ip/riscv_soc0/T120F324_devkit/top_soc.v` 的
+极性依据：Efinity 自带示例 `docs/reference/top_soc.v` 的
 `writeEnable = !write`，配合三态 GPIO 的 `OUT=0`，即开漏。
 
 ---
@@ -197,7 +202,7 @@ assign io_cam_sda_OE  = ~w_soc_i2c_sda_write;
 
 `embedded_sw/riscv_soc0/software/standalone/camera/cameraI2c/`
 
-- `src/sc431hai_regs.h`：164 条寄存器表，**由 `rtl/cam_i2c_ctrl/i2c/i2c_master_reg_rom.v`
+- `src/sc431hai_regs.h`：164 条寄存器表，**由 `docs/reference/cam_i2c_ctrl/i2c/i2c_master_reg_rom.v`
   自动导出**，顺序不可改（数据手册要求上电时序不能重排；其中 index 0 是
   `0x0100=0x00` 停流，index 0x90 是 `0x0100=0x01` 开流）。
 - 设备地址：数据手册 1.4 节，PAD SID 低电平 → 7-bit `0x30` / 8-bit 写地址 `0x60`
@@ -227,7 +232,7 @@ make BSP=efinix/EfxSapphireSoc
    固件用 `gpio_getInput()` 轮询或开中断（`gpio_setInterruptRiseEnable` 等）。
 2. **APB3 从机 `io_apbSlave_0_*`**：SoC 已经引出 APB3 主机接口
    （基址 `0xf8010000` 起，`APBSlave0_Size=64KB`）。自己写一个 APB3 从机模块
-   挂上去（参考 `ip/riscv_soc0/T120F324_devkit/top_soc.v` 里的 `apb3_slave` 例化），
+   挂上去（参考 `docs/reference/top_soc.v` 里的 `apb3_slave` 例化），
    适合做按键消抖/状态寄存器这类"带寄存器映射"的逻辑，RPU 侧用
    `read_u32/write_u32` 访问。
 
@@ -250,40 +255,38 @@ make BSP=efinix/EfxSapphireSoc
 - SoC **没有 JTAG 调试核**（`DEBUG=0`）。要用 OpenOCD 单步调试固件，需要
   重新生成 SoC（`DEBUG=1'b1`）并在 `peri.xml` 里加 JTAG 引脚，同时把顶层的
   `pin keep` 段让位给调试核的 TDO。
-- `fpga_src/engine/` 是之前 conv-engine 实验留下的目录，与本工程无关，未改动。
 
 ---
 
-## 10. 验证记录（本次）
+## 10. 验证记录（2026-10-19 清理后）
 
 | 项 | 结果 |
 |---|---|
-| `efx_run -f compile` | map/interface/pnr/pgm 全部 PASS，`last_run_state=pass` |
-| 时序 | 最差 setup slack **+0.427 ns**（tx_cal_clk_90edge），hold 无需修复 |
-| 资源 | XLR 52.42%、Memory Block 166/256、DSP 9/160 |
-| 固件编译 | 9472 B / 64 KB（14.45%），`riscv-none-elf-gcc` rv32imc/ilp32 |
-| 寄存器表一致性 | 固件 `.data` 里 656 B 表与参考工程 ROM **逐字节一致**（164 条） |
-| SoC 片上 RAM 初值 | `ip/riscv_soc0/*_system_ramA_logic_ram_symbol*.bin` 随固件更新（md5 变化已确认） |
+| `tools/build_all.sh --fpga-only` | map/interface/pnr/pgm 全部 PASS |
+| 时序 | 同步路径正 slack：`core_clk` +0.385 ns、`hdmi_tx_slow_clk` +1.375 ns、`vid_clk_dvi2` +9.489 ns；负值只剩 CDC 0.002 ns 约束的假违例 |
+| 资源 | XLR 25012/60800（41.14%）、Memory Block 160/256、DSP 45/160 |
+| SoC | 64 KB 片上 RAM，`ram_symbol0 [0:16383]`，固件基址 `0xF9000000` |
+| 生成链 | manifest/weights 在仓库内；layer selector、weights、bias/requant 全部由 `tools/` 生成 |
+| 质检门 | `tools/quality_gate.sh all` PASS |
 
 ---
 
 ## 11. 和"用 IDE 的人"协作 / 怎么改 IP
 
-### 11.1 IP 生成产物就是一套固定结构
-
-`ip/riscv_soc0/` 与 IDE 生成的 `ip/<模块名>/` **逐项一致**（对照参考工程的
-`ip/csi_rx_controller/`）：
+### 11.1 仓库只保留最小 IP 生成集合
 
 ```
-<模块名>.v            生成出来的 HDL 源（SoC 是 SpinalHDL 生成的全部明文 Verilog）
-<模块名>_define.vh    宏/地址定义
-<模块名>_tmpl.v/.sv/.vhd   例化模板
-settings.json         【核心】该 IP 的全部参数记录
-ipm/component.pickle  IP Manager 内部缓存（重新配置时用）
-ipm/graph.pickle
-<器件>_devkit/        交付的示例工程（可以不管）
-Testbench/            交付的仿真文件
+ip/riscv_soc0/
+  riscv_soc0.v           生成出来的 HDL 源（SpinalHDL 明文）
+  riscv_soc0_define.vh   宏/地址定义
+  settings.json          【核心】该 IP 的全部参数记录
+  ipm/                   IP Manager 内部缓存（重新配置时用）
+  *.bin                  4 个片上 RAM 初始化文件
+  source/soc_config      生成时的 SoC 配置记录
 ```
+
+`<器件>_devkit/`、`Testbench/`、`source/hardware/netlist/` 是 IP Manager 交付的
+示例/仿真/网表，不参与本工程构建；重新生成 IP 时会出现，已在 `.gitignore` 中忽略。
 
 参数**不在工程 XML 里**（`fpga_src.xml` 的 `<efx:ip_info/>` 是空的，参考工程也是空的），
 而在每个 IP 自己的 `settings.json` 里。我们的 SoC 那份记了 **152 项**参数：
@@ -503,9 +506,15 @@ Efinity 也支持通过 JTAG 插入片上 Logic Analyzer/Virtual I/O。当前 re
 ## 15. ST 加速器方向（480p / 10 fps）
 
 当前 `ink_dw` 基线、Ti60 资源约束和建议的共享 MAC + tile 调度架构见
-[`docs/st_accel_architecture.md`](docs/st_accel_architecture.md)。nngen `st-stream` 的
-真实模型逐层折叠配置位于 `../nngen/examples/st_stream/configs/ink_dw_480p10.json`；
-它用于周期/DSP探索，当前全网静态行缓存仍超出板上 RAM，尚不能直接下载。
+[`docs/st_accel_architecture.md`](docs/st_accel_architecture.md)。仓库内已保存
+量化模型与逐层折叠配置：
+
+```text
+config/manifest/ink_dw_w8a8/   manifest.json + weights.bin
+config/ink_dw_480p10_plan.json 480p/10 fps 折叠 plan
+```
+
+它们用于周期/DSP 探索；当前全网静态行缓存仍超出板上 RAM，尚不能直接下载。
 
 ## 16. 离线质检门
 

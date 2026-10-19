@@ -1,1 +1,0 @@
-Running: efx_run_pnr.py tile_reader --family Titanium --device Ti60F225 --timing_model I3 --output_dir out_leaf_tile --work_dir work_leaf_tile --opt --sdc_file=/run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/engine.sdc

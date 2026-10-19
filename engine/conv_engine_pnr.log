@@ -1,2 +1,0 @@
-Running: efx_run_pnr.py conv_engine --family Titanium --device Ti60F225 --timing_model I3 --output_dir out_conv_engine --work_dir work_conv_engine
-[91m   pnr :	FAIL [0m

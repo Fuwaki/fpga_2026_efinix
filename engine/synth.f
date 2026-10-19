@@ -1,9 +1,0 @@
-../../fpga_rtl_lab/target/requant_unit.sv
-../../fpga_rtl_lab/target/sat_add.sv
-../../fpga_rtl_lab/target/conv_engine.sv
-../../fpga_rtl_lab/target/conv_stream.sv
-../../fpga_rtl_lab/target/tile_reader.sv
-../../fpga_rtl_lab/target/layer_desc.sv
-../../fpga_rtl_lab/target/layer_seq.sv
-../../fpga_rtl_lab/target/point_add.sv
-../../fpga_rtl_lab/target/engine_top.sv

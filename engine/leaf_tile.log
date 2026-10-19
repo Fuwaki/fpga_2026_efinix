@@ -1,7 +1,0 @@
-Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/out_leaf_tile
-Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/work_leaf_tile
-Running: efx_run_map.py tile_reader --family Titanium --device Ti60F225 --flist synth_tile_reader.f --output_dir out_leaf_tile --work_dir work_leaf_tile
-[92m   map :	PASS [0m
-Running: efx_run_pt_unified.py tile_reader Titanium Ti60F225 --output_dir out_leaf_tile --timing_model I3 --work_dir work_leaf_tile
-[92m   interface :	PASS [0m
-Running: efx_run_pnr.py tile_reader --family Titanium --device Ti60F225 --timing_model I3 --output_dir out_leaf_tile --work_dir work_leaf_tile --opt --sdc_file=engine.sdc

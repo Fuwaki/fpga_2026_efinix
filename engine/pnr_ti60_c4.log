@@ -1,2 +1,0 @@
-Running: efx_run_pnr.py engine_top --family Titanium --device Ti60F225 --timing_model C4 --output_dir out_ti60_c4 --work_dir work_ti60_c4
-[92m   pnr :	PASS [0m

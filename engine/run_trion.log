@@ -1,8 +1,0 @@
-Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/outflow_trion
-Creating /run/media/fuwaki/Workspace/competition/2026fpga/fpga_src/engine/work_syn_trion
-Running: efx_run_map.py engine_top --family Trion --device T20F256 --flist synth.f --output_dir outflow_trion --work_dir work_syn_trion
-[92m   map :	PASS [0m
-Running: efx_run_pt_unified.py engine_top Trion T20F256 --output_dir outflow_trion --work_dir work_syn_trion
-[92m   interface :	PASS [0m
-Running: efx_run_pnr.py engine_top --family Trion --device T20F256 --output_dir outflow_trion --work_dir work_syn_trion
-[91m   pnr :	FAIL [0m
