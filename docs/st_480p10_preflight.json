@@ -1,5 +1,5 @@
 {
-  "model": "/data/competition/2026fpga/st_work/fst/runs/ink_dw/quant/w8a8",
+  "model": "config/manifest/ink_dw_w8a8",
   "resolution": [
     640,
     480

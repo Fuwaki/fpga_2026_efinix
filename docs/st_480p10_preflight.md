@@ -3,9 +3,19 @@
 Run the preflight from the repository root:
 
 ```sh
-python3 fpga_src/tools/st_480p10_preflight.py \
-  --json fpga_src/docs/st_480p10_preflight.json
+python3 tools/st_480p10_preflight.py \
+  --json docs/st_480p10_preflight.json
 ```
+
+The default quantized model and planner config are repo-local:
+
+```text
+config/manifest/ink_dw_w8a8/       manifest.json + weights.bin
+config/ink_dw_480p10_plan.json     per-layer folding plan
+```
+
+The optional NNgen planner is still an external analysis dependency; pass
+`--nngen /path/to/nngen` if it is not at `../nngen`.
 
 The command reads the real quantized manifest, runs the NNgen `st_stream`
 planner, and writes a machine-readable report. Generated Verilog is placed in

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Check that board RTL artifacts still describe the selected NNgen manifest."""
 from __future__ import annotations
-import hashlib, json, re
+import hashlib, json, re, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from generate_st_bias_requant import encode, render  # noqa: E402
 
 def main() -> int:
     profile = json.loads((ROOT / "docs/st_board_profile.json").read_text())
@@ -32,6 +34,12 @@ def main() -> int:
     assert "st_w8_sel_weights_generated.hex" in accel.read_text()
     xml = (ROOT / "fpga_src.xml").read_text()
     assert not re.search(r"design_file=.*\.hex", xml, re.I), "hex initialized data registered as design file"
+    assert "rtl/st_accel/st_layer_sel_generated.v" in xml, "project XML does not use the generated layer selector"
+    assert "rtl/st_accel/st_layer_sel.v" not in xml, "project XML still uses the hand-written layer selector"
+    meta = json.loads((ROOT / "config/weights/st_w8_sel_meta.json").read_text())
+    bias, requant = encode(meta)
+    assert (ROOT / "rtl/st_accel/st_w8_bias.hex").read_text() == render(bias), "bias hex differs from metadata"
+    assert (ROOT / "rtl/st_accel/st_w8_requant.hex").read_text() == render(requant), "requant hex differs from metadata"
     print(f"PASS manifest consistency: {profile['layer_count']} layers, {len(byte_lines)} weight bytes")
     return 0
 

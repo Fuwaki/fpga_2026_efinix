@@ -72,8 +72,13 @@ if [ "$DO_FW" = 1 ]; then
   command -v riscv-none-elf-gcc >/dev/null 2>&1 || export PATH="$RISCV_TOOLCHAIN:$PATH"
   command -v riscv-none-elf-gcc >/dev/null 2>&1 || {
     echo "找不到 riscv-none-elf-gcc，请检查 RISCV_TOOLCHAIN=$RISCV_TOOLCHAIN" >&2; exit 1; }
-  make -C "$FW_DIR" BSP="$BSP"
+  make -B -C "$FW_DIR" BSP="$BSP"
   cp "$FW_DIR/build/camera_i2c.hex" "$FW_HEX_STABLE"
+  # The firmware must be linked for the on-chip RAM base.  A stale build tree
+  # from the vendor 0x1000 bootloader map makes SpinalHDL's HexTools assert
+  # during IP generation, and embeds an image the CPU cannot boot.
+  grep -q ':02000004F900' "$FW_HEX_STABLE" || {
+    echo "firmware hex is not linked at 0xF9000000: $FW_HEX_STABLE" >&2; exit 1; }
   # The vendor devkit BSP uses a bootloader map (0x1000/124K).  This design runs
   # the application directly from on-chip RAM at 0xF9000000/64K; catch the wrong
   # BSP before it gets linked into the bitstream.
@@ -126,6 +131,10 @@ if [ "$DO_FPGA" = 1 ]; then
     --sv rtl/st_accel/st_layer_sel_generated.v \
     --weights-hex rtl/st_accel/st_w8_sel_weights_generated.hex \
     --report docs/st_board_profile.json
+  python3 tools/generate_st_bias_requant.py \
+    --meta config/weights/st_w8_sel_meta.json \
+    --bias rtl/st_accel/st_w8_bias.hex \
+    --requant rtl/st_accel/st_w8_requant.hex
   echo "=== [3/3] Efinity 综合/布局布线/生成 bitstream ==="
   rm -f outflow/fpga_src.proj_state.ini
   efx_run --prj fpga_src.xml -f compile --dir .

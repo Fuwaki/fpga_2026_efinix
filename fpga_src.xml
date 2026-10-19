@@ -60,8 +60,7 @@
         <efx:design_file name="rtl/st_accel/st_accel.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/st_vid_pipe.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/axi2_pri_arb.v" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel/st_layer_sel.v" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel/st_layer_desc.v" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel/st_layer_sel_generated.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/st_axi_mm.v" version="default" library="default" />
         <efx:design_file name="rtl/fpga_src_top.v" version="default" library="default" />
         <efx:top_vhdl_arch name="" />

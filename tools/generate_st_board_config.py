@@ -102,10 +102,17 @@ def main() -> int:
         raise SystemExit(f"weight extraction produced {len(selected)} bytes, expected {used}")
     args.weights_hex.parent.mkdir(parents=True, exist_ok=True)
     args.weights_hex.write_text("".join(f"{b:02x}\n" for b in selected))
+
+    def rel(p: Path) -> str:
+        try:
+            return str(p.resolve().relative_to(root))
+        except ValueError:
+            return str(p)
+
     report = {
         "format": "st-board-profile-v1",
-        "profile": str(args.profile),
-        "manifest": str(manifest_path),
+        "profile": rel(args.profile),
+        "manifest": rel(manifest_path),
         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "layers": names,
         "layer_count": len(layers),
@@ -113,9 +120,9 @@ def main() -> int:
         "weight_capacity_bytes": cap,
         "max_channels": max_c,
         "max_spatial": max_spatial,
-        "rtl": str(args.sv),
-        "weights_hex": str(args.weights_hex),
-        "weights_source": str(weight_path),
+        "rtl": rel(args.sv),
+        "weights_hex": rel(args.weights_hex),
+        "weights_source": rel(weight_path),
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")

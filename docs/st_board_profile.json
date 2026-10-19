@@ -1,7 +1,7 @@
 {
   "format": "st-board-profile-v1",
   "profile": "config/st_board_ink_dw16.json",
-  "manifest": "/data/competition/2026fpga/st_work/fst/runs/ink_dw/quant/w8a8/manifest.json",
+  "manifest": "config/manifest/ink_dw_w8a8/manifest.json",
   "manifest_sha256": "e2daffcbb02c5729a6195b35b10bdb9b3fadbe3fd6109626c2d22992ff11dc6e",
   "layers": [
     "stem",
@@ -23,5 +23,5 @@
   "max_spatial": 16,
   "rtl": "rtl/st_accel/st_layer_sel_generated.v",
   "weights_hex": "rtl/st_accel/st_w8_sel_weights_generated.hex",
-  "weights_source": "/data/competition/2026fpga/st_work/fst/runs/ink_dw/quant/w8a8/weights.bin"
+  "weights_source": "config/manifest/ink_dw_w8a8/weights.bin"
 }

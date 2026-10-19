@@ -17,15 +17,18 @@ import tempfile
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
-NNGEN = ROOT / "nngen"
-DEFAULT_QUANT = ROOT / "st_work/fst/runs/ink_dw/quant/w8a8"
-DEFAULT_CONFIG = NNGEN / "examples/st_stream/configs/ink_dw_480p10.json"
+WORKSPACE = Path(__file__).resolve().parents[2]
+PROJECT = Path(__file__).resolve().parents[1]
+NNGEN = WORKSPACE / "nngen"
+DEFAULT_QUANT = PROJECT / "config/manifest/ink_dw_w8a8"
+DEFAULT_CONFIG = PROJECT / "config/ink_dw_480p10_plan.json"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--quant", type=Path, default=DEFAULT_QUANT)
+    ap.add_argument("--nngen", type=Path, default=NNGEN,
+                    help="NNgen checkout containing examples/st_stream/gen_stream.py")
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
@@ -38,22 +41,26 @@ def main() -> int:
     ap.add_argument("--json", type=Path, help="also write the report here")
     args = ap.parse_args()
 
-    quant = args.quant if args.quant.is_absolute() else ROOT / args.quant
-    config = args.config if args.config.is_absolute() else ROOT / args.config
+    quant = args.quant if args.quant.is_absolute() else PROJECT / args.quant
+    config = args.config if args.config.is_absolute() else PROJECT / args.config
+    nngen = args.nngen if args.nngen.is_absolute() else WORKSPACE / args.nngen
+    gen_stream = nngen / "examples/st_stream/gen_stream.py"
     if not (quant / "manifest.json").is_file():
         ap.error(f"manifest not found: {quant / 'manifest.json'}")
     if not config.is_file():
         ap.error(f"config not found: {config}")
+    if not gen_stream.is_file():
+        ap.error(f"NNgen planner not found: {gen_stream}; pass --nngen")
 
     # Keep generated Verilog out of the board checkout.  The planner itself
     # is the artifact this check is intended to review.
     with tempfile.TemporaryDirectory(prefix="st480p10-") as td:
         out = Path(td) / "stream"
-        cmd = [sys.executable, str(NNGEN / "examples/st_stream/gen_stream.py"),
+        cmd = [sys.executable, str(gen_stream),
                str(quant), "--res", f"{args.width}x{args.height}",
                "--cycles", str(max(1, int(args.clock_mhz * 1e6 / args.fps))),
                "--config", str(config), "--out", str(out)]
-        proc = subprocess.run(cmd, cwd=NNGEN, text=True,
+        proc = subprocess.run(cmd, cwd=nngen, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if proc.returncode:
             print(proc.stdout, file=sys.stderr)
