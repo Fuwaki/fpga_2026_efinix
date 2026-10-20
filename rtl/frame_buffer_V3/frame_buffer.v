@@ -270,6 +270,8 @@ ddr_buffer #(
 
 wire tx_valid;
 wire [23:0] tx_vin;
+// Back-pressure towards par2ser: high means "do not push a word this cycle".
+wire tx_almost_full;
     par2ser_parse#(
       .VID_WIDTH 				( O_VID_WIDTH  ),
       .AXI_DATA_WIDTH   (AXI_DATA_WIDTH)
@@ -339,35 +341,75 @@ begin
     end
 end
 
-data_tx #(
-	.VID_WIDTH 				( O_VID_WIDTH  ),
-	.FIFO_DIPTH  			( 1024 				 ),
-	.FIFO_ALMOST_FULL	( 960          )
-	
-	
-	)u_data_tx(
-	/*i*/.clk					  (o_clk				),
-	/*i*/.rst_n				  (rd_clk_rst_n	),
-	/*i*/.H_FRONT_PORCH (h_front_porch),//( 50 			),
-	/*i*/.H_SYNC 	 		  (h_sync 	 		),//( 50 			),
-	/*i*/.H_VALID 	 	  (h_valid 	 	  ),//( 48 			),
-	/*i*/.H_BACK_PORCH  (h_back_porch ),//( 50 			),
-	/*i*/.V_FRONT_PORCH (v_front_porch),//( 5 			),
-	/*i*/.V_SYNC 	 		  (v_sync 	 		),//( 5 			),
-	/*i*/.V_VALID 	 	  (v_valid 	 	  ),//( 20 			),
-	/*i*/.V_BACK_PORCH  (v_back_porch ),//( 5 			),
-	/*i*/.frame_en		  (rd_frame_en_r1),//(  	frame_stable		),//(tx_frame_en	),
-	/*i*/.fifo_wr_data  (tx_vin				),
-	/*i*/.fifo_wr_en	  (tx_valid			),
-	/*o*/.fifo_wr_almost_full	(tx_almost_full	),
-	/*o*/.fifo_rd_period(fifo_rd_period),
-	/*o*/.vout		(vout		),
-	/*o*/.o_hs		(o_hs		),
-	/*o*/.o_vs		(o_vs		),
-	/*o*/.o_de		(o_de		)
-	
+generate
+wire [11:0] lf_level;
+
+if (RD_FREE_RUN) begin : gen_read_sv
+	// New read path: raster_gen owns the timing, frame_sync paces the DDR
+	// read engine, layer_fetch absorbs the rate difference.
+	frame_buffer_read #(
+		.DATA_W(O_VID_WIDTH)
+	) u_read (
+		.clk         (o_clk),
+		.rst_n       (rd_clk_rst_n),
+		.h_active    (H_VALID),
+		.h_fp        (H_FRONT_PORCH),
+		.h_sync      (H_SYNC),
+		.h_bp        (H_BACK_PORCH),
+		.v_active    (V_VALID),
+		.v_fp        (V_FRONT_PORCH),
+		.v_sync      (V_SYNC),
+		.v_bp        (V_BACK_PORCH),
+		.in_valid    (tx_valid),
+		.in_data     (tx_vin),
+		.frame_period(fifo_rd_period),
+		.vout        (vout),
+		.o_hs        (o_hs),
+		.o_vs        (o_vs),
+		.o_de        (o_de),
+		.level       (lf_level)
 	);
 
+	// par2ser checks this before pushing.  layer_fetch only consumes inside the
+	// active window, so without back-pressure the packer would run ahead during
+	// blanking and lose words, shifting every following line.  One line of
+	// headroom covers jitter and still stalls before overflow.
+	assign tx_almost_full = (lf_level >= 11'd960);
+
+end else begin : gen_read_legacy
+data_tx #(
+		.VID_WIDTH 				( O_VID_WIDTH  ),
+		.FIFO_DIPTH  			( 1024 				 ),
+		.FIFO_ALMOST_FULL	( 960          )
+		
+		
+		)u_data_tx(
+		/*i*/.clk					  (o_clk				),
+		/*i*/.rst_n				  (rd_clk_rst_n	),
+		/*i*/.H_FRONT_PORCH (h_front_porch),//( 50 			),
+		/*i*/.H_SYNC 	 		  (h_sync 	 		),//( 50 			),
+		/*i*/.H_VALID 	 	  (h_valid 	 	  ),//( 48 			),
+		/*i*/.H_BACK_PORCH  (h_back_porch ),//( 50 			),
+		/*i*/.V_FRONT_PORCH (v_front_porch),//( 5 			),
+		/*i*/.V_SYNC 	 		  (v_sync 	 		),//( 5 			),
+		/*i*/.V_VALID 	 	  (v_valid 	 	  ),//( 20 			),
+		/*i*/.V_BACK_PORCH  (v_back_porch ),//( 5 			),
+		/*i*/.frame_en		  (rd_frame_en_r1),//(  	frame_stable		),//(tx_frame_en	),
+		/*i*/.fifo_wr_data  (tx_vin				),
+		/*i*/.fifo_wr_en	  (tx_valid			),
+		/*o*/.fifo_wr_almost_full	(tx_almost_full	),
+		/*o*/.fifo_rd_period(fifo_rd_period),
+		/*o*/.vout		(vout		),
+		/*o*/.o_hs		(o_hs		),
+		/*o*/.o_vs		(o_vs		),
+		/*o*/.o_de		(o_de		)
+		
+		);
+	
+	
+	
+end
+endgenerate
 
 /*----------------------------------------------------------------------------------*\
                                  The function code

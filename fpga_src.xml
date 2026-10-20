@@ -62,6 +62,11 @@
         <efx:design_file name="rtl/st_accel/axi2_pri_arb.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/st_layer_sel_generated.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/st_axi_mm.v" version="default" library="default" />
+        <efx:design_file name="rtl/video/video_contract_pkg.sv" version="default" library="default" />
+        <efx:design_file name="rtl/display/raster_gen.sv" version="default" library="default" />
+        <efx:design_file name="rtl/display/frame_sync.sv" version="default" library="default" />
+        <efx:design_file name="rtl/display/layer_fetch.sv" version="default" library="default" />
+        <efx:design_file name="rtl/frame_buffer_V3/frame_buffer_read.sv" version="default" library="default" />
         <efx:design_file name="rtl/fpga_src_top.v" version="default" library="default" />
         <efx:top_vhdl_arch name="" />
         <efx:msg_config name="" />
