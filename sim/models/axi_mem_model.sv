@@ -24,12 +24,12 @@ module axi_mem_model #(
     logic [DW-1:0] mem [longint unsigned];
 
     function automatic logic [DW-1:0] peek(input longint unsigned byte_addr);
-        longint unsigned k = byte_addr / BB;
+        longint unsigned k = byte_addr / longint'(BB);
         return mem.exists(k) ? mem[k] : FILL;
     endfunction
 
     function automatic void poke(input longint unsigned byte_addr, input logic [DW-1:0] v);
-        mem[byte_addr / BB] = v;
+        mem[byte_addr / longint'(BB)] = v;
     endfunction
 
     function automatic bit coin(input int pct);
@@ -64,7 +64,7 @@ module axi_mem_model #(
             if (wr.wvalid && wr.wready) begin
                 burst_t h;
                 h = aw_q[0];
-                mem[(h.addr / BB) + w_beat] = wr.wdata;
+                mem[(h.addr / longint'(BB)) + longint'(w_beat)] = wr.wdata;
                 if (wr.wlast) begin
                     if (w_beat != h.len)
                         $error("%m: wlast on beat %0d, burst has %0d", w_beat, h.len + 1);

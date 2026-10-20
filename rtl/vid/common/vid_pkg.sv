@@ -102,6 +102,25 @@ package vid_pkg;
     ACQ_NEW_ONLY  = 1'b1    // only a frame this consumer has not seen (processing)
   } acq_policy_e;
 
+  // Frame-ring operations; see rtl/vid/dma/ring_if.sv for the contract.
+  typedef enum logic [1:0] {
+    RING_P_ACQ    = 2'd0,
+    RING_P_COMMIT = 2'd1,
+    RING_P_ABORT  = 2'd2
+  } ring_p_op_e;
+
+  typedef enum logic {
+    RING_C_ACQ = 1'b0,
+    RING_C_REL = 1'b1
+  } ring_c_op_e;
+
+  typedef struct packed {
+    logic [SEQ_W-1:0] commits;
+    logic [SEQ_W-1:0] drops;       // producer found no free slot
+    logic [SEQ_W-1:0] aborts;
+    logic             proto_err;   // sticky
+  } ring_status_t;
+
   // ---------------------------------------------------------- configuration
   // Compile-time today.  Every stage takes these as ports so a CSR block can
   // drive them later without touching the stages.
