@@ -12,8 +12,15 @@ parameter	RD_FIFO_DEPTH 	= 1024,
 parameter START_ADDR			=	33'h000201900,
 parameter BURST_LEN       = 8'd15,
 parameter FB_NUM			    = 	3,//2 buffer ,3 buffer 
+// Kept for the write-side burst sizing; the read side no longer derives its
+// geometry from these (see CAM_VID_*).
 parameter MAX_VID_WIDTH		=	1920 ,//video width (in I_VID_WIDTH words)
 parameter MAX_VID_HIGHT		=	1080 ,//wideo height
+
+// Geometry the sensor actually delivers, in pixels and lines.  The display
+// raster is independent (1080p); this rectangle is centred inside it.
+parameter CAM_VID_WIDTH   = 1280,
+parameter CAM_VID_HEIGHT  = 720,
 // 1 = display timing free-runs from reset and never waits for a captured
 // frame.  The panel keeps its lock even when DDR holds nothing yet, which is
 // what makes display independent of the capture rate.  0 = legacy behaviour
@@ -35,6 +42,17 @@ output	wire								o_hs , //active high
 output	wire								o_vs , //active hgih
 output	wire								o_de , //active high
 output	wire	[O_VID_WIDTH-1:0] 			vout ,
+
+// Words captured per frame, measured on the write side.  Exposed so the board
+// can tell a complete frame from a truncated one: a 1280x720 sensor must
+// report 320 four-pixel beats per line.  Half that means two of the four MIPI
+// lanes are missing.
+output	wire	[23:0]						frame_pix_num,
+// Read-side per-frame diagnostics, o_clk domain (see frame_buffer_read).
+output	wire	[15:0]						rd_dbg_stall,
+output	wire	[11:0]						rd_dbg_left,
+output	wire	[23:0]						rd_dbg_push,
+output	wire	[111:0]						rd_dbg_seq,
 
 input	wire 	[12:0]									H_FRONT_PORCH 	,
 input	wire 	[12:0]									H_SYNC 			,
@@ -174,6 +192,7 @@ vid_rx_align_v1 #(
 /*o*/.frame_start	  (frame_start	),
 /*O*/.fifo_rst_p		  (fifo_rst		  ),
 /*O*/.frame_stable  (frame_stable ),
+/*O*/.frame_pix_num (frame_pix_num),
 /*O*/.ddr_frame_len (ddr_frame_len)
 );
 
@@ -348,7 +367,11 @@ if (RD_FREE_RUN) begin : gen_read_sv
 	// New read path: raster_gen owns the timing, frame_sync paces the DDR
 	// read engine, layer_fetch absorbs the rate difference.
 	frame_buffer_read #(
-		.DATA_W(O_VID_WIDTH)
+		.DATA_W         (O_VID_WIDTH),
+		// Captured geometry, not display geometry.  The raster stays 1080p;
+		// this is the rectangle the sensor fills inside it.
+		.LAYER_W_WORDS  (CAM_VID_WIDTH / 2),
+		.LAYER_H_LINES  (CAM_VID_HEIGHT)
 	) u_read (
 		.clk         (o_clk),
 		.rst_n       (rd_clk_rst_n),
@@ -367,16 +390,26 @@ if (RD_FREE_RUN) begin : gen_read_sv
 		.o_hs        (o_hs),
 		.o_vs        (o_vs),
 		.o_de        (o_de),
-		.level       (lf_level)
+		.level       (lf_level),
+		.dbg_stall   (rd_dbg_stall),
+		.dbg_left    (rd_dbg_left),
+		.dbg_push    (rd_dbg_push),
+		.dbg_seq     (rd_dbg_seq)
 	);
 
 	// par2ser checks this before pushing.  layer_fetch only consumes inside the
 	// active window, so without back-pressure the packer would run ahead during
 	// blanking and lose words, shifting every following line.  One line of
-	// headroom covers jitter and still stalls before overflow.
-	assign tx_almost_full = (lf_level >= 11'd960);
+	// headroom covers jitter and still stalls before overflow.  The threshold
+	// is one captured line, so it has to follow the capture geometry rather
+	// than the display width.
+	assign tx_almost_full = (lf_level >= CAM_VID_WIDTH/2);
 
 end else begin : gen_read_legacy
+assign rd_dbg_stall = 16'd0;
+assign rd_dbg_left  = 12'd0;
+assign rd_dbg_push  = 24'd0;
+assign rd_dbg_seq   = 112'd0;
 data_tx #(
 		.VID_WIDTH 				( O_VID_WIDTH  ),
 		.FIFO_DIPTH  			( 1024 				 ),

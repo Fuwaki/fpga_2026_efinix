@@ -42,7 +42,15 @@ def frames(port, seconds):
                 "vs": int.from_bytes(raw[10:14], "big"),
                 "slow_hb": int.from_bytes(raw[14:16], "big"),
                 "video_hb": int.from_bytes(raw[16:18], "big"),
+                # Bytes 18[7:4], 24[7:4] and 27 together carry the low 16 bits
+                # of the capture-side words-per-frame counter.
+                # 1280x720 -> 230400 (0x38400, low16 = 0x8400)
+                # 1080p    -> 518400 (0x7E900, low16 = 0xE900)
+                # 2-lane   -> 115200 (0x1C200, low16 = 0xC200)
                 "status": raw[18] & 0x0F,
+                "frame_pix_num": (raw[27] << 8)
+                                 | ((raw[18] >> 4) << 4)
+                                 | (raw[24] >> 4),
                 "seq": raw[19],
                 "st_tiles": int.from_bytes(raw[20:24], "big"),
                 "st_busy": bool(raw[24] & 1),

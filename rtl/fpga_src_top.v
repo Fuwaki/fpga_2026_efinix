@@ -265,9 +265,15 @@ localparam HFP      = 88;
 localparam HSP      = 44;
 localparam HBP      = 148;
 
-// Camera layer geometry: native 1280x720 placed at the centre of the raster.
-// Declared here because the frame-store read port is dimensioned from it.
+// Display raster, unchanged from the working 1080p60 output.
 localparam MAX_VRES = 1080;
+
+// Camera geometry.  The sensor now runs 2x2 binning at 1280x720; the raster
+// stays 1080p and the captured rectangle is centred inside it.  Both
+// dimensions must be even so the Bayer phase survives: (960-640)>>1 = 160
+// words and (1080-720)>>1 = 180 lines are both even.
+localparam CAM_VID_WIDTH  = 1280;
+localparam CAM_VID_HEIGHT = 720;
 localparam VFP      = 4;
 localparam VSP      = 5;
 localparam VBP      = 36;
@@ -721,6 +727,50 @@ wire ch0_vs;
 wire ch0_hs;
 wire ch0_de;
 wire [31:0] ch0_rgb32;
+wire [23:0] w_frame_pix_num;
+wire [15:0] w_rd_dbg_stall;
+wire [11:0] w_rd_dbg_left;
+wire [23:0] w_rd_dbg_push;
+wire [111:0] w_rd_dbg_seq;
+
+// Debug: replace the sensor's pixels while keeping the sensor's own vs/hs/de
+// timing.  0 = camera.  1 = word counter (word n of a frame carries n[15:0]),
+// checked by the read-side sequence checker.  2 = visual geometry chart: gray
+// ramp left to right, white 16 px bars at both line ends, a white line pair
+// every 90 lines; any shift or wrap shows up as a displaced bar.
+localparam [1:0] DBG_PATTERN = 2'd0;
+localparam DBG_PATTERN_EN = (DBG_PATTERN == 2'd1);
+reg        pat_vs_d = 1'b0, pat_hs_d = 1'b0;
+reg [15:0] pat_word = 16'd0;
+// Each frame starts the counter at a different base, so a displayed frame
+// assembled partly from an older stored frame shows up as a sequence break.
+reg [15:0] pat_base = 16'd0;
+reg [9:0]  pat_x = 10'd0;     // word index within the line, two per beat
+reg [9:0]  pat_y = 10'd0;
+always @(posedge i_mipi_rx_pclk) begin
+	pat_vs_d <= w_mipi_rx_vs;
+	pat_hs_d <= w_mipi_rx_hs;
+	if (w_mipi_rx_vs & ~pat_vs_d) begin
+		pat_word <= pat_base;
+		pat_base <= pat_base + 16'd4098;
+	end
+	else if (w_mipi_rx_de & w_mipi_rx_hs)
+		pat_word <= pat_word + 16'd2;
+	if (w_mipi_rx_vs & ~pat_vs_d)
+		pat_y <= 10'd0;
+	else if (~w_mipi_rx_hs & pat_hs_d)
+		pat_y <= pat_y + 10'd1;
+	if (w_mipi_rx_hs & ~pat_hs_d)
+		pat_x <= 10'd0;
+	else if (w_mipi_rx_de & w_mipi_rx_hs)
+		pat_x <= pat_x + 10'd2;
+end
+wire       pat_white = (pat_x < 10'd8) || (pat_x >= 10'd632) || (pat_y % 10'd90 < 10'd2);
+wire [7:0] pat_gray  = pat_white ? 8'hFF : {pat_x[9:2]};
+wire [31:0] cam_vin = {w_mipi_rx_data[39:32],w_mipi_rx_data[29:22],w_mipi_rx_data[19:12],w_mipi_rx_data[9:2]};
+wire [31:0] fb_vin  = (DBG_PATTERN == 2'd1) ? {pat_word, pat_word + 16'd1} :
+                      (DBG_PATTERN == 2'd2) ? {4{pat_gray}} : cam_vin;
+
 // IMX219
   frame_buffer #(
 .I_VID_WIDTH         (32),
@@ -734,7 +784,9 @@ wire [31:0] ch0_rgb32;
 .FB_NUM	            (3),
 .RD_FREE_RUN        (1),
 .MAX_VID_WIDTH	    (960) ,
-.MAX_VID_HIGHT	    (1080) 
+.MAX_VID_HIGHT	    (1080),
+.CAM_VID_WIDTH     (CAM_VID_WIDTH ),
+.CAM_VID_HEIGHT    (CAM_VID_HEIGHT)
 
 
 )checker0(
@@ -744,13 +796,18 @@ wire [31:0] ch0_rgb32;
 /*i*/.i_clk			(i_mipi_rx_pclk      ),
 /*i*/.i_vs			(w_mipi_rx_vs	),
 /*i*/.i_de			(w_mipi_rx_de & w_mipi_rx_hs	),
-/*i*/.vin 			({w_mipi_rx_data[39:32],w_mipi_rx_data[29:22],w_mipi_rx_data[19:12],w_mipi_rx_data[9:2]}	),
+/*i*/.vin 			(fb_vin	),
                      
 /*i*/.o_clk			(vid_clk_dvi2),//(i_mipi_rx_pclk	),
 /*i*/.o_hs    		(ch0_hs		),			
 /*i*/.o_vs    		(ch0_vs		),			
 /*i*/.o_de    		(ch0_de		),			
 /*i*/.vout    		({ch0_g,ch0_b}	),
+/*o*/.frame_pix_num (w_frame_pix_num),
+/*o*/.rd_dbg_stall  (w_rd_dbg_stall),
+/*o*/.rd_dbg_left   (w_rd_dbg_left),
+/*o*/.rd_dbg_push   (w_rd_dbg_push),
+/*o*/.rd_dbg_seq    (w_rd_dbg_seq),
 
 /*i*/.H_FRONT_PORCH (HFP/2  		),//
 /*i*/.H_SYNC 	 	    (HSP/2	 	),///2
@@ -1591,6 +1648,100 @@ reg [15:0] last_y_sync1 = 16'd0, last_y_sync2 = 16'd0;
 reg [7:0] last_cap_addr_sync1 = 8'd0, last_cap_addr_sync2 = 8'd0;
 reg [7:0] last_commit_addr_sync1 = 8'd0, last_commit_addr_sync2 = 8'd0;
 reg [15:0] cpu_hb_sync1 = 16'd0, cpu_hb_sync2 = 16'd0;
+// Capture-side words per frame.  It only changes at frame boundaries, so a
+// plain 2-FF synchroniser is enough; the value is a stable count, not an edge.
+reg [23:0] fpn_sync1 = 24'd0, fpn_sync2 = 24'd0;
+always @(posedge core_clk) begin
+	fpn_sync1 <= w_frame_pix_num;
+	fpn_sync2 <= fpn_sync1;
+end
+
+// Capture-side probe, straight off the CSI-2 RX outputs and ahead of
+// frame_info_det.  It answers "is the receiver producing frames at all" without
+// trusting any of the frame-store logic downstream.  ST is disabled, so its
+// telemetry slots carry these instead.
+//   cp_*_bin   cumulative: vs rising edges, hs rising edges, de cycles
+//   cp_lines   hs rising edges between the last two vs rising edges
+//   cp_beats   de cycles inside the last completed hs-high period
+// The cumulative counters cross into core_clk as Gray code so a sample taken
+// mid-increment is off by at most one instead of torn.
+reg        cp_vs_d = 1'b0, cp_hs_d = 1'b0;
+reg [31:0] cp_vs_bin = 32'd0, cp_hs_bin = 32'd0, cp_de_bin = 32'd0;
+reg [31:0] cp_vs_gray = 32'd0, cp_hs_gray = 32'd0, cp_de_gray = 32'd0;
+reg [15:0] cp_line_cnt = 16'd0, cp_lines = 16'd0;
+reg [15:0] cp_beat_cnt = 16'd0, cp_beats = 16'd0;
+always @(posedge i_mipi_rx_pclk) begin
+	cp_vs_d <= w_mipi_rx_vs;
+	cp_hs_d <= w_mipi_rx_hs;
+	if (w_mipi_rx_vs & ~cp_vs_d) cp_vs_bin <= cp_vs_bin + 32'd1;
+	if (w_mipi_rx_hs & ~cp_hs_d) cp_hs_bin <= cp_hs_bin + 32'd1;
+	if (w_mipi_rx_de)            cp_de_bin <= cp_de_bin + 32'd1;
+	cp_vs_gray <= cp_vs_bin ^ (cp_vs_bin >> 1);
+	cp_hs_gray <= cp_hs_bin ^ (cp_hs_bin >> 1);
+	cp_de_gray <= cp_de_bin ^ (cp_de_bin >> 1);
+
+	if (w_mipi_rx_vs & ~cp_vs_d) begin
+		cp_lines    <= cp_line_cnt;
+		cp_line_cnt <= 16'd0;
+	end else if (w_mipi_rx_hs & ~cp_hs_d) begin
+		cp_line_cnt <= cp_line_cnt + 16'd1;
+	end
+
+	if (~w_mipi_rx_hs & cp_hs_d) begin
+		cp_beats    <= cp_beat_cnt;
+		cp_beat_cnt <= 16'd0;
+	end else if (w_mipi_rx_hs & w_mipi_rx_de) begin
+		cp_beat_cnt <= cp_beat_cnt + 16'd1;
+	end
+end
+
+function [31:0] gray2bin32;
+	input [31:0] g;
+	integer k;
+	begin
+		gray2bin32[31] = g[31];
+		for (k = 30; k >= 0; k = k - 1)
+			gray2bin32[k] = gray2bin32[k+1] ^ g[k];
+	end
+endfunction
+
+reg [31:0] cp_vs_s1 = 32'd0, cp_vs_s2 = 32'd0;
+reg [31:0] cp_hs_s1 = 32'd0, cp_hs_s2 = 32'd0;
+reg [31:0] cp_de_s1 = 32'd0, cp_de_s2 = 32'd0;
+reg [15:0] cp_lines_s1 = 16'd0, cp_lines_s2 = 16'd0;
+reg [15:0] cp_beats_s1 = 16'd0, cp_beats_s2 = 16'd0;
+reg [2:0]  cp_lvl_s1 = 3'd0, cp_lvl_s2 = 3'd0;
+// CSI-2 RX error flags, sticky since reset: {receive, frame_vc0, line_vc0,
+// undersize, ecc2, ecc1, crc, pixel_fifo_full}.
+reg [7:0]  cp_err_s1 = 8'd0, cp_err_s2 = 8'd0, cp_err_sticky = 8'd0;
+always @(posedge core_clk) begin
+	cp_vs_s1 <= cp_vs_gray;  cp_vs_s2 <= cp_vs_s1;
+	cp_hs_s1 <= cp_hs_gray;  cp_hs_s2 <= cp_hs_s1;
+	cp_de_s1 <= cp_de_gray;  cp_de_s2 <= cp_de_s1;
+	cp_lines_s1 <= cp_lines; cp_lines_s2 <= cp_lines_s1;
+	cp_beats_s1 <= cp_beats; cp_beats_s2 <= cp_beats_s1;
+	cp_lvl_s1 <= {w_mipi_rx_vs, w_mipi_rx_hs, w_mipi_rx_de};
+	cp_lvl_s2 <= cp_lvl_s1;
+	cp_err_s1 <= {mdebug_receive_error, mdebug_frame_vc0_error,
+	              mdebug_line_vc0_error, mdebug_undersize_pkt_error,
+	              mdebug_ecc_2bit_error, mdebug_ecc_1bit_error,
+	              mdebug_crc_error, mdebug_pixel_fifo_full};
+	cp_err_s2 <= cp_err_s1;
+	cp_err_sticky <= cp_err_sticky | cp_err_s2;
+end
+
+// Read-side per-frame values from vid_clk_dvi2; each is held for a whole
+// displayed frame, so a 2-FF synchroniser sees a stable word.
+reg [15:0] rd_stall_s1 = 16'd0, rd_stall_s2 = 16'd0;
+reg [11:0] rd_left_s1 = 12'd0, rd_left_s2 = 12'd0;
+reg [23:0] rd_push_s1 = 24'd0, rd_push_s2 = 24'd0;
+reg [111:0] rd_seq_s1 = 112'd0, rd_seq_s2 = 112'd0;
+always @(posedge core_clk) begin
+	rd_stall_s1 <= w_rd_dbg_stall; rd_stall_s2 <= rd_stall_s1;
+	rd_left_s1  <= w_rd_dbg_left;  rd_left_s2  <= rd_left_s1;
+	rd_push_s1  <= w_rd_dbg_push;  rd_push_s2  <= rd_push_s1;
+	rd_seq_s1   <= w_rd_dbg_seq;   rd_seq_s2   <= rd_seq_s1;
+end
 always @(posedge core_clk) begin
 	st_frame_sync1 <= w_st_frame_cnt;
 	st_frame_sync2 <= st_frame_sync1;
@@ -1627,6 +1778,7 @@ reg [31:0] c_cap_samples, c_cap_tiles, c_commit_count;
 reg [15:0] c_last_x, c_last_y;
 reg [7:0] c_last_cap_addr, c_last_commit_addr;
 reg [15:0] c_cpu_hb;
+reg [23:0] c_frame_pix_num;
 reg [7:0]  dbg_seq = 8'd0;
 reg [7:0]  dbg_msg [0:MSG_LEN-1];
 integer dbg_i;
@@ -1643,13 +1795,15 @@ always @(*) begin
 	dbg_msg[12] = c_v[15:8];  dbg_msg[13] = c_v[7:0];
 	dbg_msg[14] = c_s[15:8];  dbg_msg[15] = c_s[7:0];
 	dbg_msg[16] = c_x[15:8];  dbg_msg[17] = c_x[7:0];
-	dbg_msg[18] = {4'h0, c_r};
+	dbg_msg[18] = {c_frame_pix_num[7:4], c_r};
 	dbg_msg[19] = c_q;
 	dbg_msg[20] = c_st_frame[31:24]; dbg_msg[21] = c_st_frame[23:16];
 	dbg_msg[22] = c_st_frame[15:8];  dbg_msg[23] = c_st_frame[7:0];
-	dbg_msg[24] = {7'd0, c_st_busy};
+	dbg_msg[24] = {c_frame_pix_num[3:0], 3'd0, c_st_busy};
 	dbg_msg[25] = c_de_width[15:8]; dbg_msg[26] = c_de_width[7:0];
-	dbg_msg[27] = 8'd0;
+	// Capture geometry probe: 1280x720 must read 230400 (320 beats/line).
+	// Half that means only two of the four MIPI lanes are delivering data.
+	dbg_msg[27] = c_frame_pix_num[15:8];
 	dbg_msg[28] = c_cap_samples[31:24]; dbg_msg[29] = c_cap_samples[23:16];
 	dbg_msg[30] = c_cap_samples[15:8];  dbg_msg[31] = c_cap_samples[7:0];
 	dbg_msg[32] = c_cap_tiles[31:24]; dbg_msg[33] = c_cap_tiles[23:16];
@@ -1684,15 +1838,36 @@ always @(posedge core_clk) begin
 		dbg_tick <= RELOAD;
 		c_d <= dbg_d_cnt;  c_h <= dbg_h_cnt;  c_v <= dbg_v_cnt;
 		c_s <= dbg_s_hb_cnt; c_x <= dbg_x_hb_cnt;
-		c_st_frame <= st_frame_sync2; c_st_busy <= st_busy_sync2;
+		c_st_frame <= ENABLE_ST_ACCEL ? st_frame_sync2
+		                              : {rd_stall_s2, 4'd0, rd_left_s2};
+		c_st_busy <= st_busy_sync2;
 		c_de_width <= dbg_de_last_width;
-		c_cap_samples <= cap_samples_sync2;
-		c_cap_tiles <= cap_tiles_sync2;
-		c_commit_count <= commit_sync2;
-		c_last_x <= last_x_sync2; c_last_y <= last_y_sync2;
-		c_last_cap_addr <= last_cap_addr_sync2;
-		c_last_commit_addr <= last_commit_addr_sync2;
-		c_cpu_hb <= cpu_hb_sync2;
+		if (ENABLE_ST_ACCEL) begin
+			c_cap_samples <= cap_samples_sync2;
+			c_cap_tiles <= cap_tiles_sync2;
+			c_commit_count <= commit_sync2;
+			c_last_x <= last_x_sync2; c_last_y <= last_y_sync2;
+			c_last_cap_addr <= last_cap_addr_sync2;
+			c_last_commit_addr <= last_commit_addr_sync2;
+		end else if (DBG_PATTERN_EN) begin
+			// Pattern checker; see frame_buffer_read dbg_seq.
+			c_cap_samples  <= rd_seq_s2[111:80];
+			c_cap_tiles    <= {8'd0, rd_seq_s2[79:56]};
+			c_commit_count <= {8'd0, rd_seq_s2[55:32]};
+			c_last_x <= rd_seq_s2[31:16]; c_last_y <= rd_seq_s2[15:0];
+			c_last_cap_addr <= rd_push_s2[23:16];
+			c_last_commit_addr <= cp_err_sticky;
+		end else begin
+			// Capture probe; see cp_* above.
+			c_cap_samples <= gray2bin32(cp_de_s2);
+			c_cap_tiles <= gray2bin32(cp_hs_s2);
+			c_commit_count <= gray2bin32(cp_vs_s2);
+			c_last_x <= cp_lines_s2; c_last_y <= cp_beats_s2;
+			c_last_cap_addr <= rd_push_s2[23:16];
+			c_last_commit_addr <= cp_err_sticky;
+		end
+		c_cpu_hb <= ENABLE_ST_ACCEL ? cpu_hb_sync2 : {rd_push_s2[15:8], 8'd0};
+		c_frame_pix_num <= fpn_sync2;
 		// R = {w_arstn(PLL全锁), cal_done(DDR校准), vid_rst_n(视频复位释放),
 		//      SoC_GPIO0[0](摄像头 I2C 配置完成)}
 		c_r <= {w_arstn, cal_done, vid_rst_n, w_soc_gpio_write[0]};

@@ -151,6 +151,15 @@ if [ "$DO_FPGA" = 1 ]; then
   echo "=== [3/3] Efinity 综合/布局布线/生成 bitstream ==="
   rm -f outflow/fpga_src.proj_state.ini
   efx_run --prj fpga_src.xml -f compile --dir .
+  # Fail closed on warnings that silently change the netlist.  Efinity reports
+  # PASS while dropping a redeclared net, so a duplicate declaration reads as a
+  # build success and the wrong logic ships.  VERI-2170 is that case; keep this
+  # list short and grow it only for warnings with the same property.
+  if grep -qE 'VERI-2170|VERI-1329' outflow/fpga_src.map.out; then
+    echo "构建被拒绝：综合器丢弃了重复声明的对象，网表与源码不一致" >&2
+    grep -E 'VERI-2170|VERI-1329' outflow/fpga_src.map.out >&2
+    exit 1
+  fi
   echo
   echo "产物:"
   echo "  outflow/fpga_src.hex  (烧 SPI flash, 地址 0x000000)"

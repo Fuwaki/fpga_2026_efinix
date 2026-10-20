@@ -157,7 +157,13 @@ module layer_fetch #(
             valid_q <= pop;
     end
 
-    assign out_data  = rd_data;
+    // Outside the window the reader still clocks, but the word must not leak
+    // through: a stale RAM output would smear the previous line into the
+    // border.  valid_q marks "a word was popped last cycle", which is exactly
+    // the word rd_data is presenting now, so it is the right gate -- gating on
+    // in_window instead would be one position ahead and drop the last word of
+    // every line.
+    assign out_data  = valid_q ? rd_data : '0;
     assign out_valid = valid_q;
     assign stall     = want && empty;
     assign level     = count[11:0];
