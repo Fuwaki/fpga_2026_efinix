@@ -160,6 +160,14 @@ if [ "$DO_FPGA" = 1 ]; then
     grep -E 'VERI-2170|VERI-1329' outflow/fpga_src.map.out >&2
     exit 1
   fi
+  # DSP blocks are reserved for the NN accelerator: the video subsystem
+  # (instance u_vid and below) must not use any.  hier_util lists each
+  # instance with "dsp" as "total(self)".
+  vid_dsp=$(awk -F'|' '$2 ~ /^ *\+u_vid / {gsub(/ /,"",$5); split($5,a,"("); print a[1]}' outflow/fpga_src.hier_util.rpt)
+  if [ -n "$vid_dsp" ] && [ "$vid_dsp" != "0" ]; then
+    echo "构建被拒绝：视频子系统 u_vid 用了 $vid_dsp 个 DSP（应为 0，DSP 留给 NN）" >&2
+    exit 1
+  fi
   echo
   echo "产物:"
   echo "  outflow/fpga_src.hex  (烧 SPI flash, 地址 0x000000)"

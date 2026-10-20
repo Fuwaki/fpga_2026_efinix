@@ -38,6 +38,11 @@ stage_formal() {
     >"$LOG_DIR/yosys_check.log" 2>&1
   echo "PASS Yosys structural/formal read (log: $LOG_DIR/yosys_check.log)"
 }
+stage_vid() {
+  make -C sim all >"$LOG_DIR/vid_sim.log" 2>&1 || { tail -30 "$LOG_DIR/vid_sim.log"; exit 1; }
+  grep -E "^(PASS|tb_.* PASS)" "$LOG_DIR/vid_sim.log"
+  echo "PASS video subsystem lint + simulations (log: $LOG_DIR/vid_sim.log)"
+}
 stage_synth() {
   tools/build_all.sh --fpga-only | tee "$LOG_DIR/efinity.log"
   echo "PASS Efinity compile (log: $LOG_DIR/efinity.log)"
@@ -50,6 +55,7 @@ case "$target" in
   geometry) stage_geometry ;;
   rtl) stage_manifest; stage_geometry; stage_rtl; stage_lint ;;
   sim) stage_sim ;;
+  vid) stage_vid ;;
   formal) stage_formal ;;
   synth) stage_manifest; stage_geometry; stage_rtl; stage_lint; stage_synth ;;
   all)
@@ -59,6 +65,7 @@ case "$target" in
     stage_lint
     stage_sim
     stage_formal
+    stage_vid
     if [[ "${QUALITY_GATE_EFINITY:-0}" == 1 ]]; then stage_synth; fi
     echo "QUALITY GATE: PASS"
     ;;
