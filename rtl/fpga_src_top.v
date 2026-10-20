@@ -1457,8 +1457,8 @@ wire [7:0] enc_r = TP_EN ? tp_r   : comp_r;
 wire [7:0] enc_g = TP_EN ? tp_g   : comp_g;
 wire [7:0] enc_b = TP_EN ? tp_b   : comp_b;
 wire       enc_de = TP_EN ? tp_de  : comp_de;
-wire       enc_hs = TP_EN ? tp_hs  : st_hs;
-wire       enc_vs = TP_EN ? tp_vs  : st_vs;
+wire       enc_hs = TP_EN ? tp_hs  : comp_hs;
+wire       enc_vs = TP_EN ? tp_vs  : comp_vs;
 
 dvi_encoder dvi_encoder_m0
 (
