@@ -53,6 +53,8 @@ output	wire	[15:0]						rd_dbg_stall,
 output	wire	[11:0]						rd_dbg_left,
 output	wire	[23:0]						rd_dbg_push,
 output	wire	[111:0]						rd_dbg_seq,
+output	wire	[63:0]						rd_dbg_sum4,
+output	wire	[31:0]						rd_dbg_mm,
 
 input	wire 	[12:0]									H_FRONT_PORCH 	,
 input	wire 	[12:0]									H_SYNC 			,
@@ -394,7 +396,9 @@ if (RD_FREE_RUN) begin : gen_read_sv
 		.dbg_stall   (rd_dbg_stall),
 		.dbg_left    (rd_dbg_left),
 		.dbg_push    (rd_dbg_push),
-		.dbg_seq     (rd_dbg_seq)
+		.dbg_seq     (rd_dbg_seq),
+		.dbg_sum4    (rd_dbg_sum4),
+		.dbg_mm      (rd_dbg_mm)
 	);
 
 	// par2ser checks this before pushing.  layer_fetch only consumes inside the
@@ -410,6 +414,8 @@ assign rd_dbg_stall = 16'd0;
 assign rd_dbg_left  = 12'd0;
 assign rd_dbg_push  = 24'd0;
 assign rd_dbg_seq   = 112'd0;
+assign rd_dbg_sum4  = 64'd0;
+assign rd_dbg_mm    = 32'd0;
 data_tx #(
 		.VID_WIDTH 				( O_VID_WIDTH  ),
 		.FIFO_DIPTH  			( 1024 				 ),

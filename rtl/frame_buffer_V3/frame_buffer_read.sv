@@ -68,7 +68,13 @@ module frame_buffer_read
     // layer_fetch toward debayer: {pops per frame, input-side break count
     // (saturating), output break count, index of first output break, word at
     // it, word before it}.
-    output logic [111:0]      dbg_seq
+    output logic [111:0]      dbg_seq,
+    // Raw statistics over the words shown inside the layer, per frame:
+    // {sum[row even][hi byte], sum[even][lo], sum[odd][hi], sum[odd][lo]},
+    // each sum >> 10, so a channel mean is value * 1024 / (pixels per channel).
+    output logic [63:0]       dbg_sum4,
+    // {min, max, pixels >= 0xF8 >> 12, pixels <= 0x10 >> 12}, all saturating.
+    output logic [31:0]       dbg_mm
 );
 
     logic        ras_de, ras_hs, ras_vs, ras_sof, ras_vline0;
@@ -189,6 +195,45 @@ module frame_buffer_read
                     oq_bval  <= vout[15:0];
                     oq_bprev <= oq_prev;
                 end
+            end
+        end
+    end
+
+    // Row parity of the word now leaving layer_fetch.  ras_y is one clock
+    // ahead of the RAM output, and the layer starts on an even raster line,
+    // so the delayed raster parity is the layer's Bayer row parity.
+    logic        st_row_odd;
+    logic [25:0] st_sum [4];
+    logic [7:0]  st_min, st_max;
+    logic [19:0] st_sat, st_dark;
+    wire  [7:0]  st_hi = vout[15:8];
+    wire  [7:0]  st_lo = vout[7:0];
+    wire  [7:0]  st_wmin = (st_hi < st_lo) ? st_hi : st_lo;
+    wire  [7:0]  st_wmax = (st_hi > st_lo) ? st_hi : st_lo;
+    wire  [1:0]  st_nsat  = (st_hi >= 8'hF8) + (st_lo >= 8'hF8);
+    wire  [1:0]  st_ndark = (st_hi <= 8'h10) + (st_lo <= 8'h10);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            st_row_odd <= 1'b0;
+            for (int i = 0; i < 4; i++) st_sum[i] <= '0;
+            st_min <= 8'hFF; st_max <= 8'h00; st_sat <= '0; st_dark <= '0;
+            dbg_sum4 <= '0; dbg_mm <= '0;
+        end else begin
+            st_row_odd <= ras_y[0];
+            if (ras_vline0 & ~vline0_d) begin
+                dbg_sum4 <= {st_sum[0][25:10], st_sum[1][25:10],
+                             st_sum[2][25:10], st_sum[3][25:10]};
+                dbg_mm   <= {st_min, st_max, st_sat[19:12], st_dark[19:12]};
+                for (int i = 0; i < 4; i++) st_sum[i] <= '0;
+                st_min <= 8'hFF; st_max <= 8'h00; st_sat <= '0; st_dark <= '0;
+            end else if (lf_out_valid) begin
+                st_sum[{st_row_odd, 1'b0}] <= st_sum[{st_row_odd, 1'b0}] + st_hi;
+                st_sum[{st_row_odd, 1'b1}] <= st_sum[{st_row_odd, 1'b1}] + st_lo;
+                if (st_wmin < st_min) st_min <= st_wmin;
+                if (st_wmax > st_max) st_max <= st_wmax;
+                if (st_sat  != 20'hFFFFF) st_sat  <= st_sat  + st_nsat;
+                if (st_dark != 20'hFFFFF) st_dark <= st_dark + st_ndark;
             end
         end
     end

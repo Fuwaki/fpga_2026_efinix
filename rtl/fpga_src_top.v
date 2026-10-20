@@ -732,6 +732,8 @@ wire [15:0] w_rd_dbg_stall;
 wire [11:0] w_rd_dbg_left;
 wire [23:0] w_rd_dbg_push;
 wire [111:0] w_rd_dbg_seq;
+wire [63:0]  w_rd_dbg_sum4;
+wire [31:0]  w_rd_dbg_mm;
 
 // Debug: replace the sensor's pixels while keeping the sensor's own vs/hs/de
 // timing.  0 = camera.  1 = word counter (word n of a frame carries n[15:0]),
@@ -767,7 +769,15 @@ always @(posedge i_mipi_rx_pclk) begin
 end
 wire       pat_white = (pat_x < 10'd8) || (pat_x >= 10'd632) || (pat_y % 10'd90 < 10'd2);
 wire [7:0] pat_gray  = pat_white ? 8'hFF : {pat_x[9:2]};
-wire [31:0] cam_vin = {w_mipi_rx_data[39:32],w_mipi_rx_data[29:22],w_mipi_rx_data[19:12],w_mipi_rx_data[9:2]};
+// CSI-2 RX puts the first pixel of a beat in the lowest slice (p0 = [9:0]).
+// Downstream, the frame store emits the high 16 bits of each 32-bit word
+// first, and the debayer input {ch0_b, ch0_g} takes the high byte of each
+// word as its LEFT pixel.  So the first pixel goes in the top byte, in order:
+// {p0, p1, p2, p3}.  The old {p3,p2,p1,p0} packing showed p2 p3 p0 p1 and
+// later p1 p0 p3 p2: swapped pairs gave a 2-pixel sawtooth on vertical
+// edges, swapped pixels inside a pair gave red/blue fringes, and the CFA phase
+// had been chosen to match, so colour still looked right.
+wire [31:0] cam_vin = {w_mipi_rx_data[9:2],w_mipi_rx_data[19:12],w_mipi_rx_data[29:22],w_mipi_rx_data[39:32]};
 wire [31:0] fb_vin  = (DBG_PATTERN == 2'd1) ? {pat_word, pat_word + 16'd1} :
                       (DBG_PATTERN == 2'd2) ? {4{pat_gray}} : cam_vin;
 
@@ -808,6 +818,8 @@ wire [31:0] fb_vin  = (DBG_PATTERN == 2'd1) ? {pat_word, pat_word + 16'd1} :
 /*o*/.rd_dbg_left   (w_rd_dbg_left),
 /*o*/.rd_dbg_push   (w_rd_dbg_push),
 /*o*/.rd_dbg_seq    (w_rd_dbg_seq),
+/*o*/.rd_dbg_sum4   (w_rd_dbg_sum4),
+/*o*/.rd_dbg_mm     (w_rd_dbg_mm),
 
 /*i*/.H_FRONT_PORCH (HFP/2  		),//
 /*i*/.H_SYNC 	 	    (HSP/2	 	),///2
@@ -1026,7 +1038,7 @@ wire [15:0] b_gain;
 //       256 = 1.000x   213 = 0.832x(当前)   160 = 0.625x   128 = 0.500x
 //----------------------------------------------------------------------------
 localparam WB_R = 16'd256;	// 红光通道 (1.000x)
-localparam WB_G = 16'd213;	// 绿光通道 (0.832x) —— 扫描模式测出来的最优值
+localparam WB_G = 16'd133;	// 绿光通道 (0.520x) —— binning 模式按灰度世界: G 均值约为 R/B 的 1.9 倍
 localparam WB_B = 16'd256;	// 蓝光通道 (1.000x)
 
 //============================================================================
@@ -1080,6 +1092,28 @@ end
 
 wire [15:0] g_gain_eff = WB_SCAN_EN ? wb_g_sel : (|g_gain ? g_gain : WB_G);
 
+//----------------------------------------------------------------------------
+// Black level.  The sensor holds its dark level at 64/1023 (16 in the 8-bit
+// slice the frame store keeps).  Left in, it lifts every shadow, and gamma
+// turns that into a grey haze over the whole picture.  Subtract it and stretch
+// the remainder back to full scale: 255/(255-16) ~= 273/256.
+// Combinational on purpose: a register here would put the data one clock
+// behind ch0_de/hs/vs, which the debayer consumes unchanged.
+//----------------------------------------------------------------------------
+localparam [7:0] BLC_LEVEL = 8'd16;
+function [7:0] blc8;
+	input [7:0] v;
+	reg   [7:0] d;
+	reg   [16:0] m;
+	begin
+		d = (v > BLC_LEVEL) ? (v - BLC_LEVEL) : 8'd0;
+		m = d * 9'd273;
+		blc8 = (m[16:8] > 9'd255) ? 8'd255 : m[15:8];
+	end
+endfunction
+wire [7:0] ch0_g_blc = blc8(ch0_g);
+wire [7:0] ch0_b_blc = blc8(ch0_b);
+
 debayer_top_2to1 debayer_top
 (
 	.in_pclk		  (vid_clk_dvi2),//(i_mipi_rx_pclk ),
@@ -1089,7 +1123,7 @@ debayer_top_2to1 debayer_top
 	.raw_hs_i		  (ch0_hs		      ),
 	.raw_de_i		  (ch0_de		      ),
 	.raw_valid_i	(ch0_de	        ),
-	.raw_datax4_i	({ch0_b,ch0_g}	),
+	.raw_datax4_i	({ch0_b_blc,ch0_g_blc}	),
 	.r_gain (|r_gain ? r_gain : WB_R ),
   .g_gain (g_gain_eff ),
   .b_gain (|b_gain ? b_gain : WB_B ),
@@ -1736,11 +1770,15 @@ reg [15:0] rd_stall_s1 = 16'd0, rd_stall_s2 = 16'd0;
 reg [11:0] rd_left_s1 = 12'd0, rd_left_s2 = 12'd0;
 reg [23:0] rd_push_s1 = 24'd0, rd_push_s2 = 24'd0;
 reg [111:0] rd_seq_s1 = 112'd0, rd_seq_s2 = 112'd0;
+reg [63:0]  rd_sum4_s1 = 64'd0, rd_sum4_s2 = 64'd0;
+reg [31:0]  rd_mm_s1 = 32'd0, rd_mm_s2 = 32'd0;
 always @(posedge core_clk) begin
 	rd_stall_s1 <= w_rd_dbg_stall; rd_stall_s2 <= rd_stall_s1;
 	rd_left_s1  <= w_rd_dbg_left;  rd_left_s2  <= rd_left_s1;
 	rd_push_s1  <= w_rd_dbg_push;  rd_push_s2  <= rd_push_s1;
 	rd_seq_s1   <= w_rd_dbg_seq;   rd_seq_s2   <= rd_seq_s1;
+	rd_sum4_s1  <= w_rd_dbg_sum4;  rd_sum4_s2  <= rd_sum4_s1;
+	rd_mm_s1    <= w_rd_dbg_mm;    rd_mm_s2    <= rd_mm_s1;
 end
 always @(posedge core_clk) begin
 	st_frame_sync1 <= w_st_frame_cnt;
@@ -1858,10 +1896,12 @@ always @(posedge core_clk) begin
 			c_last_cap_addr <= rd_push_s2[23:16];
 			c_last_commit_addr <= cp_err_sticky;
 		end else begin
-			// Capture probe; see cp_* above.
-			c_cap_samples <= gray2bin32(cp_de_s2);
-			c_cap_tiles <= gray2bin32(cp_hs_s2);
-			c_commit_count <= gray2bin32(cp_vs_s2);
+			// Camera mode: raw statistics (frame_buffer_read dbg_sum4/dbg_mm)
+			// plus the capture probe's frame counter and line geometry.
+			c_cap_samples <= rd_sum4_s2[63:32];
+			c_cap_tiles <= rd_sum4_s2[31:0];
+			c_commit_count <= rd_mm_s2;
+			c_st_frame <= gray2bin32(cp_vs_s2);
 			c_last_x <= cp_lines_s2; c_last_y <= cp_beats_s2;
 			c_last_cap_addr <= rd_push_s2[23:16];
 			c_last_commit_addr <= cp_err_sticky;
