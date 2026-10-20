@@ -63,9 +63,6 @@
         <efx:design_file name="rtl/st_accel/st_layer_sel_generated.v" version="default" library="default" />
         <efx:design_file name="rtl/st_accel/st_axi_mm.v" version="default" library="default" />
         <efx:design_file name="rtl/fpga_src_top.v" version="default" library="default" />
-        <efx:design_file name="rtl/video/video_pkg.vh" version="default" library="default" />
-        <efx:design_file name="rtl/isp/isp_top.v" version="default" library="default" />
-        <efx:design_file name="rtl/display/video_compositor.v" version="default" library="default" />
         <efx:top_vhdl_arch name="" />
         <efx:msg_config name="" />
         <efx:partition_definitions name="" />

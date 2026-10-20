@@ -19,7 +19,6 @@
 /////////////////////////////////////////////////////////////////////////////////
 //`define SOFT_TAP 1
 `include "ddr3_controller/ddr3_parameter.vh"
-`include "video/video_pkg.vh"
 // `include "define.v"
 
 localparam ENABLE_ST_ACCEL = 0;
@@ -266,6 +265,8 @@ localparam HFP      = 88;
 localparam HSP      = 44;
 localparam HBP      = 148;
 
+// Camera layer geometry: native 1280x720 placed at the centre of the raster.
+// Declared here because the frame-store read port is dimensioned from it.
 localparam MAX_VRES = 1080;
 localparam VFP      = 4;
 localparam VSP      = 5;
@@ -711,31 +712,6 @@ wire [AXI_ID_WIDTH-1:0] st_rid; wire [AXI_DATA_WIDTH-1:0] st_rdata; wire [1:0] s
 wire st_rlast, st_rvalid, st_rready;
 
 //=====================================================================================
-// ISP (CSI domain) -> RGBx32 for DDR writer
-//=====================================================================================
-wire [31:0] w_csi_raw_pack = {w_mipi_rx_data[39:32],w_mipi_rx_data[29:22],w_mipi_rx_data[19:12],w_mipi_rx_data[9:2]};
-wire        w_isp_rgb_de;
-wire [31:0] w_isp_rgb_x;
-wire        w_isp_rgb_vs, w_isp_rgb_hs;
-
-isp_top #(
-	.WB_R(16'd256),
-	.WB_G(16'd213),
-	.WB_B(16'd256)
-) u_isp (
-	.clk        (i_mipi_rx_pclk),
-	.rst_n      (w_mipi_rx_pclk_arstn),
-	.vs         (w_mipi_rx_vs),
-	.hs         (w_mipi_rx_hs),
-	.de         (w_mipi_rx_de & w_mipi_rx_hs),
-	.raw_pack4  (w_csi_raw_pack),
-	.rgb_vs     (w_isp_rgb_vs),
-	.rgb_hs     (w_isp_rgb_hs),
-	.rgb_de     (w_isp_rgb_de),
-	.rgb_x      (w_isp_rgb_x)
-);
-
-//=====================================================================================
 //frame buffer
 //=====================================================================================
 wire [7:0] 	ch0_r;
@@ -748,16 +724,17 @@ wire [31:0] ch0_rgb32;
 // IMX219
   frame_buffer #(
 .I_VID_WIDTH         (32),
-.O_VID_WIDTH         (32),
-.START_ADDR          (`DDR_CAM0_BASE),
+.O_VID_WIDTH         (16),
+.START_ADDR          (32'h00000),
 .AXI_DATA_WIDTH      ( AXI_DATA_WIDTH	),
 .AXI_ADDR_WIDTH      ( AXI_ADDR_WIDTH	),
 .WR_FIFO_DEPTH	      ( 1024		),    
 .RD_FIFO_DEPTH 	      ( 1024 	),
 .BURST_LEN  	       (127),
-.FB_NUM	            (`DDR_CAM_FB_NUM),
-.MAX_VID_WIDTH	    (`CAM_ACTIVE_W) ,
-.MAX_VID_HIGHT	    (`CAM_ACTIVE_H) 
+.FB_NUM	            (3),
+.RD_FREE_RUN        (1),
+.MAX_VID_WIDTH	    (960) ,
+.MAX_VID_HIGHT	    (1080) 
 
 
 )checker0(
@@ -765,24 +742,24 @@ wire [31:0] ch0_rgb32;
        .rst_n			(vid_rst_n   ),
 
 /*i*/.i_clk			(i_mipi_rx_pclk      ),
-/*i*/.i_vs			(w_isp_rgb_vs	),
-/*i*/.vin 			(w_isp_rgb_x),
-/*i*/.i_de			(w_isp_rgb_de),
+/*i*/.i_vs			(w_mipi_rx_vs	),
+/*i*/.i_de			(w_mipi_rx_de & w_mipi_rx_hs	),
+/*i*/.vin 			({w_mipi_rx_data[39:32],w_mipi_rx_data[29:22],w_mipi_rx_data[19:12],w_mipi_rx_data[9:2]}	),
                      
 /*i*/.o_clk			(vid_clk_dvi2),//(i_mipi_rx_pclk	),
 /*i*/.o_hs    		(ch0_hs		),			
 /*i*/.o_vs    		(ch0_vs		),			
 /*i*/.o_de    		(ch0_de		),			
-/*i*/.vout    		(ch0_rgb32),
+/*i*/.vout    		({ch0_g,ch0_b}	),
 
-/*i*/.H_FRONT_PORCH (HFP/2 + (`DISP_H_MARGIN/2)),//
+/*i*/.H_FRONT_PORCH (HFP/2  		),//
 /*i*/.H_SYNC 	 	    (HSP/2	 	),///2
-/*i*/.H_VALID 	 	  (`CAM_ACTIVE_W/2),//		
-/*i*/.H_BACK_PORCH	(HBP/2 + (`DISP_H_MARGIN/2)),//		
-/*i*/.V_FRONT_PORCH (VFP + `DISP_V_MARGIN),//		
-/*i*/.V_SYNC 	 	    (VSP 	 	),//		
-/*i*/.V_VALID 	 	  (`CAM_ACTIVE_H),//		
-/*i*/.V_BACK_PORCH	(VBP + `DISP_V_MARGIN),//		
+/*i*/.H_VALID 	 	  (MAX_HRES/2     ),//
+/*i*/.H_BACK_PORCH	(HBP/2		),//
+/*i*/.V_FRONT_PORCH (VFP  		),//
+/*i*/.V_SYNC 	 	    (VSP 	 	),//
+/*i*/.V_VALID 	 	  (MAX_VRES     ),//
+/*i*/.V_BACK_PORCH	(VBP		),//
 
        .awid			(fb_awid	),      
        .awaddr		(fb_awaddr	),
@@ -971,6 +948,11 @@ ddr3_top                 u_ddr3_top
 //***************************************************************************
 
 
+wire        rgb_vs;
+wire        rgb_hs;
+wire        rgb_de;
+wire        rgb_valid;
+wire [47:0] rgb_datax2;
 wire [15:0] r_gain;
 wire [15:0] g_gain;
 wire [15:0] b_gain;
@@ -1041,15 +1023,25 @@ end
 
 wire [15:0] g_gain_eff = WB_SCAN_EN ? wb_g_sel : (|g_gain ? g_gain : WB_G);
 
-// debayer moved to isp_top (capture domain)
-wire        rgb_vs = ch0_vs;
-wire        rgb_hs = ch0_hs;
-wire        rgb_de = ch0_de;
-wire [7:0]  cap_r = ch0_rgb32[23:16];
-wire [7:0]  cap_g = ch0_rgb32[15:8];
-wire [7:0]  cap_b = ch0_rgb32[7:0];
-wire [47:0] rgb_datax2;
-assign rgb_datax2 = {cap_b, cap_g, cap_r, cap_b, cap_g, cap_r};
+debayer_top_2to1 debayer_top
+(
+	.in_pclk		  (vid_clk_dvi2),//(i_mipi_rx_pclk ),
+	.in_rstn		  (vid_rst_n	),
+	
+	.raw_vs_i		  (ch0_vs		      ),
+	.raw_hs_i		  (ch0_hs		      ),
+	.raw_de_i		  (ch0_de		      ),
+	.raw_valid_i	(ch0_de	        ),
+	.raw_datax4_i	({ch0_b,ch0_g}	),
+	.r_gain (|r_gain ? r_gain : WB_R ),
+  .g_gain (g_gain_eff ),
+  .b_gain (|b_gain ? b_gain : WB_B ),
+	.rgb_vs_o		  (rgb_vs         ),
+	.rgb_hs_o		  (rgb_hs         ),
+	.rgb_de_o		  (rgb_de         ),
+	.rgb_valid_o	(rgb_valid      ),
+	.rgb_datax2_o (rgb_datax2     )//b,g,r,b,g,r
+);
 reg rgb_vs_r = 'd0;
 always @( posedge hdmi_tx_slow_clk )
 begin
@@ -1071,7 +1063,7 @@ begin
       vid_cnt <= ~vid_cnt ;
 
     if( vid_cnt )
-      {hdmi_tx_bdata,hdmi_tx_gdata,hdmi_tx_rdata} <= rgb_datax2[23:0]; // DDR RGB
+      {hdmi_tx_bdata,hdmi_tx_gdata,hdmi_tx_rdata} <= rgb_datax2[23:0];
     else 
       {hdmi_tx_bdata,hdmi_tx_gdata,hdmi_tx_rdata} <= rgb_datax2[47:24];
 
@@ -1390,22 +1382,6 @@ begin
 end
 
 
-// ---- ST video pipe: downscale capture -> st_accel sharpen -> PiP overlay ----
-// 0 = live network output; 1 = coordinate diagnostic pattern.  The diagnostic
-// mode is deliberately compile-time so it cannot be changed by a corrupt
-// camera/SoC register and gives a clean A/B bitstream for blind debugging.
-localparam ST_DIAG_MODE = 1'b0;
-wire [7:0] comp_r, comp_g, comp_b;
-wire       comp_de, comp_hs, comp_vs;
-video_compositor u_compositor (
-    .clk (hdmi_tx_slow_clk),
-    .rst_n(vid_rst_n),
-    .in_de (sat_de), .in_hs(sat_hs), .in_vs(sat_vs),
-    .in_r  (sat_rdata), .in_g(sat_gdata), .in_b(sat_bdata),
-    .out_de(comp_de), .out_hs(comp_hs), .out_vs(comp_vs),
-    .out_r (comp_r), .out_g(comp_g), .out_b(comp_b)
-);
-
 //==============================================================================
 // HDMI 自测图样 (TP_EN)
 //
@@ -1453,12 +1429,12 @@ always @(*) begin
   endcase
 end
 
-wire [7:0] enc_r = TP_EN ? tp_r   : comp_r;
-wire [7:0] enc_g = TP_EN ? tp_g   : comp_g;
-wire [7:0] enc_b = TP_EN ? tp_b   : comp_b;
-wire       enc_de = TP_EN ? tp_de  : comp_de;
-wire       enc_hs = TP_EN ? tp_hs  : comp_hs;
-wire       enc_vs = TP_EN ? tp_vs  : comp_vs;
+wire [7:0] enc_r = TP_EN ? tp_r   : sat_rdata;
+wire [7:0] enc_g = TP_EN ? tp_g   : sat_gdata;
+wire [7:0] enc_b = TP_EN ? tp_b   : sat_bdata;
+wire       enc_de = TP_EN ? tp_de  : sat_de;
+wire       enc_hs = TP_EN ? tp_hs  : sat_hs;
+wire       enc_vs = TP_EN ? tp_vs  : sat_vs;
 
 dvi_encoder dvi_encoder_m0
 (

@@ -12,8 +12,13 @@ parameter	RD_FIFO_DEPTH 	= 1024,
 parameter START_ADDR			=	33'h000201900,
 parameter BURST_LEN       = 8'd15,
 parameter FB_NUM			    = 	3,//2 buffer ,3 buffer 
-parameter MAX_VID_WIDTH		=	1920 ,//video width 
+parameter MAX_VID_WIDTH		=	1920 ,//video width (in I_VID_WIDTH words)
 parameter MAX_VID_HIGHT		=	1080 ,//wideo height
+// 1 = display timing free-runs from reset and never waits for a captured
+// frame.  The panel keeps its lock even when DDR holds nothing yet, which is
+// what makes display independent of the capture rate.  0 = legacy behaviour
+// (no sync at all until frame_stable asserts).
+parameter RD_FREE_RUN        = 0,
 parameter AXI_STRB_WIDTH 	= AXI_DATA_WIDTH/8
 ) (
 
@@ -302,14 +307,35 @@ end
 
 reg rd_frame_en_r0 = 'd0;
 reg rd_frame_en_r1 = 'd0;
+
+// RD_FREE_RUN: hold the read side disabled for a few cycles after reset, then
+// raise enable once and leave it high.  The single 0->1 edge is required:
+// data_tx derives its own FIFO reset and its internal enable from it
+// (pos_frame_start = frame_en & ~frame_start_d0), so a permanently-high
+// enable would never reset the read FIFO and the state machines would never
+// leave their post-reset state.
+localparam integer FREE_RUN_DELAY = 16;
+reg [7:0] free_run_cnt = 'd0;
+
 always @( posedge o_clk or negedge rd_clk_rst_n )
 begin
     if( !rd_clk_rst_n ) begin
       rd_frame_en_r0 <= 1'b0;
       rd_frame_en_r1 <= 1'b0;
+      free_run_cnt   <= 'd0;
     end else begin
       rd_frame_en_r0 <= frame_stable;
-      rd_frame_en_r1 <= rd_frame_en_r0;
+
+      if (RD_FREE_RUN) begin
+        if (free_run_cnt != FREE_RUN_DELAY[7:0]) begin
+          free_run_cnt   <= free_run_cnt + 1'b1;
+          rd_frame_en_r1 <= 1'b0;
+        end else begin
+          rd_frame_en_r1 <= 1'b1;
+        end
+      end else begin
+        rd_frame_en_r1 <= rd_frame_en_r0;
+      end
     end
 end
 
