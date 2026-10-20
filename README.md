@@ -23,6 +23,8 @@ python3 tools/board_smoke_test.py --port /dev/ttyUSB2 --json
 
 ---
 
+
+视频重构说明见 `docs/video_architecture.md`、基线 `docs/refactor_baseline.md`。
 ## 1. 数据通路
 
 ```mermaid
