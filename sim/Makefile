@@ -15,14 +15,15 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          common/mul_nodsp.sv common/fifo_sync_core.sv common/fifo_async_core.sv \
          common/vstream_fifo.sv \
          dma/ring_if.sv dma/frame_ring_core.sv dma/frame_ring.sv \
-         dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv)
+         dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv \
+         dbg/vid_testgen.sv dbg/vid_testchk.sv vid_subsystem.sv)
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
        $(ROOT)/rtl/vid/common/sva/axi4_sva.sv \
        $(ROOT)/sim/bind/vid_bind.sv
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_fifo tb_ring tb_ring_tight tb_dma sva_neg
+TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -43,7 +44,7 @@ define build
 	  echo "FAIL $(1): warnings in rtl/vid (see $(OBJ)/$(1)/build.log)"; exit 1; fi
 endef
 
-tb_fifo tb_ring tb_dma:
+tb_fifo tb_ring tb_dma tb_vidsub:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 
@@ -51,6 +52,11 @@ tb_fifo tb_ring tb_dma:
 tb_ring_tight:
 	$(call build,$@,tb_ring,tb_ring,-GSLOTS=3)
 	$(OBJ)/$@/Vtb_ring +verilator+seed+$(SEED) +verilator+rand+reset+2
+
+# A DDR controller that does not echo AXI IDs (the board's may not).
+tb_vidsub_badid:
+	$(call build,$@,tb_vidsub,tb_vidsub,-GBAD_IDS=1)
+	$(OBJ)/$@/Vtb_vidsub +verilator+seed+$(SEED) +verilator+rand+reset+2
 
 # The checkers must fire: a source that withdraws beats has to fail.
 sva_neg:

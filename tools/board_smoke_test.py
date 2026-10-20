@@ -71,6 +71,8 @@ def main():
     ap.add_argument("--port", default="/dev/ttyUSB2")
     ap.add_argument("--seconds", type=float, default=3.0)
     ap.add_argument("--json", action="store_true", help="emit JSON only")
+    ap.add_argument("--vid", action="store_true",
+                    help="decode the vid_subsystem status slots (TELEM_VID=1 builds)")
     args = ap.parse_args()
     try:
         import serial
@@ -102,6 +104,33 @@ def main():
               latest["last_cap_addr"] == 255 and
               1200 <= latest["de_width_core_cycles"] <= 1400)
     result = {"ok": ok, "frames": len(got), "latest": latest, "delta": delta}
+    if args.vid and latest is not None:
+        # Slot layout: see the TELEM_VID branch in rtl/fpga_src_top.v.
+        def word(v):
+            return {"f": v >> 26, "y": (v >> 16) & 0x3FF, "w": (v >> 6) & 0x3FF, "chk": v & 0x3F}
+        pos = latest["st_tiles"]
+        vid = {
+            "selftest_written":    latest["cap_samples"] & 0xFFFF,
+            "selftest_checked":    latest["cap_samples"] >> 16,
+            "selftest_bad_frames": latest["cap_tiles"] >> 16,
+            "selftest_bad_words":  latest["cap_tiles"] & 0xFFFF,
+            "last_bad_got":        word(latest["commit_count"]),
+            "legacy_wlen_errors":  pos >> 16,
+            "legacy_last_awlen":   (pos >> 8) & 0xFF,
+            "legacy_last_beats":   pos & 0xFF,
+            "ring_commits":        latest["last_x"],
+            "writer_errors":       latest["last_y"],
+            "writer_skips":        latest["last_cap_addr"] & 0x7F,
+            "ring_proto_err":      bool(latest["last_cap_addr"] & 0x80),
+            "ring_aborts":         latest["last_commit_addr"],
+        }
+        if delta is not None:
+            vid["written_per_s"] = 2 * ((latest["cap_samples"] - got[-2]["cap_samples"]) & 0xFFFF)
+            vid["checked_per_s"] = 2 * (((latest["cap_samples"] >> 16) - (got[-2]["cap_samples"] >> 16)) & 0xFFFF)
+        vid["ok"] = (vid["selftest_bad_frames"] == 0 and vid["selftest_bad_words"] == 0
+                     and vid["writer_errors"] == 0 and not vid["ring_proto_err"]
+                     and vid["selftest_checked"] > 0)
+        result["vid"] = vid
     if args.json:
         print(json.dumps(result, separators=(",", ":")))
     elif latest is None:

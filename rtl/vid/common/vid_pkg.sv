@@ -172,6 +172,39 @@ package vid_pkg;
     split_col:  12'(CAM_W / 2)
   };
 
+  // ----------------------------------------------------- subsystem status
+  // Everything vid_subsystem reports, for telemetry.  Counters wrap.
+  typedef struct packed {
+    ring_status_t     test_ring;
+    logic [SEQ_W-1:0] tw_frames;      // test writer: committed
+    logic [SEQ_W-1:0] tw_errors;      //              aborted / resynchronised
+    logic [SEQ_W-1:0] tw_skipped;     //              no free slot
+    logic [31:0]      tw_sig;         //              signature of the last frame
+    logic [SEQ_W-1:0] tc_frames;      // test checker: frames read back intact
+    logic [SEQ_W-1:0] tc_bad_frames;
+    logic [31:0]      tc_bad_words;
+    logic [31:0]      tc_first_bad;
+    logic [31:0]      tc_last_bad;    //              last wrong word received
+    logic [31:0]      tc_last_pos;    //              where: {frame[7:0], line[11:0], word[11:0]}
+    logic [SEQ_W-1:0] tr_miss;        // test reader: nothing new to read
+    logic [15:0]      lg_wlen_err;    // legacy writer: bursts whose W beat count != awlen + 1
+    logic [7:0]       lg_last_len;    //                awlen of the last such burst
+    logic [7:0]       lg_last_beats;  //                beats it actually sent
+  } vid_status_t;
+
+  // ------------------------------------------------------- test pattern
+  // Word w of line y of frame f, for DMA self-tests in simulation and on the
+  // board.  Encodes all three so a checker can tell a wrong frame, line or
+  // word apart; the low bits are a check field.  No multiplies, so it costs a
+  // few LUTs.
+  function automatic logic [31:0] test_word(input logic [15:0] f,
+                                            input logic [11:0] y,
+                                            input logic [11:0] w);
+    logic [5:0] chk;
+    chk = f[5:0] ^ y[5:0] ^ w[5:0] ^ {y[9:6], 2'b10} ^ {w[9:6], 2'b01};
+    return {f[5:0], y[9:0], w[9:0], chk};
+  endfunction
+
   // ---------------------------------------------------------------- helpers
   function automatic int clog2u(input int v);
     int r = 0;

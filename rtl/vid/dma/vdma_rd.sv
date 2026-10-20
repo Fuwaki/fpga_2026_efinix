@@ -104,7 +104,9 @@ module vdma_rd
 
     assign busy    = (state != ST_IDLE);
     assign m.arid  = '0;
-    assign m.rready = (state == ST_RUN) && (gear_n == 0);
+    // Take the next beat on the cycle the last word of the current one
+    // leaves, so words flow at one per clock.
+    assign m.rready = (state == ST_RUN) && (gear_n <= ($clog2(R+1))'(1));
 
     // Words leave gear one per cycle; credit guarantees FIFO room.
     assign q_wen   = (gear_n != 0);
@@ -148,6 +150,14 @@ module vdma_rd
                       - (q_wen ? (LW + 2)'(1) : '0);
 
             // Split each received beat into words, word 0 first (lowest).
+            if (gear_n != 0 && last_word_of_beat) begin
+                if (xb_r == nb - 1'b1) begin
+                    xb_r <= '0;
+                    y_r  <= y_r + 1'b1;
+                end else begin
+                    xb_r <= xb_r + 1'b1;
+                end
+            end
             if (m.rvalid && m.rready) begin
                 gear   <= m.rdata;
                 gear_n <= ($clog2(R+1))'(R);
@@ -156,14 +166,6 @@ module vdma_rd
                 gear   <= gear >> OW;
                 gear_n <= gear_n - 1'b1;
                 gear_i <= gear_i + 1'b1;
-                if (last_word_of_beat) begin
-                    if (xb_r == nb - 1'b1) begin
-                        xb_r <= '0;
-                        y_r  <= y_r + 1'b1;
-                    end else begin
-                        xb_r <= xb_r + 1'b1;
-                    end
-                end
             end
 
             unique case (state)

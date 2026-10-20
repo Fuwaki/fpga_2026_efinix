@@ -10,6 +10,8 @@
 //   * interface ports with modports, $bits() of an interface member
 //   * block-RAM inference through the type-agnostic FIFO cores
 //   * mul_nodsp: a variable multiply that must stay off the DSP blocks
+//   * an array of interfaces as a module port (probe_mux), as the AXI
+//     arbiter and the frame ring use
 
 /* verilator lint_off UNUSEDSIGNAL */   // probe only: deliberately partial use
 module probe_gain (
@@ -37,6 +39,47 @@ module probe_gain (
     assign s.ready = m.ready;
 endmodule
 /* verilator lint_on UNUSEDSIGNAL */
+
+
+// N streams in through one interface-array port, the lowest valid one wins.
+module probe_mux #(
+    parameter int N = 2
+) (
+    vstream_if.snk s [N],
+    vstream_if.src m
+);
+    localparam int DW = $bits(m.data);
+    logic [N-1:0]  v;
+    logic [DW-1:0] d   [N];
+    logic [N-1:0]  sof, eol;
+    logic [N-1:0]  rdy;
+
+    for (genvar i = 0; i < N; i++) begin : g_in
+        assign v[i]       = s[i].valid;
+        assign d[i]       = s[i].data;
+        assign sof[i]     = s[i].sof;
+        assign eol[i]     = s[i].eol;
+        assign s[i].ready = rdy[i];
+    end
+
+    always_comb begin
+        m.valid = 1'b0;
+        m.data  = '0;
+        m.sof   = 1'b0;
+        m.eol   = 1'b0;
+        rdy     = '0;
+        for (int i = N - 1; i >= 0; i--) begin
+            if (v[i]) begin
+                m.valid = 1'b1;
+                m.data  = d[i];
+                m.sof   = sof[i];
+                m.eol   = eol[i];
+                rdy     = '0;
+                rdy[i]  = m.ready;
+            end
+        end
+    end
+endmodule
 
 
 module sv_probe_top
@@ -89,9 +132,25 @@ module sv_probe_top
         end
     end
 
-    assign out_valid  = b[2].valid;
-    assign out_sof    = b[2].sof;
-    assign out_eol    = b[2].eol;
-    assign out_data   = b[2].data;
-    assign b[2].ready = out_ready;
+    vstream_if #(.T(rgb565_t), .PPC(BEAT_PIX)) mi [2] (.clk(clk_b), .rst_n(rst_n));
+    vstream_if #(.T(rgb565_t), .PPC(BEAT_PIX)) mo (.clk(clk_b), .rst_n(rst_n));
+
+    assign mi[0].valid = b[2].valid;
+    assign mi[0].sof   = b[2].sof;
+    assign mi[0].eol   = b[2].eol;
+    assign mi[0].data  = b[2].data;
+    assign b[2].ready  = mi[0].ready;
+
+    assign mi[1].valid = in_valid & in_sof;
+    assign mi[1].sof   = 1'b1;
+    assign mi[1].eol   = 1'b1;
+    assign mi[1].data  = ~in_data;
+
+    probe_mux #(.N(2)) u_mux (.s(mi), .m(mo));
+
+    assign out_valid = mo.valid;
+    assign out_sof   = mo.sof;
+    assign out_eol   = mo.eol;
+    assign out_data  = mo.data;
+    assign mo.ready  = out_ready;
 endmodule

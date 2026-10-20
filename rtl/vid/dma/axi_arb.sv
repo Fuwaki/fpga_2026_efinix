@@ -9,18 +9,23 @@
 //     accepted: the grant is locked while valid && !ready;
 //   * W beats follow AW order: each accepted AW pushes its master index into
 //     a small FIFO, and W is taken from the master at its head;
-//   * responses go back by ID: the master index is placed in the top ID
-//     bits, the master's own ID in the rest.
+//   * responses go back in issue order, not by ID.  Every request goes
+//     downstream with the same ID, so AXI requires the slave to answer in
+//     order, and each accepted address pushes {master, master's ID} into an
+//     order FIFO that routes the matching response.  The board's DDR
+//     controller is encrypted and cannot be shown to echo IDs; with a single
+//     ID it does not have to.
 //
-// Many bursts may be outstanding; the only limit is WQ_DEPTH accepted
-// writes whose data has not been sent yet.
+// Many bursts may be outstanding: up to WQ_DEPTH writes and RQ_DEPTH reads
+// (address accepted, response not yet complete).
 module axi_arb
     import vid_pkg::*;
 #(
     parameter int NW       = 2,
     parameter int NR       = 2,
     parameter int STARVE   = 256,
-    parameter int WQ_DEPTH = 8
+    parameter int WQ_DEPTH = 8,
+    parameter int RQ_DEPTH = 8
 ) (
     axi4_wr_if.slv sw [NW],
     axi4_rd_if.slv sr [NR],
@@ -28,13 +33,8 @@ module axi_arb
     axi4_rd_if.mst mr
 );
     localparam int NMAX = (NW > NR) ? NW : NR;
-    localparam int XW   = $clog2((NMAX > 1) ? NMAX : 2);   // master index bits in the ID
-    localparam int LIW = AXI_IW - XW;           // master-local ID bits kept
-
-    initial begin
-        if (LIW < 1)
-            $error("axi_arb: too many masters for %0d ID bits", AXI_IW);
-    end
+    localparam int XW   = $clog2((NMAX > 1) ? NMAX : 2);   // master index bits
+    localparam int OW   = XW + AXI_IW;                     // order FIFO entry: {master, ID}
 
     // ------------------------------------------------- flatten interfaces
     logic [NW-1:0]     aw_v, w_v, w_l, b_r;
@@ -43,6 +43,7 @@ module axi_arb
     logic [AXI_IW-1:0] aw_id [NW];
     logic [AXI_DW-1:0] w_d   [NW];
     logic [NW-1:0]     aw_rdy, w_rdy, b_vld;
+    logic [AXI_IW-1:0] b_id, r_id;              // ID of the response being returned
 
     for (genvar i = 0; i < NW; i++) begin : g_w
         assign aw_v[i]  = sw[i].awvalid;
@@ -56,7 +57,7 @@ module axi_arb
         assign sw[i].awready = aw_rdy[i];
         assign sw[i].wready  = w_rdy[i];
         assign sw[i].bvalid  = b_vld[i];
-        assign sw[i].bid     = AXI_IW'(mw.bid[LIW-1:0]);
+        assign sw[i].bid     = b_id;
         assign sw[i].bresp   = mw.bresp;
     end
 
@@ -74,7 +75,7 @@ module axi_arb
         assign r_r[i]   = sr[i].rready;
         assign sr[i].arready = ar_rdy[i];
         assign sr[i].rvalid  = r_vld[i];
-        assign sr[i].rid     = AXI_IW'(mr.rid[LIW-1:0]);
+        assign sr[i].rid     = r_id;
         assign sr[i].rdata   = mr.rdata;
         assign sr[i].rresp   = mr.rresp;
         assign sr[i].rlast   = mr.rlast;
@@ -84,7 +85,7 @@ module axi_arb
     logic [XW-1:0]  aw_sel, aw_lock_idx;
     logic           aw_any, aw_locked;
     logic [15:0]    aw_wait [NW];
-    logic           wq_full, wq_empty;
+    logic           wq_full, wq_empty, bq_full;
     logic [XW-1:0]  wq_head;
 
     always_comb begin
@@ -98,7 +99,7 @@ module axi_arb
             aw_sel = aw_lock_idx;
     end
 
-    wire aw_go = aw_any && !wq_full;
+    wire aw_go = aw_any && !wq_full && !bq_full;
 
     always_comb begin
         aw_rdy = '0;
@@ -108,7 +109,7 @@ module axi_arb
     assign mw.awvalid = aw_go && aw_v[aw_sel];
     assign mw.awaddr  = aw_a[aw_sel];
     assign mw.awlen   = aw_n[aw_sel];
-    assign mw.awid    = {aw_sel, aw_id[aw_sel][LIW-1:0]};
+    assign mw.awid    = '0;
 
     wire aw_fire = mw.awvalid && mw.awready;
 
@@ -155,16 +156,32 @@ module axi_arb
     assign w_fire_last = mw.wvalid && mw.wready && mw.wlast;
 
     // ----------------------------------------------------- write response
-    wire [XW-1:0] b_idx = mw.bid[AXI_IW-1:LIW];
+    logic          bq_valid;
+    logic [XW-1:0] b_idx;
+    logic [$clog2(WQ_DEPTH):0] bq_level;
+    wire           b_fire = mw.bvalid && mw.bready;
+
+    fifo_sync_core #(.W(OW), .DEPTH(WQ_DEPTH)) u_bq (
+        .clk    (mw.clk),
+        .rst_n  (mw.rst_n),
+        .wen    (aw_fire),
+        .wdata  ({aw_sel, aw_id[aw_sel]}),
+        .wfull  (bq_full),
+        .rready (b_fire),
+        .rvalid (bq_valid),
+        .rdata  ({b_idx, b_id}),
+        .level  (bq_level)
+    );
+
     always_comb begin
         b_vld = '0;
-        b_vld[b_idx] = mw.bvalid;
+        b_vld[b_idx] = mw.bvalid && bq_valid;
     end
-    assign mw.bready = b_r[b_idx];
+    assign mw.bready = bq_valid && b_r[b_idx];
 
     // ------------------------------------------------------- read address
     logic [XW-1:0] ar_sel, ar_lock_idx;
-    logic          ar_any, ar_locked;
+    logic          ar_any, ar_locked, rq_full;
     logic [15:0]   ar_wait [NR];
 
     always_comb begin
@@ -178,15 +195,17 @@ module axi_arb
             ar_sel = ar_lock_idx;
     end
 
+    wire ar_go = ar_any && !rq_full;
+
     always_comb begin
         ar_rdy = '0;
-        if (ar_any)
+        if (ar_go)
             ar_rdy[ar_sel] = mr.arready;
     end
-    assign mr.arvalid = ar_any && ar_v[ar_sel];
+    assign mr.arvalid = ar_go && ar_v[ar_sel];
     assign mr.araddr  = ar_a[ar_sel];
     assign mr.arlen   = ar_n[ar_sel];
-    assign mr.arid    = {ar_sel, ar_id[ar_sel][LIW-1:0]};
+    assign mr.arid    = '0;
 
     wire ar_fire = mr.arvalid && mr.arready;
 
@@ -205,11 +224,27 @@ module axi_arb
     end
 
     // ------------------------------------------------------- read data
-    wire [XW-1:0] r_idx = mr.rid[AXI_IW-1:LIW];
+    logic          rq_valid;
+    logic [XW-1:0] r_idx;
+    logic [$clog2(RQ_DEPTH):0] rq_level;
+    wire           r_fire_last = mr.rvalid && mr.rready && mr.rlast;
+
+    fifo_sync_core #(.W(OW), .DEPTH(RQ_DEPTH)) u_rq (
+        .clk    (mr.clk),
+        .rst_n  (mr.rst_n),
+        .wen    (ar_fire),
+        .wdata  ({ar_sel, ar_id[ar_sel]}),
+        .wfull  (rq_full),
+        .rready (r_fire_last),
+        .rvalid (rq_valid),
+        .rdata  ({r_idx, r_id}),
+        .level  (rq_level)
+    );
+
     always_comb begin
         r_vld = '0;
-        r_vld[r_idx] = mr.rvalid;
+        r_vld[r_idx] = mr.rvalid && rq_valid;
     end
-    assign mr.rready = r_r[r_idx];
+    assign mr.rready = rq_valid && r_r[r_idx];
 
 endmodule

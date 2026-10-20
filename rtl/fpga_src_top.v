@@ -875,41 +875,60 @@ wire [31:0] fb_vin  = (DBG_PATTERN == 2'd1) ? {pat_word, pat_word + 16'd1} :
 
 
 
-axi2_pri_arb #(
-    .AW(AXI_ADDR_WIDTH), .DW(AXI_DATA_WIDTH), .IW(AXI_ID_WIDTH)
-) u_axi2_pri_arb (
-    .clk(core_clk), .rst_n(vid_rst_n),
-    .m0_awid(fb_awid), .m0_awaddr(fb_awaddr), .m0_awlen(fb_awlen), .m0_awsize(fb_awsize),
-    .m0_awburst(fb_awburst), .m0_awlock(fb_awlock), .m0_awcache(fb_awcache), .m0_awprot(fb_awprot),
-    .m0_awvalid(fb_awvalid), .m0_awready(fb_awready),
-    .m0_wdata(fb_wdata), .m0_wstrb(fb_wstrb), .m0_wlast(fb_wlast), .m0_wvalid(fb_wvalid), .m0_wready(fb_wready),
-    .m0_bid(fb_bid), .m0_bresp(fb_bresp), .m0_bvalid(fb_bvalid), .m0_bready(fb_bready),
-    .m0_arid(fb_arid), .m0_araddr(fb_araddr), .m0_arlen(fb_arlen), .m0_arsize(fb_arsize),
-    .m0_arburst(fb_arburst), .m0_arlock(fb_arlock), .m0_arcache(fb_arcache), .m0_arprot(fb_arprot),
-    .m0_arvalid(fb_arvalid), .m0_arready(fb_arready),
-    .m0_rid(fb_rid), .m0_rdata(fb_rdata), .m0_rresp(fb_rresp), .m0_rlast(fb_rlast),
-    .m0_rvalid(fb_rvalid), .m0_rready(fb_rready),
-    .m1_awid(st_awid), .m1_awaddr(st_awaddr), .m1_awlen(st_awlen), .m1_awsize(st_awsize),
-    .m1_awburst(st_awburst), .m1_awlock(st_awlock), .m1_awcache(st_awcache), .m1_awprot(st_awprot),
-    .m1_awvalid(st_awvalid), .m1_awready(st_awready),
-    .m1_wdata(st_wdata), .m1_wstrb(st_wstrb), .m1_wlast(st_wlast), .m1_wvalid(st_wvalid), .m1_wready(st_wready),
-    .m1_bid(st_bid), .m1_bresp(st_bresp), .m1_bvalid(st_bvalid), .m1_bready(st_bready),
-    .m1_arid(st_arid), .m1_araddr(st_araddr), .m1_arlen(st_arlen), .m1_arsize(st_arsize),
-    .m1_arburst(st_arburst), .m1_arlock(st_arlock), .m1_arcache(st_arcache), .m1_arprot(st_arprot),
-    .m1_arvalid(st_arvalid), .m1_arready(st_arready),
-    .m1_rid(st_rid), .m1_rdata(st_rdata), .m1_rresp(st_rresp), .m1_rlast(st_rlast),
-    .m1_rvalid(st_rvalid), .m1_rready(st_rready),
-    .s_awid(s_axi_awid), .s_awaddr(s_axi_awaddr), .s_awlen(s_axi_awlen), .s_awsize(s_axi_awsize),
-    .s_awburst(s_axi_awburst), .s_awlock(s_axi_awlock), .s_awcache(s_axi_awcache), .s_awprot(s_axi_awprot),
-    .s_awvalid(s_axi_awvalid), .s_awready(s_axi_awready),
-    .s_wdata(s_axi_wdata), .s_wstrb(s_axi_wstrb), .s_wlast(s_axi_wlast), .s_wvalid(s_axi_wvalid), .s_wready(s_axi_wready),
-    .s_bid(s_axi_bid), .s_bresp(s_axi_bresp), .s_bvalid(s_axi_bvalid), .s_bready(s_axi_bready),
-    .s_arid(s_axi_arid), .s_araddr(s_axi_araddr), .s_arlen(s_axi_arlen), .s_arsize(s_axi_arsize),
-    .s_arburst(s_axi_arburst), .s_arlock(s_axi_arlock), .s_arcache(s_axi_arcache), .s_arprot(s_axi_arprot),
-    .s_arvalid(s_axi_arvalid), .s_arready(s_axi_arready),
-    .s_rid(s_axi_rid), .s_rdata(s_axi_rdata), .s_rresp(s_axi_rresp), .s_rlast(s_axi_rlast),
-    .s_rvalid(s_axi_rvalid), .s_rready(s_axi_rready)
+//=====================================================================================
+// Video subsystem (rtl/vid): frame-ring DMA, AXI arbitration onto the DDR port.
+// Master 0 is the legacy frame store above (highest priority); the subsystem's
+// own masters follow.  Phase 1 runs only its DMA self-test next to the legacy
+// picture path.
+//=====================================================================================
+vid_pkg::vid_status_t w_vid_status;
+
+vid_subsystem #(
+    .ENABLE_SELFTEST (1)
+) u_vid (
+    .clk         (core_clk),
+    .rst_n       (vid_rst_n),
+
+    .lg_awid     (fb_awid),    .lg_awaddr (fb_awaddr), .lg_awlen  (fb_awlen),
+    .lg_awvalid  (fb_awvalid), .lg_awready(fb_awready),
+    .lg_wdata    (fb_wdata),   .lg_wlast  (fb_wlast),  .lg_wvalid (fb_wvalid), .lg_wready (fb_wready),
+    .lg_bid      (fb_bid),     .lg_bresp  (fb_bresp),  .lg_bvalid (fb_bvalid), .lg_bready (fb_bready),
+    .lg_arid     (fb_arid),    .lg_araddr (fb_araddr), .lg_arlen  (fb_arlen),
+    .lg_arvalid  (fb_arvalid), .lg_arready(fb_arready),
+    .lg_rid      (fb_rid),     .lg_rdata  (fb_rdata),  .lg_rresp  (fb_rresp),
+    .lg_rlast    (fb_rlast),   .lg_rvalid (fb_rvalid), .lg_rready (fb_rready),
+
+    .ddr_awid    (s_axi_awid),    .ddr_awaddr (s_axi_awaddr), .ddr_awlen  (s_axi_awlen),
+    .ddr_awsize  (s_axi_awsize),  .ddr_awburst(s_axi_awburst), .ddr_awlock (s_axi_awlock),
+    .ddr_awcache (s_axi_awcache), .ddr_awprot (s_axi_awprot),
+    .ddr_awvalid (s_axi_awvalid), .ddr_awready(s_axi_awready),
+    .ddr_wdata   (s_axi_wdata),   .ddr_wstrb  (s_axi_wstrb),  .ddr_wlast  (s_axi_wlast),
+    .ddr_wvalid  (s_axi_wvalid),  .ddr_wready (s_axi_wready),
+    .ddr_bid     (s_axi_bid),     .ddr_bresp  (s_axi_bresp),  .ddr_bvalid (s_axi_bvalid),
+    .ddr_bready  (s_axi_bready),
+    .ddr_arid    (s_axi_arid),    .ddr_araddr (s_axi_araddr), .ddr_arlen  (s_axi_arlen),
+    .ddr_arsize  (s_axi_arsize),  .ddr_arburst(s_axi_arburst), .ddr_arlock (s_axi_arlock),
+    .ddr_arcache (s_axi_arcache), .ddr_arprot (s_axi_arprot),
+    .ddr_arvalid (s_axi_arvalid), .ddr_arready(s_axi_arready),
+    .ddr_rid     (s_axi_rid),     .ddr_rdata  (s_axi_rdata),  .ddr_rresp  (s_axi_rresp),
+    .ddr_rlast   (s_axi_rlast),   .ddr_rvalid (s_axi_rvalid), .ddr_rready (s_axi_rready),
+
+    .status      (w_vid_status)
 );
+
+// ST's AXI master is a stub (see st_accel.v); until it is connected as a
+// subsystem master, nothing answers it.
+assign st_awready = 1'b0;
+assign st_wready  = 1'b0;
+assign st_bvalid  = 1'b0;
+assign st_bid     = '0;
+assign st_bresp   = 2'b00;
+assign st_arready = 1'b0;
+assign st_rvalid  = 1'b0;
+assign st_rid     = '0;
+assign st_rdata   = '0;
+assign st_rresp   = 2'b00;
+assign st_rlast   = 1'b0;
 
 ddr3_top                 u_ddr3_top
 (
@@ -1818,6 +1837,12 @@ reg [7:0] c_last_cap_addr, c_last_commit_addr;
 reg [15:0] c_cpu_hb;
 reg [23:0] c_frame_pix_num;
 reg [7:0]  dbg_seq = 8'd0;
+
+// vid_subsystem status is in core_clk already; one register stage keeps the
+// wide mux off the telemetry path.
+localparam TELEM_VID = 1'b1;    // 1 = report vid_subsystem status instead of raw stats
+vid_pkg::vid_status_t vid_st_s2;
+always @(posedge core_clk) vid_st_s2 <= w_vid_status;
 reg [7:0]  dbg_msg [0:MSG_LEN-1];
 integer dbg_i;
 reg [7:0] dbg_crc;
@@ -1887,6 +1912,23 @@ always @(posedge core_clk) begin
 			c_last_x <= last_x_sync2; c_last_y <= last_y_sync2;
 			c_last_cap_addr <= last_cap_addr_sync2;
 			c_last_commit_addr <= last_commit_addr_sync2;
+		end else if (TELEM_VID) begin
+			// vid_subsystem status (rtl/vid).  Decoded by board_smoke_test.py
+			// --vid:  cap_samples  = {checked frames, written frames}
+			//         cap_tiles    = {bad frames, bad words[15:0]}
+			//         commit_count = last wrong word received
+			//         st_tiles     = legacy {W-length errors, last awlen, last beats}
+			//         last_x/last_y          = ring commits / writer errors
+			//         last_cap_addr          = {proto_err, writer skips[6:0]}
+			//         last_commit_addr       = ring aborts[7:0]
+			c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tw_frames};
+			c_cap_tiles    <= {vid_st_s2.tc_bad_frames, vid_st_s2.tc_bad_words[15:0]};
+			c_commit_count <= vid_st_s2.tc_last_bad;
+			c_st_frame     <= {vid_st_s2.lg_wlen_err, vid_st_s2.lg_last_len, vid_st_s2.lg_last_beats};
+			c_last_x       <= vid_st_s2.test_ring.commits;
+			c_last_y       <= vid_st_s2.tw_errors;
+			c_last_cap_addr    <= {vid_st_s2.test_ring.proto_err, vid_st_s2.tw_skipped[6:0]};
+			c_last_commit_addr <= vid_st_s2.test_ring.aborts[7:0];
 		end else if (DBG_PATTERN_EN) begin
 			// Pattern checker; see frame_buffer_read dbg_seq.
 			c_cap_samples  <= rd_seq_s2[111:80];

@@ -14,7 +14,11 @@ module axi_mem_model #(
     parameter int          READY_PCT = 70,   // chance each ready/valid the slave drives is high
     parameter int          RLAT_MIN  = 4,    // cycles from AR accept to first R beat
     parameter int          RLAT_MAX  = 24,
-    parameter logic [DW-1:0] FILL    = {(DW / 32) {32'hDEAD_BEEF}}
+    parameter logic [DW-1:0] FILL    = {(DW / 32) {32'hDEAD_BEEF}},
+    // 1 = do not echo IDs: rid/bid carry the ID of the most recently accepted
+    // request instead.  Models a controller that only works for in-order,
+    // single-ID masters, so the interconnect must not rely on IDs.
+    parameter bit          BAD_IDS   = 0
 ) (
     axi4_wr_if.slv wr,
     axi4_rd_if.slv rd
@@ -44,6 +48,9 @@ module axi_mem_model #(
     } burst_t;
 
     burst_t        aw_q[$];
+    logic [IW-1:0] last_awid, last_arid;
+    always_ff @(posedge wr.clk) if (wr.awvalid && wr.awready) last_awid <= wr.awid;
+    always_ff @(posedge rd.clk) if (rd.arvalid && rd.arready) last_arid <= rd.arid;
     logic [IW-1:0] b_q[$];
     int unsigned   w_beat;
 
@@ -79,7 +86,8 @@ module axi_mem_model #(
             if (wr.bvalid && wr.bready)
                 wr.bvalid <= 1'b0;
             if ((!wr.bvalid || wr.bready) && b_q.size() != 0 && coin(READY_PCT)) begin
-                wr.bid    <= b_q.pop_front();
+                wr.bid    <= BAD_IDS ? last_awid : b_q.pop_front();
+                if (BAD_IDS) void'(b_q.pop_front());
                 wr.bvalid <= 1'b1;
             end
 
@@ -137,7 +145,7 @@ module axi_mem_model #(
                     rreq_t q;
                     q = ar_q[0];
                     rd.rvalid <= 1'b1;
-                    rd.rid    <= q.b.id;
+                    rd.rid    <= BAD_IDS ? last_arid : q.b.id;
                     rd.rdata  <= peek(q.b.addr + longint'(nb) * BB);
                     rd.rlast  <= (nb == q.b.len);
                     rd.rresp  <= 2'b00;
