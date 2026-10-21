@@ -167,6 +167,12 @@ package vid_pkg;
     sat:          10'd384
   };
 
+  // Placeholder processing (rtl/vid/proc/proc_stub.sv).
+  typedef enum logic [1:0] {
+    PROC_PASS   = 2'd0,
+    PROC_INVERT = 2'd1
+  } proc_mode_e;
+
   typedef enum logic [1:0] {
     COMP_SINGLE = 2'd0,     // one layer, centred
     COMP_SPLIT  = 2'd1      // left of split_col from layer 0, right from layer 1
@@ -183,6 +189,24 @@ package vid_pkg;
     single_sel: 1'b0,
     split_col:  12'(CAM_W / 2)
   };
+
+  // Columns of layer k that the compositor shows, as the reader's crop:
+  // nb = 0 returns the start beat, nb = 1 the number of beats (0 = not read).
+  // A split reads layer 0 up to the split rounded up to a beat and layer 1
+  // from it rounded down, so both together read one layer's worth.
+  function automatic logic [7:0] crop_beats(input comp_cfg_t c, input int k, input logic nb);
+    int         col;
+    logic [7:0] x0, n;
+    col = int'(c.split_col) > CAM_W ? CAM_W : int'(c.split_col);
+    if (c.mode == COMP_SPLIT) begin
+      if (k == 0) begin x0 = 0;                    n = 8'((col + BEAT_PIX - 1) / BEAT_PIX); end
+      else        begin x0 = 8'(col / BEAT_PIX);   n = 8'(CAM_W / BEAT_PIX) - x0;           end
+    end else begin
+      x0 = 0;
+      n  = (int'(c.single_sel) == k) ? 8'(CAM_W / BEAT_PIX) : 8'd0;
+    end
+    return nb ? n : x0;
+  endfunction
 
   // ----------------------------------------------------- subsystem status
   // Everything vid_subsystem reports, for telemetry.  Counters wrap.
@@ -212,8 +236,18 @@ package vid_pkg;
     logic [SEQ_W-1:0] dr_frames;      // display reader: frames read
     logic [SEQ_W-1:0] dr_miss;        //                 no frame to show
     logic [SEQ_W-1:0] dr_late;        //                 start while still reading
-    logic [15:0]      cp_bad_lines;   // compositor: lines shown black (underflow / misaligned)
-    logic [15:0]      cp_resyncs;     //             times it dropped words to re-align
+    logic [15:0]      cp_bad_lines;   // compositor layer 0: lines shown black (underflow / misaligned)
+    logic [15:0]      cp_resyncs;     //                     times it dropped words to re-align
+    logic [15:0]      cp1_bad_lines;  // compositor layer 1, the same
+    logic [15:0]      cp1_resyncs;
+    logic [SEQ_W-1:0] dr1_frames;     // display reader of layer 1
+    logic [SEQ_W-1:0] dr1_miss;
+    logic [SEQ_W-1:0] seq_gap;        // src_seq of layer 0 minus layer 1, last frame shown
+    logic [SEQ_W-1:0] pr_frames;      // processing engine: frames written
+    logic [SEQ_W-1:0] pr_miss;        //                    polls with nothing new
+    logic [SEQ_W-1:0] pr_errors;      //                    writer aborts
+    logic [SEQ_W-1:0] pr_skipped;     //                    result ring full
+    logic             proc_ring_err;
     logic [15:0]      rd_lat_max;     // DDR read: cycles from AR accepted to first R beat, max
     logic [15:0]      rd_lat_last;    //           the same, most recent read
     logic [15:0]      wr_lat_max;     // DDR write: cycles from AW accepted to B, max

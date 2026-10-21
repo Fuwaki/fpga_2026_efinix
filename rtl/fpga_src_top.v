@@ -889,11 +889,23 @@ wire       vid_pix_de, vid_pix_hs, vid_pix_vs;
 // picture (sensor timing kept).  The ISP ring's frame signature (telemetry
 // page 1) must then read 0xa4f003e6 (sim/ref/isp_ref.py pattern-sig).
 localparam CSI_PATTERN = 1'b0;
+// Phase 3: the processing placeholder (invert) writes the PROC ring; the
+// compositor shows the camera left of the split column and the processed
+// frame from it on.  VID_SPLIT = 0 shows the camera alone.
+localparam VID_SPLIT = 1'b1;
+localparam [11:0] VID_SPLIT_COL = 12'd640;
+localparam vid_pkg::comp_cfg_t VID_COMP = '{
+    mode:       VID_SPLIT ? vid_pkg::COMP_SPLIT : vid_pkg::COMP_SINGLE,
+    single_sel: 1'b0,
+    split_col:  VID_SPLIT_COL};
 
 vid_subsystem #(
     .ENABLE_SELFTEST (1),
     .DISP_SRC        (1),            // camera through the ISP
     .CSI_PATTERN     (CSI_PATTERN),
+    .PROC_EN         (VID_SPLIT),
+    .PROC_MODE       (vid_pkg::PROC_INVERT),
+    .COMP_CFG        (VID_COMP),
     // The screen shows the new path (VIDEO_PIPE_NEW); the legacy frame store
     // is not needed and only competes for DDR reads.
     .LEGACY_EN       (0)
@@ -1979,15 +1991,16 @@ always @(posedge core_clk) begin
 				c_last_cap_addr    <= 8'd0;
 				c_last_commit_addr <= 8'd0;
 			end
-			default: begin   // DMA self-test
+			default: begin   // DMA self-test, processing, layer 1
 				c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tc_bad_frames};
 				c_cap_tiles    <= vid_st_s2.tc_bad_words;
 				c_commit_count <= {vid_st_s2.tw_frames, vid_st_s2.tw_errors};
-				c_st_frame     <= {vid_st_s2.tw_skipped, vid_st_s2.tr_miss};
-				c_last_x       <= vid_st_s2.cp_bad_lines;
-				c_last_y       <= vid_st_s2.dr_miss;
-				c_last_cap_addr    <= vid_st_s2.dr_late[7:0];
-				c_last_commit_addr <= {vid_st_s2.test_ring.proto_err, 7'd0};
+				c_st_frame     <= {vid_st_s2.dr1_frames, vid_st_s2.cp1_bad_lines};
+				c_last_x       <= vid_st_s2.pr_frames;
+				c_last_y       <= vid_st_s2.seq_gap;
+				c_last_cap_addr    <= vid_st_s2.pr_errors[7:0];
+				c_last_commit_addr <= {vid_st_s2.test_ring.proto_err, vid_st_s2.proc_ring_err,
+				                       vid_st_s2.pr_skipped[5:0]};
 			end
 			endcase
 		end else if (DBG_PATTERN_EN) begin

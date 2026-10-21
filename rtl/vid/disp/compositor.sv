@@ -4,16 +4,26 @@
 // (CEA-861 1080p60 by default); nothing upstream can stall it, so a missing
 // frame shows black, never "no signal".
 //
-// v1: one CAM_W x CAM_H layer centred in the raster, black around it.
-// frame_req toggles once per raster frame, at line 0, long before the layer's
-// first line; the layer's reader starts on it (in its own clock domain).
+// Two CAM_W x CAM_H layers share one window centred in the raster, black
+// around it:
+//   COMP_SINGLE  layer cfg.single_sel everywhere
+//   COMP_SPLIT   layer 0 left of cfg.split_col, layer 1 from it on
+// Each layer's reader fetches only the 8-pixel-aligned columns that can be
+// shown (crop_beats() below), so a split costs no more DDR bandwidth than one
+// layer.  Each layer's unpacker consumes its own window; the column of the
+// split only picks which one is shown.
+//
+// frame_req toggles once per raster frame, at line 0, long before the
+// window's first line; the readers start on it (in their own clock domain).
 module compositor
     import vid_pkg::*;
 #(
     parameter int H_ACTIVE = 1920, H_FP = 88, H_SYNC = 44, H_BP = 148,
-    parameter int V_ACTIVE = 1080, V_FP = 4,  V_SYNC = 5,  V_BP = 36
+    parameter int V_ACTIVE = 1080, V_FP = 4,  V_SYNC = 5,  V_BP = 36,
+    parameter comp_cfg_t CFG = COMP_CFG_DEFAULT
 ) (
     vstream_if.snk          layer0,       // pixel clock domain
+    vstream_if.snk          layer1,
     output logic            frame_req,    // toggles at the start of each raster frame
 
     output logic [7:0]      r,
@@ -23,8 +33,8 @@ module compositor
     output logic            hs,
     output logic            vs,
 
-    output logic [15:0]     st_bad_lines,
-    output logic [15:0]     st_resyncs,
+    output logic [15:0]     st_bad_lines [2],
+    output logic [15:0]     st_resyncs   [2],
     // Brightness of what was actually sent: sum of r+g+b per raster frame,
     // and how often it jumped.  Static content gives a constant sum; a
     // moving test block changes it by at most a few million.
@@ -33,6 +43,10 @@ module compositor
 );
     localparam int X0 = (H_ACTIVE - CAM_W) / 2;
     localparam int Y0 = (V_ACTIVE - CAM_H) / 2;
+
+    // Columns of each layer that are read and consumed, in beats.
+    localparam logic [7:0] X0B0 = crop_beats(CFG, 0, 1'b0), NB0 = crop_beats(CFG, 0, 1'b1);
+    localparam logic [7:0] X0B1 = crop_beats(CFG, 1, 1'b0), NB1 = crop_beats(CFG, 1, 1'b1);
 
     initial begin
         if (X0 % 2 != 0 || Y0 % 2 != 0)
@@ -74,29 +88,29 @@ module compositor
         end
     end
 
-    // -------------------------------------------------------------- layer
+    // ------------------------------------------------------------- layers
     wire [12:0] lx = ras_x - 13'(X0);
     wire [12:0] ly = ras_y - 13'(Y0);
-    wire in_x = (ras_x >= 13'(X0)) && (ras_x < 13'(X0 + CAM_W));
     wire in_y = (ras_y >= 13'(Y0)) && (ras_y < 13'(Y0 + CAM_H));
-    wire want = ras_de && in_x && in_y;
+    wire in_x = (ras_x >= 13'(X0)) && (ras_x < 13'(X0 + CAM_W));
 
-    logic    l0_valid;
-    rgb888_t l0_pix;
+    logic    l_valid [2];
+    rgb888_t l_pix   [2];
 
-    layer_unpack u_l0 (
-        .s           (layer0),
-        .frame_start (frame_start),
-        .want        (want),
-        .line_first  (want && lx == 13'd0),
-        .line_last   (want && lx == 13'(CAM_W - 1)),
-        .lx0         (lx[0]),
-        .ly_zero     (ly == 13'd0),
-        .pix_valid   (l0_valid),
-        .pix         (l0_pix),
-        .st_bad_lines(st_bad_lines),
-        .st_resyncs  (st_resyncs)
-    );
+    comp_layer #(.WX0(8 * int'(X0B0)), .WX1(8 * (int'(X0B0) + int'(NB0)))) u_l0 (
+        .s(layer0), .frame_start(frame_start), .de(ras_de && in_x && in_y), .lx(lx), .ly(ly),
+        .pix_valid(l_valid[0]), .pix(l_pix[0]),
+        .st_bad_lines(st_bad_lines[0]), .st_resyncs(st_resyncs[0]));
+
+    comp_layer #(.WX0(8 * int'(X0B1)), .WX1(8 * (int'(X0B1) + int'(NB1)))) u_l1 (
+        .s(layer1), .frame_start(frame_start), .de(ras_de && in_x && in_y), .lx(lx), .ly(ly),
+        .pix_valid(l_valid[1]), .pix(l_pix[1]),
+        .st_bad_lines(st_bad_lines[1]), .st_resyncs(st_resyncs[1]));
+
+    // split_col 0 shows layer 1 everywhere (written out: lx >= 0 is a
+    // constant comparison).
+    wire show1 = (CFG.mode != COMP_SPLIT) ? CFG.single_sel
+               : (CFG.split_col == '0) || (lx >= 13'(CFG.split_col));
 
     // ------------------------------------------------------- brightness
     localparam logic [31:0] JUMP = 32'd8_000_000;
@@ -125,12 +139,55 @@ module compositor
             de <= ras_de;
             hs <= ras_hs;
             vs <= ras_vs;
-            if (l0_valid) begin
-                r <= l0_pix.r; g <= l0_pix.g; b <= l0_pix.b;
+            if (show1 ? l_valid[1] : l_valid[0]) begin
+                {r, g, b} <= show1 ? l_pix[1] : l_pix[0];
             end else begin
                 r <= '0; g <= '0; b <= '0;
             end
         end
     end
 
+endmodule
+
+
+// One layer of the compositor: unpacks the columns [WX0, WX1) of the window
+// (layer coordinates).  An empty window means the layer is not read; its
+// stream is drained so nothing upstream waits on it.
+module comp_layer
+    import vid_pkg::*;
+#(
+    parameter int WX0 = 0,
+    parameter int WX1 = CAM_W
+) (
+    vstream_if.snk          s,
+    input  logic            frame_start,
+    input  logic            de,          // raster inside the window
+    input  logic [12:0]     lx,
+    input  logic [12:0]     ly,
+    output logic            pix_valid,
+    output rgb888_t         pix,
+    output logic [15:0]     st_bad_lines,
+    output logic [15:0]     st_resyncs
+);
+    if (WX1 > WX0) begin : g_on
+        wire want = de && (WX0 == 0 || lx >= 13'(WX0)) && (lx < 13'(WX1));
+        layer_unpack u_un (
+            .s           (s),
+            .frame_start (frame_start),
+            .want        (want),
+            .line_first  (want && lx == 13'(WX0)),
+            .line_last   (want && lx == 13'(WX1 - 1)),
+            .lx0         (lx[0]),
+            .ly_zero     (ly == 13'd0),
+            .pix_valid   (pix_valid),
+            .pix         (pix),
+            .st_bad_lines(st_bad_lines),
+            .st_resyncs  (st_resyncs));
+    end else begin : g_off
+        assign s.ready      = 1'b1;
+        assign pix_valid    = 1'b0;
+        assign pix          = '0;
+        assign st_bad_lines = '0;
+        assign st_resyncs   = '0;
+    end
 endmodule

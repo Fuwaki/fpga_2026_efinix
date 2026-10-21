@@ -19,6 +19,7 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          dbg/vid_testgen.sv dbg/vid_testchk.sv dbg/vid_patgen.sv \
          isp/csi_capture.sv isp/line_release.sv isp/isp_stats.sv isp/isp_blc_wb.sv \
          isp/isp_demosaic.sv isp/isp_gamma.sv isp/isp_sat.sv isp/isp_dither565.sv isp/isp_top.sv \
+         proc/proc_stub.sv proc/proc_engine.sv \
          disp/layer_unpack.sv disp/compositor.sv vid_subsystem.sv) \
        $(ROOT)/rtl/display/raster_gen.sv
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
@@ -28,7 +29,7 @@ MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
 TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
-         tb_isp tb_isp_bypass tb_isp_pat sva_neg
+         tb_disp_split tb_disp_split0 tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -57,6 +58,15 @@ tb_fifo tb_ring tb_dma tb_vidsub tb_disp:
 tb_ring_tight:
 	$(call build,$@,tb_ring,tb_ring,-GSLOTS=3)
 	$(OBJ)/$@/Vtb_ring +verilator+seed+$(SEED) +verilator+rand+reset+2
+
+# Processing engine (invert) shown right of an unaligned split column, and
+# the edge case of a split at column 0 (layer 0 not read at all).
+tb_disp_split:
+	$(call build,$@,tb_disp,tb_disp,-GPROC=1 -GSPLIT=643)
+	$(OBJ)/$@/Vtb_disp +verilator+seed+$(SEED) +verilator+rand+reset+2
+tb_disp_split0:
+	$(call build,$@,tb_disp,tb_disp,-GPROC=1 -GSPLIT=0)
+	$(OBJ)/$@/Vtb_disp +verilator+seed+$(SEED) +verilator+rand+reset+2
 
 # A DDR controller that does not echo AXI IDs (the board's may not).
 tb_vidsub_badid:

@@ -35,9 +35,8 @@ module axi_arb
     axi4_wr_if.mst mw,
     axi4_rd_if.mst mr
 );
-    localparam int NMAX = (NW > NR) ? NW : NR;
-    localparam int XW   = $clog2((NMAX > 1) ? NMAX : 2);   // master index bits
-    localparam int OW   = XW + AXI_IW;                     // order FIFO entry: {master, ID}
+    localparam int WXW  = $clog2((NW > 1) ? NW : 2);       // write master index bits
+    localparam int RXW  = $clog2((NR > 1) ? NR : 2);       // read master index bits
 
     // ------------------------------------------------- flatten interfaces
     logic [NW-1:0]     aw_v, w_v, w_l, b_r;
@@ -85,19 +84,19 @@ module axi_arb
     end
 
     // ------------------------------------------------------ write address
-    logic [XW-1:0]  aw_sel, aw_lock_idx;
+    logic [WXW-1:0]  aw_sel, aw_lock_idx;
     logic           aw_any, aw_locked;
     logic [15:0]    aw_wait [NW];
     logic           wq_full, wq_empty, bq_full;
-    logic [XW-1:0]  wq_head;
+    logic [WXW-1:0]  wq_head;
 
     always_comb begin
         aw_any = 1'b0;
         aw_sel = '0;
         for (int i = NW - 1; i >= 0; i--)
-            if (aw_v[i]) begin aw_any = 1'b1; aw_sel = XW'(i); end
+            if (aw_v[i]) begin aw_any = 1'b1; aw_sel = WXW'(i); end
         for (int i = NW - 1; i >= 0; i--)
-            if (aw_v[i] && aw_wait[i] >= 16'(STARVE)) begin aw_sel = XW'(i); end
+            if (aw_v[i] && aw_wait[i] >= 16'(STARVE)) begin aw_sel = WXW'(i); end
         if (aw_locked)
             aw_sel = aw_lock_idx;
     end
@@ -127,7 +126,7 @@ module axi_arb
             aw_locked   <= mw.awvalid && !mw.awready;
             aw_lock_idx <= aw_sel;
             for (int i = 0; i < NW; i++)
-                aw_wait[i] <= (aw_v[i] && !(aw_fire && aw_sel == XW'(i)))
+                aw_wait[i] <= (aw_v[i] && !(aw_fire && aw_sel == WXW'(i)))
                             ? ((aw_wait[i] != 16'hFFFF) ? aw_wait[i] + 1'b1 : aw_wait[i]) : '0;
         end
     end
@@ -137,7 +136,7 @@ module axi_arb
     logic          wq_valid;
     logic          w_fire_last;
 
-    fifo_sync_core #(.W(XW), .DEPTH(WQ_DEPTH)) u_wq (
+    fifo_sync_core #(.W(WXW), .DEPTH(WQ_DEPTH)) u_wq (
         .clk    (mw.clk),
         .rst_n  (mw.rst_n),
         .wen    (aw_fire),
@@ -162,11 +161,11 @@ module axi_arb
 
     // ----------------------------------------------------- write response
     logic          bq_valid;
-    logic [XW-1:0] b_idx;
+    logic [WXW-1:0] b_idx;
     logic [$clog2(WQ_DEPTH):0] bq_level;
     wire           b_fire = mw.bvalid && mw.bready;
 
-    fifo_sync_core #(.W(OW), .DEPTH(WQ_DEPTH)) u_bq (
+    fifo_sync_core #(.W(WXW + AXI_IW), .DEPTH(WQ_DEPTH)) u_bq (
         .clk    (mw.clk),
         .rst_n  (mw.rst_n),
         .wen    (aw_fire),
@@ -189,7 +188,7 @@ module axi_arb
     assign mw.bready = bq_valid && b_r[b_idx];
 
     // ------------------------------------------------------- read address
-    logic [XW-1:0] ar_sel, ar_lock_idx;
+    logic [RXW-1:0] ar_sel, ar_lock_idx;
     logic          ar_any, ar_locked, rq_full;
     logic [15:0]   ar_wait [NR];
 
@@ -197,9 +196,9 @@ module axi_arb
         ar_any = 1'b0;
         ar_sel = '0;
         for (int i = NR - 1; i >= 0; i--)
-            if (ar_v[i]) begin ar_any = 1'b1; ar_sel = XW'(i); end
+            if (ar_v[i]) begin ar_any = 1'b1; ar_sel = RXW'(i); end
         for (int i = NR - 1; i >= 0; i--)
-            if (ar_v[i] && ar_wait[i] >= 16'(STARVE)) begin ar_sel = XW'(i); end
+            if (ar_v[i] && ar_wait[i] >= 16'(STARVE)) begin ar_sel = RXW'(i); end
         if (ar_locked)
             ar_sel = ar_lock_idx;
     end
@@ -229,18 +228,18 @@ module axi_arb
             ar_locked   <= mr.arvalid && !mr.arready;
             ar_lock_idx <= ar_sel;
             for (int i = 0; i < NR; i++)
-                ar_wait[i] <= (ar_v[i] && !(ar_fire && ar_sel == XW'(i)))
+                ar_wait[i] <= (ar_v[i] && !(ar_fire && ar_sel == RXW'(i)))
                             ? ((ar_wait[i] != 16'hFFFF) ? ar_wait[i] + 1'b1 : ar_wait[i]) : '0;
         end
     end
 
     // ------------------------------------------------------- read data
     logic          rq_valid;
-    logic [XW-1:0] r_idx;
+    logic [RXW-1:0] r_idx;
     logic [$clog2(RQ_DEPTH):0] rq_level;
     wire           r_fire_last = mr.rvalid && mr.rready && mr.rlast;
 
-    fifo_sync_core #(.W(OW), .DEPTH(RQ_DEPTH)) u_rq (
+    fifo_sync_core #(.W(RXW + AXI_IW), .DEPTH(RQ_DEPTH)) u_rq (
         .clk    (mr.clk),
         .rst_n  (mr.rst_n),
         .wen    (ar_fire),

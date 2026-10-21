@@ -6,8 +6,10 @@
 // burst type, cache, prot, lock, strobes) are fixed in one place.
 //
 // Contents:
-//   axi_arb      write masters: 0 legacy, 1 display producer, 2 self-test
-//                read  masters: 0 legacy, 1 display, 2 self-test
+//   axi_arb      write masters: 0 legacy, 1 display producer, 2 processing,
+//                               3 self-test
+//                read  masters: 0 legacy, 1-2 display layers, 3 processing,
+//                               4 self-test
 //                (lower index = higher priority)
 //   self-test    vid_testgen -> vdma_wr -> frame_ring (test) -> vdma_rd ->
 //                vid_testchk, every word compared, results in status
@@ -16,6 +18,10 @@
 //                HDMI encoder.  The producer is the camera (DISP_SRC = 1):
 //                csi_capture (CSI clock) -> line_release -> isp_top, or the
 //                test picture vid_patgen (DISP_SRC = 0).
+//   processing   PROC_EN: proc_engine reads each new frame of the ISP ring,
+//                runs proc_stub and writes the PROC ring.  The compositor
+//                shows the ISP ring as layer 0 and the PROC ring as layer 1,
+//                single or split (COMP_CFG).
 module vid_subsystem
     import vid_pkg::*;
 #(
@@ -30,6 +36,9 @@ module vid_subsystem
     parameter bit CSI_PATTERN     = 0,
     parameter isp_cfg_t ISP_CFG   = ISP_CFG_DEFAULT,
     parameter string GAMMA_CURVE  = "./rtl/gamma_conrrection/SRGB_ENC.mem",
+    parameter bit PROC_EN         = 0,
+    parameter proc_mode_e PROC_MODE = PROC_INVERT,
+    parameter comp_cfg_t COMP_CFG = COMP_CFG_DEFAULT,
     // Display pattern timing; simulation shortens the frame period.
     parameter int PAT_FRAME_CYCLES  = 3_333_333,
     parameter int PAT_LINE_CYCLES   = 2_000,
@@ -133,9 +142,11 @@ module vid_subsystem
 
     output vid_status_t           status
 );
-    localparam int NW = 3, NR = 3;
-    localparam int W_DISP = 1, W_SELF = 2;    // the camera cannot wait, the self-test can
-    localparam int R_DISP = 1, R_SELF = 2;
+    localparam int NW = 4, NR = 5;
+    // Lower index = higher priority.  The camera cannot wait and the display
+    // must not underflow; processing and the self-test can wait.
+    localparam int W_DISP = 1, W_PROC = 2, W_SELF = 3;
+    localparam int R_DISP = 1, R_DISP1 = 2, R_PROC = 3, R_SELF = 4;
 
     // Pixel-clock reset: asserted with rst_n, released synchronously.
     logic pix_rst_q1, pix_rst_n;
@@ -249,8 +260,9 @@ module vid_subsystem
     if (1) begin : g_display
         vstream_if #(.T(rgb565_t), .PPC(2)) prod (.clk(clk), .rst_n(rst_n));
         vstream_if #(.T(rgb565_t), .PPC(2)) lay0 (.clk(pix_clk), .rst_n(pix_rst_n));
+        vstream_if #(.T(rgb565_t), .PPC(2)) lay1 (.clk(pix_clk), .rst_n(pix_rst_n));
         ring_prod_if rp ();
-        ring_cons_if rc [1] ();
+        ring_cons_if rc [2] ();         // 0: display layer 0, 1: processing
         ring_status_t ring_st;
         logic [SEQ_W-1:0] prod_seq;
 
@@ -304,7 +316,7 @@ module vid_subsystem
             assign status.raw_dark    = '0;
         end
 
-        frame_ring #(.SLOTS(3), .NCONS(1)) u_ring (
+        frame_ring #(.SLOTS(4), .NCONS(2)) u_ring (
             .clk(clk), .rst_n(rst_n), .p(rp), .c(rc), .status(ring_st));
         assign status.isp_ring_err = ring_st.proto_err;
 
@@ -322,22 +334,97 @@ module vid_subsystem
             else        req_sync <= {req_sync[1:0], frame_req};
         wire rd_start = req_sync[2] ^ req_sync[1];
 
-        logic         rd_busy;
-        frame_token_t rd_tok;
+        // Each layer reads only the columns the compositor shows.
+        localparam logic [7:0] X0B0 = crop_beats(COMP_CFG, 0, 1'b0), NB0 = crop_beats(COMP_CFG, 0, 1'b1);
+        localparam logic [7:0] X0B1 = crop_beats(COMP_CFG, 1, 1'b0), NB1 = crop_beats(COMP_CFG, 1, 1'b1);
+
+        logic         rd_busy, rd1_busy;
+        logic [SEQ_W-1:0] rd1_late;      // same start as layer 0, counted there
+        frame_token_t rd_tok, rd1_tok;
         // Long bursts: the DDR port serves one read at a time (DDR_MAX_RD),
         // so every burst pays the full read latency; 128 beats amortise it.
-        vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
-            .m(mr[R_DISP]), .ring(rc[0]), .o(lay0),
-            .ring_base(RING_ISP_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
-            .x0_beat(8'd0), .nbeats(8'(CAM_W / BEAT_PIX)),
-            .busy(rd_busy), .token(rd_tok),
-            .st_frames(status.dr_frames), .st_miss(status.dr_miss), .st_late(status.dr_late));
+        if (NB0 != 0) begin : g_rd0
+            vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
+                .m(mr[R_DISP]), .ring(rc[0]), .o(lay0),
+                .ring_base(RING_ISP_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
+                .x0_beat(X0B0), .nbeats(NB0),
+                .busy(rd_busy), .token(rd_tok),
+                .st_frames(status.dr_frames), .st_miss(status.dr_miss), .st_late(status.dr_late));
+        end else begin : g_no_rd0
+            rd_idle u_idle (.m(mr[R_DISP]), .ring(rc[0]));
+            stream_idle u_sidle (.o(lay0));
+            assign rd_busy = 1'b0;
+            assign rd_tok  = '0;
+            assign status.dr_frames = '0;
+            assign status.dr_miss   = '0;
+            assign status.dr_late   = '0;
+        end
 
-        compositor u_comp (
-            .layer0(lay0), .frame_req(frame_req),
+        // Processing: ISP ring -> proc_stub -> PROC ring, shown as layer 1.
+        ring_prod_if pp ();
+        ring_cons_if pc [1] ();
+        if (PROC_EN) begin : g_proc
+            ring_status_t pring_st;
+            frame_ring #(.SLOTS(3), .NCONS(1)) u_pring (
+                .clk(clk), .rst_n(rst_n), .p(pp), .c(pc), .status(pring_st));
+            assign status.proc_ring_err = pring_st.proto_err;
+
+            proc_engine #(.MODE(PROC_MODE)) u_proc (
+                .mr(mr[R_PROC]), .mw(mw[W_PROC]), .src(rc[1]), .dst(pp),
+                .src_base(RING_ISP_BASE), .dst_base(RING_PROC_BASE),
+                .st_frames(status.pr_frames), .st_miss(status.pr_miss),
+                .st_errors(status.pr_errors), .st_skipped(status.pr_skipped));
+        end else begin : g_no_proc
+            rd_idle u_idle (.m(mr[R_PROC]), .ring(rc[1]));
+            assign mw[W_PROC].awvalid = 1'b0;
+            assign mw[W_PROC].awid    = '0;
+            assign mw[W_PROC].awaddr  = '0;
+            assign mw[W_PROC].awlen   = '0;
+            assign mw[W_PROC].wvalid  = 1'b0;
+            assign mw[W_PROC].wdata   = '0;
+            assign mw[W_PROC].wlast   = 1'b0;
+            assign mw[W_PROC].bready  = 1'b1;
+            assign pp.req     = 1'b0;
+            assign pp.op      = RING_P_ACQ;
+            assign pp.src_seq = '0;
+            assign status.proc_ring_err = 1'b0;
+            assign status.pr_frames  = '0;
+            assign status.pr_miss    = '0;
+            assign status.pr_errors  = '0;
+            assign status.pr_skipped = '0;
+        end
+
+        if (PROC_EN && NB1 != 0) begin : g_rd1
+            vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
+                .m(mr[R_DISP1]), .ring(pc[0]), .o(lay1),
+                .ring_base(RING_PROC_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
+                .x0_beat(X0B1), .nbeats(NB1),
+                .busy(rd1_busy), .token(rd1_tok),
+                .st_frames(status.dr1_frames), .st_miss(status.dr1_miss), .st_late(rd1_late));
+        end else begin : g_no_rd1
+            rd_idle u_idle (.m(mr[R_DISP1]), .ring(pc[0]));
+            stream_idle u_sidle (.o(lay1));
+            assign rd1_busy = 1'b0;
+            assign rd1_tok  = '0;
+            assign status.dr1_frames = '0;
+            assign status.dr1_miss   = '0;
+        end
+
+        // How far the processed layer trails the camera layer, in frames.
+        always_ff @(posedge clk or negedge rst_n)
+            if (!rst_n)                          status.seq_gap <= '0;
+            else if (rd_tok.valid && rd1_tok.valid) status.seq_gap <= rd_tok.src_seq - rd1_tok.src_seq;
+
+        logic [15:0] cp_bad [2], cp_rs [2];
+        compositor #(.CFG(COMP_CFG)) u_comp (
+            .layer0(lay0), .layer1(lay1), .frame_req(frame_req),
             .r(pix_r), .g(pix_g), .b(pix_b), .de(pix_de), .hs(pix_hs), .vs(pix_vs),
-            .st_bad_lines(status.cp_bad_lines), .st_resyncs(status.cp_resyncs),
+            .st_bad_lines(cp_bad), .st_resyncs(cp_rs),
             .st_frame_sum(status.cp_frame_sum), .st_jumps(status.cp_jumps));
+        assign status.cp_bad_lines  = cp_bad[0];
+        assign status.cp1_bad_lines = cp_bad[1];
+        assign status.cp_resyncs    = cp_rs[0];
+        assign status.cp1_resyncs   = cp_rs[1];
     end
 
     // ---------------------------------------- legacy burst-length monitor
@@ -481,4 +568,29 @@ module vid_subsystem
     assign dr.rvalid   = ddr_rvalid;
     assign ddr_rready  = dr.rready;
 
+endmodule
+
+
+// An unused read master and ring consumer.
+module rd_idle (
+    axi4_rd_if.mst     m,
+    ring_cons_if.user  ring
+);
+    import vid_pkg::*;
+    assign m.arvalid   = 1'b0;
+    assign m.arid      = '0;
+    assign m.araddr    = '0;
+    assign m.arlen     = '0;
+    assign m.rready    = 1'b1;
+    assign ring.req    = 1'b0;
+    assign ring.op     = RING_C_ACQ;
+    assign ring.policy = ACQ_REPEAT_OK;
+endmodule
+
+// A stream source that never offers anything.
+module stream_idle (vstream_if.src o);
+    assign o.valid = 1'b0;
+    assign o.sof   = 1'b0;
+    assign o.eol   = 1'b0;
+    assign o.data  = '0;
 endmodule

@@ -125,8 +125,17 @@ def decode_vid(got):
             "writer_errors":  p["commit_count"] & 0xFFFF,
             "ring_proto_err": bool(p["last_commit_addr"] & 0x80),
         }
+        vid["proc"] = {
+            "frames_written": p["last_x"],
+            "errors":         p["last_cap_addr"],
+            "skipped":        p["last_commit_addr"] & 0x3F,
+            "ring_err":       bool(p["last_commit_addr"] & 0x40),
+            "layer1_reads":   p["st_tiles"] >> 16,
+            "layer1_bad_lines": p["st_tiles"] & 0xFFFF,
+            "seq_gap":        p["last_y"],
+        }
     errs = [vid.get("display", {}).get("isp_ring_err"), vid.get("camera", {}).get("isp_ring_err"),
-            vid.get("selftest", {}).get("ring_proto_err")]
+            vid.get("selftest", {}).get("ring_proto_err"), vid.get("proc", {}).get("ring_err")]
     vid["ok"] = len(pages) == 4 and not any(errs)
     return vid
 
