@@ -200,6 +200,8 @@ package vid_pkg;
     logic [15:0]      cp_resyncs;     //             times it dropped words to re-align
     logic [15:0]      rd_lat_max;     // DDR read: cycles from AR accepted to first R beat, max
     logic [15:0]      rd_lat_last;    //           the same, most recent read
+    logic [31:0]      cp_frame_sum;   // compositor: sum of r+g+b over the last raster frame
+    logic [15:0]      cp_jumps;       //             frames whose sum differs from the previous by > 8M
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern

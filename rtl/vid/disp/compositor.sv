@@ -24,7 +24,12 @@ module compositor
     output logic            vs,
 
     output logic [15:0]     st_bad_lines,
-    output logic [15:0]     st_resyncs
+    output logic [15:0]     st_resyncs,
+    // Brightness of what was actually sent: sum of r+g+b per raster frame,
+    // and how often it jumped.  Static content gives a constant sum; a
+    // moving test block changes it by at most a few million.
+    output logic [31:0]     st_frame_sum,
+    output logic [15:0]     st_jumps
 );
     localparam int X0 = (H_ACTIVE - CAM_W) / 2;
     localparam int Y0 = (V_ACTIVE - CAM_H) / 2;
@@ -92,6 +97,24 @@ module compositor
         .st_bad_lines(st_bad_lines),
         .st_resyncs  (st_resyncs)
     );
+
+    // ------------------------------------------------------- brightness
+    localparam logic [31:0] JUMP = 32'd8_000_000;
+    logic [31:0] acc;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            acc          <= '0;
+            st_frame_sum <= '0;
+            st_jumps     <= '0;
+        end else if (frame_start) begin
+            acc          <= '0;
+            st_frame_sum <= acc;
+            if (((acc > st_frame_sum) ? acc - st_frame_sum : st_frame_sum - acc) > JUMP)
+                st_jumps <= st_jumps + 1'b1;
+        end else if (de) begin
+            acc <= acc + 32'(r) + 32'(g) + 32'(b);
+        end
+    end
 
     // ------------------------------------------------------------- output
     always_ff @(posedge clk or negedge rst_n) begin

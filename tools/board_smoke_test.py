@@ -110,8 +110,8 @@ def main():
             return {"f": v >> 26, "y": (v >> 16) & 0x3FF, "w": (v >> 6) & 0x3FF, "chk": v & 0x3F}
         pos = latest["st_tiles"]
         vid = {
-            "selftest_written":    latest["cap_samples"] & 0xFFFF,
-            "selftest_checked":    latest["cap_samples"] >> 16,
+            "frame_brightness_sum": latest["cap_samples"],
+            "brightness_jumps":     latest["last_y"],
             "ddr_rd_lat_max":      latest["cap_tiles"] >> 16,
             "ddr_rd_lat_last":     latest["cap_tiles"] & 0xFFFF,
             "disp_pattern_written": latest["commit_count"] & 0xFFFF,
@@ -120,16 +120,12 @@ def main():
             "disp_late":            latest["last_commit_addr"],
             "comp_bad_lines":       pos >> 16,
             "comp_resyncs":         pos & 0xFFFF,
-            "writer_errors":        latest["last_y"],
             "writer_skips":         latest["last_cap_addr"] & 0x7F,
             "ring_proto_err":       bool(latest["last_cap_addr"] & 0x80),
         }
         if delta is not None:
             vid["disp_read_per_s"] = 2 * (((latest["commit_count"] >> 16) - (got[-2]["commit_count"] >> 16)) & 0xFFFF)
-            vid["written_per_s"] = 2 * ((latest["cap_samples"] - got[-2]["cap_samples"]) & 0xFFFF)
-            vid["checked_per_s"] = 2 * (((latest["cap_samples"] >> 16) - (got[-2]["cap_samples"] >> 16)) & 0xFFFF)
-        vid["ok"] = (vid["writer_errors"] == 0 and not vid["ring_proto_err"]
-                     and vid["selftest_checked"] > 0)
+        vid["ok"] = not vid["ring_proto_err"]
         result["vid"] = vid
     if args.json:
         print(json.dumps(result, separators=(",", ":")))

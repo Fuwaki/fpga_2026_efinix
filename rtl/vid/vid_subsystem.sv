@@ -274,7 +274,8 @@ module vid_subsystem
         compositor u_comp (
             .layer0(lay0), .frame_req(frame_req),
             .r(pix_r), .g(pix_g), .b(pix_b), .de(pix_de), .hs(pix_hs), .vs(pix_vs),
-            .st_bad_lines(status.cp_bad_lines), .st_resyncs(status.cp_resyncs));
+            .st_bad_lines(status.cp_bad_lines), .st_resyncs(status.cp_resyncs),
+            .st_frame_sum(status.cp_frame_sum), .st_jumps(status.cp_jumps));
     end
 
     // ---------------------------------------- legacy burst-length monitor

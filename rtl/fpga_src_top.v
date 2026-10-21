@@ -1934,19 +1934,19 @@ always @(posedge core_clk) begin
 			c_last_commit_addr <= last_commit_addr_sync2;
 		end else if (TELEM_VID) begin
 			// vid_subsystem status (rtl/vid).  Decoded by board_smoke_test.py
-			// --vid:  cap_samples  = {checked frames, written frames}
+			// --vid:  cap_samples  = compositor brightness sum of the last frame
 			//         cap_tiles    = DDR read latency {max, last} in core clocks
 			//         commit_count = {display frames read, pattern frames written}
 			//         st_tiles     = compositor {bad lines, resyncs}
-			//         last_x/last_y          = display misses / self-test writer errors
+			//         last_x/last_y          = display misses / brightness jumps
 			//         last_cap_addr          = {proto_err, writer skips[6:0]}
 			//         last_commit_addr       = display late starts[7:0]
-			c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tw_frames};
+			c_cap_samples  <= vid_st_s2.cp_frame_sum;
 			c_cap_tiles    <= {vid_st_s2.rd_lat_max, vid_st_s2.rd_lat_last};
 			c_commit_count <= {vid_st_s2.dr_frames, vid_st_s2.pw_frames};
 			c_st_frame     <= {vid_st_s2.cp_bad_lines, vid_st_s2.cp_resyncs};
 			c_last_x       <= vid_st_s2.dr_miss;
-			c_last_y       <= vid_st_s2.tw_errors;
+			c_last_y       <= vid_st_s2.cp_jumps;
 			c_last_cap_addr    <= {vid_st_s2.test_ring.proto_err, vid_st_s2.tw_skipped[6:0]};
 			c_last_commit_addr <= vid_st_s2.dr_late[7:0];
 		end else if (DBG_PATTERN_EN) begin
