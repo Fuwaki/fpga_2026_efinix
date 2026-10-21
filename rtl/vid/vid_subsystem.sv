@@ -17,7 +17,15 @@ module vid_subsystem
     // Self-test geometry and timing; simulation shortens them.
     parameter int TEST_LINES        = CAM_H,
     parameter int TEST_FRAME_CYCLES = 3_333_333,
-    parameter int TEST_LINE_CYCLES  = 2_000
+    parameter int TEST_LINE_CYCLES  = 2_000,
+    // Outstanding bursts allowed at the DDR port, per direction.  The board's
+    // (encrypted) controller returns wrong data when a second read is issued
+    // before the first completes: with two masters reading, about 8% of
+    // self-test frames carried the other master's data, and the legacy
+    // picture showed occasional horizontal glitches.  One read at a time is
+    // clean (thousands of frames, 0 errors); pipelined writes are fine.
+    parameter int DDR_MAX_WR        = 8,
+    parameter int DDR_MAX_RD        = 1
 ) (
     input  logic                  clk,          // AXI / core clock
     input  logic                  rst_n,
@@ -225,8 +233,27 @@ module vid_subsystem
         end
     end
 
+    // AXI forbids withdrawing an address before it is accepted; the legacy
+    // engines do it when they reset at frame boundaries.  Count it.
+    logic lg_arv_d, lg_arr_d, lg_awv_d, lg_awr_d;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            lg_arv_d <= 1'b0; lg_arr_d <= 1'b0; lg_awv_d <= 1'b0; lg_awr_d <= 1'b0;
+            status.lg_ar_wd <= '0;
+            status.lg_aw_wd <= '0;
+        end else begin
+            lg_arv_d <= lg_arvalid; lg_arr_d <= mr[0].arready;
+            lg_awv_d <= lg_awvalid; lg_awr_d <= mw[0].awready;
+            if (lg_arv_d && !lg_arr_d && !lg_arvalid)
+                status.lg_ar_wd <= status.lg_ar_wd + 1'b1;
+            if (lg_awv_d && !lg_awr_d && !lg_awvalid)
+                status.lg_aw_wd <= status.lg_aw_wd + 1'b1;
+        end
+    end
+
     // ------------------------------------------------------------- DDR
-    axi_arb #(.NW(NW), .NR(NR)) u_arb (.sw(mw), .sr(mr), .mw(dw), .mr(dr));
+    axi_arb #(.NW(NW), .NR(NR), .MAX_WR(DDR_MAX_WR), .MAX_RD(DDR_MAX_RD)) u_arb (
+        .sw(mw), .sr(mr), .mw(dw), .mr(dr));
 
     assign ddr_awid    = dw.awid;
     assign ddr_awaddr  = dw.awaddr;

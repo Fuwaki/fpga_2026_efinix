@@ -1917,14 +1917,14 @@ always @(posedge core_clk) begin
 			// --vid:  cap_samples  = {checked frames, written frames}
 			//         cap_tiles    = {bad frames, bad words[15:0]}
 			//         commit_count = last wrong word received
-			//         st_tiles     = legacy {W-length errors, last awlen, last beats}
+			//         st_tiles     = legacy {AR withdrawals, AW withdrawals}
 			//         last_x/last_y          = ring commits / writer errors
 			//         last_cap_addr          = {proto_err, writer skips[6:0]}
 			//         last_commit_addr       = ring aborts[7:0]
 			c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tw_frames};
 			c_cap_tiles    <= {vid_st_s2.tc_bad_frames, vid_st_s2.tc_bad_words[15:0]};
 			c_commit_count <= vid_st_s2.tc_last_bad;
-			c_st_frame     <= {vid_st_s2.lg_wlen_err, vid_st_s2.lg_last_len, vid_st_s2.lg_last_beats};
+			c_st_frame     <= {vid_st_s2.lg_ar_wd, vid_st_s2.lg_aw_wd};
 			c_last_x       <= vid_st_s2.test_ring.commits;
 			c_last_y       <= vid_st_s2.tw_errors;
 			c_last_cap_addr    <= {vid_st_s2.test_ring.proto_err, vid_st_s2.tw_skipped[6:0]};

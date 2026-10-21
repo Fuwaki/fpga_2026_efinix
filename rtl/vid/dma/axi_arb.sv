@@ -16,8 +16,9 @@
 //     controller is encrypted and cannot be shown to echo IDs; with a single
 //     ID it does not have to.
 //
-// Many bursts may be outstanding: up to WQ_DEPTH writes and RQ_DEPTH reads
-// (address accepted, response not yet complete).
+// Outstanding bursts (address accepted, response not yet complete) are
+// limited to MAX_WR writes and MAX_RD reads.  MAX_* = 1 serialises each
+// direction the way the original arbiter did.
 module axi_arb
     import vid_pkg::*;
 #(
@@ -25,7 +26,9 @@ module axi_arb
     parameter int NR       = 2,
     parameter int STARVE   = 256,
     parameter int WQ_DEPTH = 8,
-    parameter int RQ_DEPTH = 8
+    parameter int RQ_DEPTH = 8,
+    parameter int MAX_WR   = WQ_DEPTH,
+    parameter int MAX_RD   = RQ_DEPTH
 ) (
     axi4_wr_if.slv sw [NW],
     axi4_rd_if.slv sr [NR],
@@ -99,7 +102,9 @@ module axi_arb
             aw_sel = aw_lock_idx;
     end
 
-    wire aw_go = aw_any && !wq_full && !bq_full;
+    // Writes outstanding: + AW accepted, - B accepted.
+    logic [$clog2(WQ_DEPTH+1):0] wr_out;
+    wire aw_go = aw_any && !wq_full && !bq_full && (int'(wr_out) < MAX_WR);
 
     always_comb begin
         aw_rdy = '0;
@@ -177,6 +182,10 @@ module axi_arb
         b_vld = '0;
         b_vld[b_idx] = mw.bvalid && bq_valid;
     end
+
+    always_ff @(posedge mw.clk or negedge mw.rst_n)
+        if (!mw.rst_n) wr_out <= '0;
+        else           wr_out <= wr_out + $bits(wr_out)'(aw_fire) - $bits(wr_out)'(b_fire);
     assign mw.bready = bq_valid && b_r[b_idx];
 
     // ------------------------------------------------------- read address
@@ -195,7 +204,9 @@ module axi_arb
             ar_sel = ar_lock_idx;
     end
 
-    wire ar_go = ar_any && !rq_full;
+    // Reads outstanding: + AR accepted, - last R beat accepted.
+    logic [$clog2(RQ_DEPTH+1):0] rd_out;
+    wire ar_go = ar_any && !rq_full && (int'(rd_out) < MAX_RD);
 
     always_comb begin
         ar_rdy = '0;
@@ -245,6 +256,10 @@ module axi_arb
         r_vld = '0;
         r_vld[r_idx] = mr.rvalid && rq_valid;
     end
+
+    always_ff @(posedge mr.clk or negedge mr.rst_n)
+        if (!mr.rst_n) rd_out <= '0;
+        else           rd_out <= rd_out + $bits(rd_out)'(ar_fire) - $bits(rd_out)'(r_fire_last);
     assign mr.rready = rq_valid && r_r[r_idx];
 
 endmodule

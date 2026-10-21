@@ -190,6 +190,8 @@ package vid_pkg;
     logic [15:0]      lg_wlen_err;    // legacy writer: bursts whose W beat count != awlen + 1
     logic [7:0]       lg_last_len;    //                awlen of the last such burst
     logic [7:0]       lg_last_beats;  //                beats it actually sent
+    logic [15:0]      lg_ar_wd;       // legacy reader: arvalid dropped before arready
+    logic [15:0]      lg_aw_wd;       // legacy writer: awvalid dropped before awready
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern
@@ -197,6 +199,9 @@ package vid_pkg;
   // board.  Encodes all three so a checker can tell a wrong frame, line or
   // word apart; the low bits are a check field.  No multiplies, so it costs a
   // few LUTs.
+  // Only the low bits of each coordinate fit in the word; that is enough to
+  // tell neighbouring frames, lines and words apart.
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic [31:0] test_word(input logic [15:0] f,
                                             input logic [11:0] y,
                                             input logic [11:0] w);
@@ -204,6 +209,7 @@ package vid_pkg;
     chk = f[5:0] ^ y[5:0] ^ w[5:0] ^ {y[9:6], 2'b10} ^ {w[9:6], 2'b01};
     return {f[5:0], y[9:0], w[9:0], chk};
   endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   // ---------------------------------------------------------------- helpers
   function automatic int clog2u(input int v);
