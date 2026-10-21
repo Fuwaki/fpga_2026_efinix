@@ -69,6 +69,7 @@
         <efx:design_file name="rtl/vid/common/fifo_sync_core.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/fifo_async_core.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/vstream_fifo.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/common/push2stream.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dma/ring_if.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dma/frame_ring_core.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dma/frame_ring.sv" version="default" library="default" />
@@ -78,6 +79,15 @@
         <efx:design_file name="rtl/vid/dbg/vid_testgen.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dbg/vid_testchk.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dbg/vid_patgen.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/csi_capture.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/line_release.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_stats.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_blc_wb.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_demosaic.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_gamma.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_sat.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_dither565.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_top.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/disp/layer_unpack.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/disp/compositor.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/vid_subsystem.sv" version="default" library="default" />

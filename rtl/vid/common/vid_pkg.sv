@@ -26,6 +26,13 @@ package vid_pkg;
     logic [7:0] b;
   } rgb888_t;
 
+  // ISP-internal colour before gamma.
+  typedef struct packed {
+    logic [9:0] r;
+    logic [9:0] g;
+    logic [9:0] b;
+  } rgb10_t;
+
   // Bit layout matches the usual RGB565 word: r[15:11] g[10:5] b[4:0].
   typedef struct packed {
     logic [4:0] r;
@@ -125,15 +132,17 @@ package vid_pkg;
   // Compile-time today.  Every stage takes these as ports so a CSR block can
   // drive them later without touching the stages.
 
-  // Gains are Q2.8 (256 = 1.0).
+  // Gains are Q2.8 (256 = 1.0).  The arithmetic of every stage is specified
+  // in sim/ref/isp_ref.py, which the simulation compares against bit for bit.
   typedef struct packed {
-    logic       bypass_all;  // raw -> gray replicate, for bit-exact path checks
+    logic       bypass_all;  // raw[9:2] as gray, no processing: bit-exact path checks
     logic       bypass_gamma;
     logic       bypass_sat;
     logic       dither_en;
-    logic [9:0] blc_level;   // in 10-bit raw units
+    logic [1:0] cfa_r;       // {y, x} parity of the red site; blue is the opposite corner
+    logic [9:0] blc_level;   // black level, 10-bit raw units
     logic [9:0] blc_gain;    // stretch back to full scale after subtraction
-    logic [9:0] wb_r;
+    logic [9:0] wb_r;        // white balance, applied together with blc_gain
     logic [9:0] wb_g;
     logic [9:0] wb_b;
     logic [9:0] sat;         // saturation, 256 = unchanged
@@ -141,12 +150,15 @@ package vid_pkg;
 
   // Values carried over from the verified ac6b658 display-side pipeline:
   // BLC 16/255 in 8 bit = 64 in 10 bit, stretch 255/239 ~= 273/256,
-  // WB_G 0.52 (gray world), saturation 1.5x.
+  // WB_G 0.52 (gray world), saturation 1.5x.  CFA: rows of G B / R G as the
+  // sensor delivers them with 0x3211 = 0x03 (the old debayer's "r" sites were
+  // shown as blue, so its G R / B G labels mean G B / R G).
   localparam isp_cfg_t ISP_CFG_DEFAULT = '{
     bypass_all:   1'b0,
     bypass_gamma: 1'b0,
     bypass_sat:   1'b0,
     dither_en:    1'b1,
+    cfa_r:        2'b10,
     blc_level:    10'd64,
     blc_gain:     10'd273,
     wb_r:         10'd256,
@@ -192,7 +204,11 @@ package vid_pkg;
     logic [7:0]       lg_last_beats;  //                beats it actually sent
     logic [15:0]      lg_ar_wd;       // legacy reader: arvalid dropped before arready
     logic [15:0]      lg_aw_wd;       // legacy writer: awvalid dropped before awready
-    logic [SEQ_W-1:0] pw_frames;      // display pattern writer: committed
+    logic [SEQ_W-1:0] pw_frames;      // display producer's writer (pattern or ISP): committed
+    logic [SEQ_W-1:0] pw_errors;      //                 aborted (short, long or torn frame)
+    logic [SEQ_W-1:0] pw_skipped;     //                 no free slot
+    logic [31:0]      pw_sig;         //                 signature of the last committed frame
+    logic             isp_ring_err;   // ISP ring protocol error, sticky
     logic [SEQ_W-1:0] dr_frames;      // display reader: frames read
     logic [SEQ_W-1:0] dr_miss;        //                 no frame to show
     logic [SEQ_W-1:0] dr_late;        //                 start while still reading
@@ -200,8 +216,19 @@ package vid_pkg;
     logic [15:0]      cp_resyncs;     //             times it dropped words to re-align
     logic [15:0]      rd_lat_max;     // DDR read: cycles from AR accepted to first R beat, max
     logic [15:0]      rd_lat_last;    //           the same, most recent read
+    logic [15:0]      wr_lat_max;     // DDR write: cycles from AW accepted to B, max
     logic [31:0]      cp_frame_sum;   // compositor: sum of r+g+b over the last raster frame
     logic [15:0]      cp_jumps;       //             frames whose sum differs from the previous by > 8M
+    // Camera path (DISP_SRC = 1).
+    logic [SEQ_W-1:0] cap_frames;     // capture: frame starts seen
+    logic [15:0]      cap_lines;      //          lines in the last frame
+    logic [15:0]      cap_beats;      //          beats in the last line
+    logic [15:0]      cap_dropped;    //          beats lost to a full CSI FIFO
+    logic [15:0]      rel_holes;      // line release: FIFO ran dry inside a line
+    logic [15:0]      isp_dropped;    // ISP output beats the writer could not take
+    logic [3:0][31:0] raw_sum;        // raw statistics of the last frame, by {row, column} parity
+    logic [31:0]      raw_clip;
+    logic [31:0]      raw_dark;
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern

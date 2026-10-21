@@ -6,14 +6,16 @@
 // burst type, cache, prot, lock, strobes) are fixed in one place.
 //
 // Contents:
-//   axi_arb      write masters: 0 legacy, 1 self-test, 2 display producer
+//   axi_arb      write masters: 0 legacy, 1 display producer, 2 self-test
 //                read  masters: 0 legacy, 1 display, 2 self-test
 //                (lower index = higher priority)
 //   self-test    vid_testgen -> vdma_wr -> frame_ring (test) -> vdma_rd ->
 //                vid_testchk, every word compared, results in status
-//   display      producer (Phase 2a: vid_patgen) -> vdma_wr -> frame_ring
-//                (ISP) -> vdma_rd (dual-clock) -> compositor, in the pixel
-//                clock, out to the HDMI encoder
+//   display      producer -> vdma_wr -> frame_ring (ISP) -> vdma_rd
+//                (dual-clock) -> compositor, in the pixel clock, out to the
+//                HDMI encoder.  The producer is the camera (DISP_SRC = 1):
+//                csi_capture (CSI clock) -> line_release -> isp_top, or the
+//                test picture vid_patgen (DISP_SRC = 0).
 module vid_subsystem
     import vid_pkg::*;
 #(
@@ -21,6 +23,13 @@ module vid_subsystem
     // 0 = the legacy frame store gets no DDR access (its requests are never
     // accepted, so it simply stalls).
     parameter bit LEGACY_EN       = 1,
+    // Display producer: 0 = vid_patgen test picture, 1 = camera through the ISP.
+    parameter bit DISP_SRC        = 0,
+    // Camera path: 1 = replace the sensor's pixels with csi_capture's fixed
+    // picture (sensor timing kept), for on-board signature checks.
+    parameter bit CSI_PATTERN     = 0,
+    parameter isp_cfg_t ISP_CFG   = ISP_CFG_DEFAULT,
+    parameter string GAMMA_CURVE  = "./rtl/gamma_conrrection/SRGB_ENC.mem",
     // Display pattern timing; simulation shortens the frame period.
     parameter int PAT_FRAME_CYCLES  = 3_333_333,
     parameter int PAT_LINE_CYCLES   = 2_000,
@@ -106,6 +115,13 @@ module vid_subsystem
     input  logic                  ddr_rvalid,
     output logic                  ddr_rready,
 
+    // ---------------------------------------------- camera (CSI pixel clock)
+    input  logic                  csi_clk,
+    input  logic                  csi_vs,
+    input  logic                  csi_hs,
+    input  logic                  csi_de,
+    input  logic [39:0]           csi_data,     // 4 RAW10 pixels, leftmost in [9:0]
+
     // ------------------------------------------------- display (pixel clock)
     input  logic                  pix_clk,
     output logic [7:0]            pix_r,
@@ -118,7 +134,7 @@ module vid_subsystem
     output vid_status_t           status
 );
     localparam int NW = 3, NR = 3;
-    localparam int W_SELF = 1, W_DISP = 2;
+    localparam int W_DISP = 1, W_SELF = 2;    // the camera cannot wait, the self-test can
     localparam int R_DISP = 1, R_SELF = 2;
 
     // Pixel-clock reset: asserted with rst_n, released synchronously.
@@ -176,7 +192,7 @@ module vid_subsystem
         frame_ring #(.SLOTS(3), .NCONS(1)) u_ring (
             .clk(clk), .rst_n(rst_n), .p(rp), .c(rc), .status(status.test_ring));
 
-        vdma_wr #(.FIFO_WORDS(1024)) u_wr (
+        vdma_wr #(.FIFO_BEATS(512)) u_wr (
             .s(gen), .m(mw[W_SELF]), .ring(rp),
             .ring_base(RING_TEST_BASE), .geom(geom), .src_seq(gen_frame),
             .st_frames(status.tw_frames), .st_skipped(status.tw_skipped),
@@ -189,7 +205,7 @@ module vid_subsystem
             if (!rst_n) rd_start <= 1'b0;
             else        rd_start <= !rd_busy && !rd_start;
 
-        vdma_rd #(.FIFO_WORDS(1024), .RD_BURST(128)) u_rd (
+        vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128)) u_rd (
             .m(mr[R_SELF]), .ring(rc[0]), .o(back),
             .ring_base(RING_TEST_BASE), .start(rd_start), .policy(ACQ_NEW_ONLY), .geom(geom),
             .x0_beat(8'd0), .nbeats(8'(CAM_W / BEAT_PIX)),
@@ -231,26 +247,72 @@ module vid_subsystem
 
     // --------------------------------------------------------- display
     if (1) begin : g_display
-        vstream_if #(.T(rgb565_t), .PPC(2)) pat  (.clk(clk), .rst_n(rst_n));
+        vstream_if #(.T(rgb565_t), .PPC(2)) prod (.clk(clk), .rst_n(rst_n));
         vstream_if #(.T(rgb565_t), .PPC(2)) lay0 (.clk(pix_clk), .rst_n(pix_rst_n));
         ring_prod_if rp ();
         ring_cons_if rc [1] ();
         ring_status_t ring_st;
+        logic [SEQ_W-1:0] prod_seq;
 
-        logic [15:0] pat_frame;
-        vid_patgen #(.FRAME_CYCLES(PAT_FRAME_CYCLES), .LINE_CYCLES(PAT_LINE_CYCLES)) u_pat (
-            .o(pat), .enable(1'b1), .frame(pat_frame));
+        if (DISP_SRC) begin : g_cam
+            // CSI clock reset: asserted with rst_n, released synchronously.
+            logic csi_rst_q1, csi_rst_n;
+            always_ff @(posedge csi_clk or negedge rst_n)
+                if (!rst_n) {csi_rst_n, csi_rst_q1} <= 2'b00;
+                else        {csi_rst_n, csi_rst_q1} <= {csi_rst_q1, 1'b1};
+
+            logic        cw_en, cw_full;
+            logic [41:0] cw_data;
+            csi_capture #(.PATTERN(CSI_PATTERN)) u_cap (
+                .clk(csi_clk), .rst_n(csi_rst_n),
+                .vs(csi_vs), .hs(csi_hs), .de(csi_de), .data(csi_data),
+                .wen(cw_en), .wdata(cw_data), .wfull(cw_full),
+                .st_frames(status.cap_frames), .st_lines(status.cap_lines),
+                .st_beats(status.cap_beats), .st_dropped(status.cap_dropped));
+
+            vpush_if #(.T(raw10_t),  .PPC(2)) raw (.clk(clk), .rst_n(rst_n));
+            vpush_if #(.T(rgb565_t), .PPC(2)) img (.clk(clk), .rst_n(rst_n));
+
+            line_release u_rel (
+                .wclk(csi_clk), .wrst_n(csi_rst_n), .wen(cw_en), .wdata(cw_data), .wfull(cw_full),
+                .o(raw), .st_holes(status.rel_holes));
+
+            isp_top #(.GAMMA_CURVE(GAMMA_CURVE)) u_isp (
+                .i(raw), .o(img), .cfg(ISP_CFG),
+                .st_sum(status.raw_sum), .st_clip(status.raw_clip), .st_dark(status.raw_dark));
+
+            push2stream u_p2s (.p(img), .s(prod), .st_dropped(status.isp_dropped));
+
+            // Frames are numbered by the capture's frame counter, synchronised
+            // only for labelling (it is sampled when the slot is acquired).
+            logic [SEQ_W-1:0] seq_s1, seq_s2;
+            always_ff @(posedge clk or negedge rst_n)
+                if (!rst_n) {seq_s2, seq_s1} <= '0;
+                else        {seq_s2, seq_s1} <= {seq_s1, status.cap_frames};
+            assign prod_seq = seq_s2;
+        end else begin : g_pat
+            vid_patgen #(.FRAME_CYCLES(PAT_FRAME_CYCLES), .LINE_CYCLES(PAT_LINE_CYCLES)) u_pat (
+                .o(prod), .enable(1'b1), .frame(prod_seq));
+            assign status.cap_frames  = '0;
+            assign status.cap_lines   = '0;
+            assign status.cap_beats   = '0;
+            assign status.cap_dropped = '0;
+            assign status.rel_holes   = '0;
+            assign status.isp_dropped = '0;
+            assign status.raw_sum     = '0;
+            assign status.raw_clip    = '0;
+            assign status.raw_dark    = '0;
+        end
 
         frame_ring #(.SLOTS(3), .NCONS(1)) u_ring (
             .clk(clk), .rst_n(rst_n), .p(rp), .c(rc), .status(ring_st));
+        assign status.isp_ring_err = ring_st.proto_err;
 
-        logic [SEQ_W-1:0] pw_skip, pw_err;
-        logic [31:0]      pw_sig;
-        vdma_wr #(.FIFO_WORDS(1024)) u_wr (
-            .s(pat), .m(mw[W_DISP]), .ring(rp),
-            .ring_base(RING_ISP_BASE), .geom(CAM_GEOM), .src_seq(pat_frame),
-            .st_frames(status.pw_frames), .st_skipped(pw_skip),
-            .st_errors(pw_err), .st_sig(pw_sig));
+        vdma_wr #(.FIFO_BEATS(512)) u_wr (
+            .s(prod), .m(mw[W_DISP]), .ring(rp),
+            .ring_base(RING_ISP_BASE), .geom(CAM_GEOM), .src_seq(prod_seq),
+            .st_frames(status.pw_frames), .st_skipped(status.pw_skipped),
+            .st_errors(status.pw_errors), .st_sig(status.pw_sig));
 
         // Raster frame request, pixel clock -> core clock.
         logic frame_req;
@@ -264,7 +326,7 @@ module vid_subsystem
         frame_token_t rd_tok;
         // Long bursts: the DDR port serves one read at a time (DDR_MAX_RD),
         // so every burst pays the full read latency; 128 beats amortise it.
-        vdma_rd #(.FIFO_WORDS(1024), .RD_BURST(128), .ASYNC(1)) u_rd (
+        vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
             .m(mr[R_DISP]), .ring(rc[0]), .o(lay0),
             .ring_base(RING_ISP_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
             .x0_beat(8'd0), .nbeats(8'(CAM_W / BEAT_PIX)),
@@ -351,6 +413,29 @@ module vid_subsystem
                     status.rd_lat_max <= lat_cnt;
             end else if (lat_run && lat_cnt != 16'hFFFF) begin
                 lat_cnt <= lat_cnt + 1'b1;
+            end
+        end
+    end
+
+    // ------------------------------------------------ DDR write latency
+    // AW accepted to B, one write outstanding at a time (DDR_MAX_WR = 1).
+    logic        wl_run;
+    logic [15:0] wl_cnt;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            wl_run            <= 1'b0;
+            wl_cnt            <= '0;
+            status.wr_lat_max <= '0;
+        end else begin
+            if (dw.awvalid && dw.awready) begin
+                wl_run <= 1'b1;
+                wl_cnt <= '0;
+            end else if (wl_run && dw.bvalid && dw.bready) begin
+                wl_run <= 1'b0;
+                if (wl_cnt > status.wr_lat_max)
+                    status.wr_lat_max <= wl_cnt;
+            end else if (wl_run && wl_cnt != 16'hFFFF) begin
+                wl_cnt <= wl_cnt + 1'b1;
             end
         end
     end

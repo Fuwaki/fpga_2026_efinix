@@ -885,8 +885,15 @@ vid_pkg::vid_status_t w_vid_status;
 wire [7:0] vid_pix_r, vid_pix_g, vid_pix_b;
 wire       vid_pix_de, vid_pix_hs, vid_pix_vs;
 
+// CSI_PATTERN = 1: csi_capture replaces the camera's pixels with a fixed
+// picture (sensor timing kept).  The ISP ring's frame signature (telemetry
+// page 1) must then read 0xa4f003e6 (sim/ref/isp_ref.py pattern-sig).
+localparam CSI_PATTERN = 1'b0;
+
 vid_subsystem #(
     .ENABLE_SELFTEST (1),
+    .DISP_SRC        (1),            // camera through the ISP
+    .CSI_PATTERN     (CSI_PATTERN),
     // The screen shows the new path (VIDEO_PIPE_NEW); the legacy frame store
     // is not needed and only competes for DDR reads.
     .LEGACY_EN       (0)
@@ -917,6 +924,12 @@ vid_subsystem #(
     .ddr_arvalid (s_axi_arvalid), .ddr_arready(s_axi_arready),
     .ddr_rid     (s_axi_rid),     .ddr_rdata  (s_axi_rdata),  .ddr_rresp  (s_axi_rresp),
     .ddr_rlast   (s_axi_rlast),   .ddr_rvalid (s_axi_rvalid), .ddr_rready (s_axi_rready),
+
+    .csi_clk     (i_mipi_rx_pclk),
+    .csi_vs      (w_mipi_rx_vs),
+    .csi_hs      (w_mipi_rx_hs),
+    .csi_de      (w_mipi_rx_de),
+    .csi_data    (w_mipi_rx_data[39:0]),
 
     .pix_clk     (hdmi_tx_slow_clk),
     .pix_r       (vid_pix_r),  .pix_g (vid_pix_g),  .pix_b (vid_pix_b),
@@ -1933,22 +1946,50 @@ always @(posedge core_clk) begin
 			c_last_cap_addr <= last_cap_addr_sync2;
 			c_last_commit_addr <= last_commit_addr_sync2;
 		end else if (TELEM_VID) begin
-			// vid_subsystem status (rtl/vid).  Decoded by board_smoke_test.py
-			// --vid:  cap_samples  = compositor brightness sum of the last frame
-			//         cap_tiles    = DDR read latency {max, last} in core clocks
-			//         commit_count = {display frames read, pattern frames written}
-			//         st_tiles     = compositor {bad lines, resyncs}
-			//         last_x/last_y          = display misses / brightness jumps
-			//         last_cap_addr          = {proto_err, writer skips[6:0]}
-			//         last_commit_addr       = display late starts[7:0]
-			c_cap_samples  <= vid_st_s2.cp_frame_sum;
-			c_cap_tiles    <= {vid_st_s2.rd_lat_max, vid_st_s2.rd_lat_last};
-			c_commit_count <= {vid_st_s2.dr_frames, vid_st_s2.pw_frames};
-			c_st_frame     <= {vid_st_s2.cp_bad_lines, vid_st_s2.cp_resyncs};
-			c_last_x       <= vid_st_s2.dr_miss;
-			c_last_y       <= vid_st_s2.cp_jumps;
-			c_last_cap_addr    <= {vid_st_s2.test_ring.proto_err, vid_st_s2.tw_skipped[6:0]};
-			c_last_commit_addr <= vid_st_s2.dr_late[7:0];
+			// vid_subsystem status (rtl/vid), one page per frame, page =
+			// seq[1:0] (byte 19).  Decoded by board_smoke_test.py --vid.
+			case (dbg_seq[1:0])
+			2'd0: begin   // display
+				c_cap_samples  <= vid_st_s2.cp_frame_sum;
+				c_cap_tiles    <= {vid_st_s2.rd_lat_max, vid_st_s2.rd_lat_last};
+				c_commit_count <= {vid_st_s2.dr_frames, vid_st_s2.pw_frames};
+				c_st_frame     <= {vid_st_s2.cp_bad_lines, vid_st_s2.cp_resyncs};
+				c_last_x       <= vid_st_s2.dr_miss;
+				c_last_y       <= vid_st_s2.cp_jumps;
+				c_last_cap_addr    <= {vid_st_s2.isp_ring_err, vid_st_s2.pw_skipped[6:0]};
+				c_last_commit_addr <= vid_st_s2.dr_late[7:0];
+			end
+			2'd1: begin   // camera path
+				c_cap_samples  <= {vid_st_s2.cap_frames, vid_st_s2.cap_lines};
+				c_cap_tiles    <= {vid_st_s2.cap_beats, vid_st_s2.cap_dropped};
+				c_commit_count <= {vid_st_s2.pw_errors, vid_st_s2.isp_dropped};
+				c_st_frame     <= vid_st_s2.pw_sig;
+				c_last_x       <= vid_st_s2.wr_lat_max;
+				c_last_y       <= vid_st_s2.pw_frames;
+				c_last_cap_addr    <= vid_st_s2.rel_holes[7:0];
+				c_last_commit_addr <= {vid_st_s2.isp_ring_err, 7'd0};
+			end
+			2'd2: begin   // raw statistics of the last frame
+				c_cap_samples  <= vid_st_s2.raw_sum[0];
+				c_cap_tiles    <= vid_st_s2.raw_sum[1];
+				c_commit_count <= vid_st_s2.raw_sum[2];
+				c_st_frame     <= vid_st_s2.raw_sum[3];
+				c_last_x       <= vid_st_s2.raw_clip[19:4];
+				c_last_y       <= vid_st_s2.raw_dark[19:4];
+				c_last_cap_addr    <= 8'd0;
+				c_last_commit_addr <= 8'd0;
+			end
+			default: begin   // DMA self-test
+				c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tc_bad_frames};
+				c_cap_tiles    <= vid_st_s2.tc_bad_words;
+				c_commit_count <= {vid_st_s2.tw_frames, vid_st_s2.tw_errors};
+				c_st_frame     <= {vid_st_s2.tw_skipped, vid_st_s2.tr_miss};
+				c_last_x       <= vid_st_s2.cp_bad_lines;
+				c_last_y       <= vid_st_s2.dr_miss;
+				c_last_cap_addr    <= vid_st_s2.dr_late[7:0];
+				c_last_commit_addr <= {vid_st_s2.test_ring.proto_err, 7'd0};
+			end
+			endcase
 		end else if (DBG_PATTERN_EN) begin
 			// Pattern checker; see frame_buffer_read dbg_seq.
 			c_cap_samples  <= rd_seq_s2[111:80];

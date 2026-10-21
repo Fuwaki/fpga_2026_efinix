@@ -160,7 +160,7 @@ module tb_dma #(
     frame_geom_t      geom;
     assign geom = '{w: 13'(WPX), h: 13'(H)};
 
-    vdma_wr #(.FIFO_WORDS(1024)) u_wr (
+    vdma_wr #(.FIFO_BEATS(256)) u_wr (
         .s(src), .m(w_m[0]), .ring(rp),
         .ring_base(RING_TEST_BASE), .geom(geom), .src_seq(SEQ_W'(cur_frame)),
         .st_frames(wr_frames), .st_skipped(wr_skipped), .st_errors(wr_errors), .st_sig(wr_sig));
@@ -175,13 +175,13 @@ module tb_dma #(
     frame_token_t tok0, tok1;
     logic [SEQ_W-1:0] f0, m0, l0, f1, m1, l1;
 
-    vdma_rd #(.FIFO_WORDS(512), .RD_BURST(32)) u_rd0 (
+    vdma_rd #(.FIFO_BEATS(128), .RD_BURST(32)) u_rd0 (
         .m(r_m[0]), .ring(rc[0]), .o(o0),
         .ring_base(RING_TEST_BASE), .start(start0), .policy(ACQ_REPEAT_OK), .geom(geom),
         .x0_beat(8'd0), .nbeats(8'(WPX / BEAT_PIX)),
         .busy(busy0), .token(tok0), .st_frames(f0), .st_miss(m0), .st_late(l0));
 
-    vdma_rd #(.FIFO_WORDS(512), .RD_BURST(32)) u_rd1 (
+    vdma_rd #(.FIFO_BEATS(128), .RD_BURST(32)) u_rd1 (
         .m(r_m[1]), .ring(rc[1]), .o(o1),
         .ring_base(RING_TEST_BASE), .start(start1), .policy(ACQ_NEW_ONLY), .geom(geom),
         .x0_beat(8'(CROP_X0)), .nbeats(8'(CROP_NB)),

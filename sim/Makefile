@@ -13,10 +13,12 @@ VFLAGS := --binary --timing --assert -j 0 -Wall -Wno-fatal \
 RTL := $(addprefix $(ROOT)/rtl/vid/, \
          common/vid_pkg.sv common/vstream_if.sv common/vpush_if.sv common/axi4_if.sv \
          common/mul_nodsp.sv common/fifo_sync_core.sv common/fifo_async_core.sv \
-         common/vstream_fifo.sv \
+         common/vstream_fifo.sv common/push2stream.sv \
          dma/ring_if.sv dma/frame_ring_core.sv dma/frame_ring.sv \
          dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv \
          dbg/vid_testgen.sv dbg/vid_testchk.sv dbg/vid_patgen.sv \
+         isp/csi_capture.sv isp/line_release.sv isp/isp_stats.sv isp/isp_blc_wb.sv \
+         isp/isp_demosaic.sv isp/isp_gamma.sv isp/isp_sat.sv isp/isp_dither565.sv isp/isp_top.sv \
          disp/layer_unpack.sv disp/compositor.sv vid_subsystem.sv) \
        $(ROOT)/rtl/display/raster_gen.sv
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
@@ -25,7 +27,8 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp sva_neg
+TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
+         tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -66,3 +69,25 @@ sva_neg:
 	@if $(OBJ)/$@/Vtb_fifo > $(OBJ)/$@/run.log 2>&1; then \
 	  echo "FAIL sva_neg: misbehaving source was not caught"; exit 1; \
 	else grep -m1 "withdrawn before transfer" $(OBJ)/$@/run.log && echo "PASS sva_neg"; fi
+
+# Camera path against the bit-exact reference model (sim/ref/isp_ref.py).
+# Run from the repository root: the gamma table path is relative to it.
+REF := python3 $(ROOT)/sim/ref/isp_ref.py
+tb_isp:
+	$(call build,$@,tb_isp,tb_isp,)
+	$(REF) gen-raw $(OBJ)/$@/raw.hex --seed $(SEED)
+	cd $(ROOT) && $(OBJ)/$@/Vtb_isp +verilator+seed+$(SEED) +verilator+rand+reset+2
+	$(REF) check $(OBJ)/$@/raw.hex $(OBJ)/$@/dump.hex
+
+tb_isp_bypass:
+	$(call build,$@,tb_isp,tb_isp,-GBYPASS=1 -GRAW='"sim/obj/$@/raw.hex"' -GDUMP='"sim/obj/$@/dump.hex"')
+	$(REF) gen-raw $(OBJ)/$@/raw.hex --seed $(SEED)
+	cd $(ROOT) && $(OBJ)/$@/Vtb_isp +verilator+seed+$(SEED) +verilator+rand+reset+2
+	$(REF) check --bypass $(OBJ)/$@/raw.hex $(OBJ)/$@/dump.hex
+
+# csi_capture's own picture: the signature printed here is what the board
+# must report with CSI_PATTERN = 1.
+tb_isp_pat:
+	$(call build,$@,tb_isp,tb_isp,-GPATTERN=1 -GDUMP='"sim/obj/$@/dump.hex"')
+	cd $(ROOT) && $(OBJ)/$@/Vtb_isp +verilator+seed+$(SEED) +verilator+rand+reset+2
+	$(REF) check pattern $(OBJ)/$@/dump.hex

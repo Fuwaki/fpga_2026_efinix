@@ -42,6 +42,7 @@ module tb_disp #(
         .ddr_arburst(), .ddr_arlock(), .ddr_arcache(), .ddr_arprot(), .ddr_arvalid(dr.arvalid),
         .ddr_arready(dr.arready), .ddr_rid(dr.rid), .ddr_rdata(dr.rdata), .ddr_rresp(dr.rresp),
         .ddr_rlast(dr.rlast), .ddr_rvalid(dr.rvalid), .ddr_rready(dr.rready),
+        .csi_clk(1'b0), .csi_vs(1'b0), .csi_hs(1'b0), .csi_de(1'b0), .csi_data('0),
         .pix_clk(pclk), .pix_r(r), .pix_g(g), .pix_b(b), .pix_de(de), .pix_hs(hs), .pix_vs(vs),
         .status(st));
 

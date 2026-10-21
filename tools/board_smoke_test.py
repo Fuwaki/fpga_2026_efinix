@@ -66,6 +66,71 @@ def frames(port, seconds):
             }
 
 
+def decode_vid(got):
+    """vid_subsystem telemetry: page = seq & 3, see the TELEM_VID branch in
+    rtl/fpga_src_top.v.  Uses the latest frame of each page."""
+    pages = {}
+    for f in got:
+        pages[f["seq"] & 3] = f
+    vid = {}
+    p = pages.get(0)
+    if p:
+        vid["display"] = {
+            "frame_brightness_sum": p["cap_samples"],
+            "brightness_jumps":     p["last_y"],
+            "ddr_rd_lat_max":       p["cap_tiles"] >> 16,
+            "ddr_rd_lat_last":      p["cap_tiles"] & 0xFFFF,
+            "frames_written":       p["commit_count"] & 0xFFFF,
+            "frames_read":          p["commit_count"] >> 16,
+            "misses":               p["last_x"],
+            "late":                 p["last_commit_addr"],
+            "comp_bad_lines":       p["st_tiles"] >> 16,
+            "comp_resyncs":         p["st_tiles"] & 0xFFFF,
+            "writer_skips":         p["last_cap_addr"] & 0x7F,
+            "isp_ring_err":         bool(p["last_cap_addr"] & 0x80),
+        }
+    p = pages.get(1)
+    if p:
+        vid["camera"] = {
+            "cap_frames":   p["cap_samples"] >> 16,
+            "cap_lines":    p["cap_samples"] & 0xFFFF,
+            "cap_beats":    p["cap_tiles"] >> 16,
+            "cap_dropped":  p["cap_tiles"] & 0xFFFF,
+            "writer_errors": p["commit_count"] >> 16,
+            "isp_dropped":  p["commit_count"] & 0xFFFF,
+            "frame_sig":    f"{p['st_tiles']:#010x}",
+            "ddr_wr_lat_max": p["last_x"],
+            "frames_written": p["last_y"],
+            "rel_holes":    p["last_cap_addr"],
+            "isp_ring_err": bool(p["last_commit_addr"] & 0x80),
+        }
+    p = pages.get(2)
+    if p:
+        n = 1280 * 720 // 4
+        sums = [p["cap_samples"], p["cap_tiles"], p["commit_count"], p["st_tiles"]]
+        vid["raw"] = {
+            # mean raw value of each 2x2 CFA position {row, column} parity
+            "mean_00": round(sums[0] / n, 1), "mean_01": round(sums[1] / n, 1),
+            "mean_10": round(sums[2] / n, 1), "mean_11": round(sums[3] / n, 1),
+            "clipped": p["last_x"] << 4,
+            "dark":    p["last_y"] << 4,
+        }
+    p = pages.get(3)
+    if p:
+        vid["selftest"] = {
+            "frames_checked": p["cap_samples"] >> 16,
+            "bad_frames":     p["cap_samples"] & 0xFFFF,
+            "bad_words":      p["cap_tiles"],
+            "frames_written": p["commit_count"] >> 16,
+            "writer_errors":  p["commit_count"] & 0xFFFF,
+            "ring_proto_err": bool(p["last_commit_addr"] & 0x80),
+        }
+    errs = [vid.get("display", {}).get("isp_ring_err"), vid.get("camera", {}).get("isp_ring_err"),
+            vid.get("selftest", {}).get("ring_proto_err")]
+    vid["ok"] = len(pages) == 4 and not any(errs)
+    return vid
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", default="/dev/ttyUSB2")
@@ -105,28 +170,7 @@ def main():
               1200 <= latest["de_width_core_cycles"] <= 1400)
     result = {"ok": ok, "frames": len(got), "latest": latest, "delta": delta}
     if args.vid and latest is not None:
-        # Slot layout: see the TELEM_VID branch in rtl/fpga_src_top.v.
-        def word(v):
-            return {"f": v >> 26, "y": (v >> 16) & 0x3FF, "w": (v >> 6) & 0x3FF, "chk": v & 0x3F}
-        pos = latest["st_tiles"]
-        vid = {
-            "frame_brightness_sum": latest["cap_samples"],
-            "brightness_jumps":     latest["last_y"],
-            "ddr_rd_lat_max":      latest["cap_tiles"] >> 16,
-            "ddr_rd_lat_last":     latest["cap_tiles"] & 0xFFFF,
-            "disp_pattern_written": latest["commit_count"] & 0xFFFF,
-            "disp_frames_read":     latest["commit_count"] >> 16,
-            "disp_misses":          latest["last_x"],
-            "disp_late":            latest["last_commit_addr"],
-            "comp_bad_lines":       pos >> 16,
-            "comp_resyncs":         pos & 0xFFFF,
-            "writer_skips":         latest["last_cap_addr"] & 0x7F,
-            "ring_proto_err":       bool(latest["last_cap_addr"] & 0x80),
-        }
-        if delta is not None:
-            vid["disp_read_per_s"] = 2 * (((latest["commit_count"] >> 16) - (got[-2]["commit_count"] >> 16)) & 0xFFFF)
-        vid["ok"] = not vid["ring_proto_err"]
-        result["vid"] = vid
+        result["vid"] = decode_vid(got)
     if args.json:
         print(json.dumps(result, separators=(",", ":")))
     elif latest is None:

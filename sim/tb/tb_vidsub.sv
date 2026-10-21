@@ -85,6 +85,7 @@ module tb_vidsub #(parameter bit BAD_IDS = 0);
         .ddr_arburst(), .ddr_arlock(), .ddr_arcache(), .ddr_arprot(), .ddr_arvalid(dr.arvalid),
         .ddr_arready(dr.arready), .ddr_rid(dr.rid), .ddr_rdata(dr.rdata), .ddr_rresp(dr.rresp),
         .ddr_rlast(dr.rlast), .ddr_rvalid(dr.rvalid), .ddr_rready(dr.rready),
+        .csi_clk(1'b0), .csi_vs(1'b0), .csi_hs(1'b0), .csi_de(1'b0), .csi_data('0),
         .status(st));
 
     initial begin

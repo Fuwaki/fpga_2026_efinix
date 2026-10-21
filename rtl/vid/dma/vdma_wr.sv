@@ -7,12 +7,14 @@
 // Frame handling, all on the AXI side of the input FIFO:
 //   * a word tagged sof at the FIFO head starts a frame: acquire a slot;
 //     no slot -> skip the frame;
-//   * a burst is issued only when all of its words are already in the FIFO,
-//     so W never waits on the input; the next beat is assembled while the
-//     current one waits for wready, so the data path sustains one word per
-//     clock;
-//   * every word's sof/eol tag is checked against the geometry; a short,
-//     long or torn frame is aborted, never committed;
+//   * words are packed into AXI beats before the FIFO, so the FIFO holds
+//     whole beats and W runs at one beat per clock (packing behind the FIFO
+//     held the DDR port four clocks per beat);
+//   * a burst is issued only when all of its beats are already in the FIFO,
+//     so W never waits on the input;
+//   * every beat's sof/eol tags are checked against the geometry, and the
+//     packer marks a beat whose words carried a tag in the wrong place; a
+//     short, long or torn frame is aborted, never committed;
 //   * the frame is committed after the B response of its last burst, so a
 //     consumer can never see a partly written frame.
 //
@@ -21,7 +23,7 @@
 module vdma_wr
     import vid_pkg::*;
 #(
-    parameter int FIFO_WORDS = 1024     // power of two, >= 2 bursts of words
+    parameter int FIFO_BEATS = 512      // power of two, >= one burst
 ) (
     vstream_if.snk                  s,
     axi4_wr_if.mst                  m,
@@ -39,35 +41,86 @@ module vdma_wr
     localparam int IW  = $bits(s.data);
     localparam int R   = AXI_DW / IW;           // words per beat
     localparam int PPW = BEAT_PIX / R;          // pixels per word
-    localparam int LW  = $clog2(FIFO_WORDS);
+    localparam int LW  = $clog2(FIFO_BEATS);
+    localparam int RW  = $clog2(R + 1);
 
     initial begin
         if (AXI_DW % IW != 0 || BEAT_PIX % R != 0)
             $error("vdma_wr: word width %0d does not divide the AXI beat", IW);
-        if (FIFO_WORDS < 2 * MAX_BURST * R / 2)
-            $warning("vdma_wr: FIFO_WORDS smaller than one full burst");
+        if (FIFO_BEATS < MAX_BURST)
+            $warning("vdma_wr: FIFO_BEATS smaller than one full burst");
     end
 
-    // ------------------------------------------------------------ input FIFO
-    logic          f_valid, f_ready, f_sof, f_eol;
-    logic [IW-1:0] f_data;
-    logic [LW:0]   f_level;
-    logic          f_full;
+    // ---------------------------------------------------------------- packer
+    // Words fill a beat, word 0 lowest.  Tags are kept per beat: sof of word
+    // 0, eol of the last word, and bad if any word carried a tag elsewhere.
+    // An eol in mid-beat closes the beat early (bad), so the next line still
+    // starts on a beat boundary.
+    logic [AXI_DW-1:0] pk_data;
+    logic [RW-1:0]     pk_n;
+    logic              pk_sof, pk_bad;
+    logic              pw_en;
+    logic [AXI_DW+2:0] pw_data;           // {sof, eol, bad, beat}
+    logic              f_full;
 
-    fifo_sync_core #(.W(IW + 2), .DEPTH(FIFO_WORDS)) u_fifo (
-        .clk    (s.clk),
-        .rst_n  (s.rst_n),
-        .wen    (s.valid),
-        .wdata  ({s.sof, s.eol, s.data}),
-        .wfull  (f_full),
-        .rready (f_ready),
-        .rvalid (f_valid),
-        .rdata  ({f_sof, f_eol, f_data}),
-        .level  (f_level)
-    );
     assign s.ready = !f_full;
 
-    // Words available, including the one on the FIFO output register.
+    always_ff @(posedge s.clk or negedge s.rst_n) begin
+        if (!s.rst_n) begin
+            pk_data <= '0;
+            pk_n    <= '0;
+            pk_sof  <= 1'b0;
+            pk_bad  <= 1'b0;
+            pw_en   <= 1'b0;
+            pw_data <= '0;
+        end else begin
+            pw_en <= 1'b0;
+            if (s.valid && s.ready) begin
+                logic [AXI_DW-1:0] d;
+                logic              first, last, sof_b, bad;
+                first = (pk_n == 0);
+                last  = (pk_n == RW'(R - 1)) || s.eol;
+                d     = first ? '0 : pk_data;
+                d[int'(pk_n) * IW +: IW] = s.data;
+                sof_b = first ? s.sof : pk_sof;
+                bad   = (first ? 1'b0 : pk_bad) || (s.sof && !first)
+                      || (s.eol && pk_n != RW'(R - 1));
+                if (last) begin
+                    pw_en   <= 1'b1;
+                    pw_data <= {sof_b, s.eol, bad, d};
+                    pk_n    <= '0;
+                end else begin
+                    pk_data <= d;
+                    pk_sof  <= sof_b;
+                    pk_bad  <= bad;
+                    pk_n    <= pk_n + 1'b1;
+                end
+            end
+        end
+    end
+
+    // ------------------------------------------------------------ beat FIFO
+    // The packer may still deliver one beat after full rises, so full is
+    // raised one beat early.
+    logic              f_valid, f_ready, f_sof, f_eol, f_bad;
+    logic [AXI_DW-1:0] f_data;
+    logic [LW:0]       f_level;
+    logic              f_wfull;
+
+    fifo_sync_core #(.W(AXI_DW + 3), .DEPTH(FIFO_BEATS)) u_fifo (
+        .clk    (s.clk),
+        .rst_n  (s.rst_n),
+        .wen    (pw_en),
+        .wdata  (pw_data),
+        .wfull  (f_wfull),
+        .rready (f_ready),
+        .rvalid (f_valid),
+        .rdata  ({f_sof, f_eol, f_bad, f_data}),
+        .level  (f_level)
+    );
+    assign f_full = f_wfull || (f_level >= (LW + 1)'(FIFO_BEATS - 2));
+
+    // Beats available, including the one on the FIFO output register.
     wire [LW+1:0] f_avail = (LW + 2)'(f_level) + (LW + 2)'(f_valid);
 
     // ---------------------------------------------------------- frame state
@@ -82,9 +135,7 @@ module vdma_wr
     logic [12:0]       y;
     logic [12:0]       xb;          // beat index within the line
     logic [8:0]        n;           // beats in the current burst
-    logic [8:0]        bi;          // beats of the burst assembled so far
-    logic [$clog2(R+1)-1:0] wi;     // word index within the beat
-    logic [AXI_DW-1:0] beat;
+    logic [8:0]        bi;          // beats of the burst sent to W so far
     logic              ferr;        // current frame is bad
     logic [31:0]       sig;
     logic [7:0]        b_out;       // bursts written but not yet acknowledged
@@ -95,17 +146,22 @@ module vdma_wr
     wire [12:0] remain   = beats_per_line - xb;
     wire [8:0]  burst_n  = (remain > 13'(MAX_BURST)) ? 9'(MAX_BURST) : 9'(remain);
 
-    // W path: one word per clock into the beat being assembled; the word that
-    // completes a beat may only be taken when the W register is free.
-    wire w_free    = !m.wvalid || m.wready;
-    wire w_last_wd = (wi == ($clog2(R+1))'(R - 1));
-    wire w_take    = (state == ST_DATA) && f_valid && (bi != n) && (!w_last_wd || w_free);
-    wire w_done    = (state == ST_DATA) && (bi == n) && (!m.wvalid || (m.wready && m.wlast));
+    // W path: one beat per clock from the FIFO into the W register.
+    wire w_free = !m.wvalid || m.wready;
+    wire w_take = (state == ST_DATA) && f_valid && (bi != n) && w_free;
+    wire w_done = (state == ST_DATA) && (bi == n) && (!m.wvalid || (m.wready && m.wlast));
 
-    // Expected tags of the word at the FIFO head while filling a beat.
-    wire [15:0] word_in_line = (16'(xb) + 16'(bi)) * 16'(R) + 16'(wi);
-    wire        exp_sof      = (y == 0) && (word_in_line == 0);
-    wire        exp_eol      = (word_in_line == 16'(beats_per_line) * 16'(R) - 1'b1);
+    // Expected tags of the beat at the FIFO head.
+    wire [12:0] beat_in_line = xb + 13'(bi);
+    wire        exp_sof      = (y == 0) && (beat_in_line == 0);
+    wire        exp_eol      = (beat_in_line == beats_per_line - 1'b1);
+
+    // Signature over the beat's words in order.
+    function automatic logic [31:0] sig_beat(input logic [31:0] sg, input logic [AXI_DW-1:0] b);
+        for (int k = 0; k < R; k++)
+            sg = {sg[30:0], sg[31]} ^ 32'(b[k * IW +: IW]);
+        return sg;
+    endfunction
 
     wire b_done = m.bvalid && m.bready;
     wire w_last = m.wvalid && m.wready && m.wlast;
@@ -133,8 +189,6 @@ module vdma_wr
             xb             <= '0;
             n              <= '0;
             bi             <= '0;
-            wi             <= '0;
-            beat           <= '0;
             ferr           <= 1'b0;
             sig            <= '0;
             b_out          <= '0;
@@ -208,7 +262,7 @@ module vdma_wr
                         // Leave its sof at the head for the next frame.
                         ferr  <= 1'b1;
                         state <= ST_ABORT;
-                    end else if (f_avail >= (LW + 2)'(burst_n) * (LW + 2)'(R)) begin
+                    end else if (f_avail >= (LW + 2)'(burst_n)) begin
                         n         <= burst_n;
                         bi        <= '0;
                         m.awaddr  <= line_addr(base, y[11:0]) + AXI_AW'(xb) * AXI_AW'(BEAT_BYTES);
@@ -220,7 +274,6 @@ module vdma_wr
 
                 ST_AW: if (m.awready) begin
                     m.awvalid <= 1'b0;
-                    wi        <= '0;
                     state     <= ST_DATA;
                 end
 
@@ -232,19 +285,13 @@ module vdma_wr
                         m.wlast  <= 1'b0;
                     end
                     if (w_take) begin
-                        sig <= {sig[30:0], sig[31]} ^ 32'(f_data);
-                        if (f_sof != exp_sof || f_eol != exp_eol)
+                        sig <= sig_beat(sig, f_data);
+                        if (f_sof != exp_sof || f_eol != exp_eol || f_bad)
                             ferr <= 1'b1;
-                        if (w_last_wd) begin
-                            m.wvalid <= 1'b1;
-                            m.wdata  <= {f_data, beat[AXI_DW-1:IW]};   // word 0 lowest
-                            m.wlast  <= (bi == n - 1'b1);
-                            bi       <= bi + 1'b1;
-                            wi       <= '0;
-                        end else begin
-                            beat <= {f_data, beat[AXI_DW-1:IW]};
-                            wi   <= wi + 1'b1;
-                        end
+                        m.wvalid <= 1'b1;
+                        m.wdata  <= f_data;
+                        m.wlast  <= (bi == n - 1'b1);
+                        bi       <= bi + 1'b1;
                     end
                     if (w_done) begin
                         if (xb + 13'(n) == beats_per_line) begin

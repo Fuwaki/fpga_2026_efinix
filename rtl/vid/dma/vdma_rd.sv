@@ -9,14 +9,16 @@
 // Output words carry sof on the first word of the frame and eol on the last
 // word of every line, so the consumer can re-align at any line boundary.
 //
-// Reads are issued against a credit budget, so the output FIFO cannot
-// overflow: words in the FIFO + words requested but not yet arrived + the new
-// burst <= FIFO_WORDS.  With ASYNC = 1 the FIFO is dual-clock and o may run on
-// another clock (the display), which saves a second FIFO.
+// Reads are issued against a credit budget, so the FIFO cannot overflow:
+// beats in the FIFO + beats requested but not yet arrived + the new burst
+// <= FIFO_BEATS.  The FIFO holds whole AXI beats, so R is accepted at one beat
+// per clock and the DDR port is never held by the consumer's pace; beats are
+// split into words behind the FIFO.  With ASYNC = 1 the FIFO is dual-clock and
+// o may run on another clock (the display), which saves a second FIFO.
 module vdma_rd
     import vid_pkg::*;
 #(
-    parameter int FIFO_WORDS = 512,      // power of two
+    parameter int FIFO_BEATS = 512,      // power of two
     parameter int RD_BURST   = 32,       // beats per read burst
     parameter bit ASYNC      = 0
 ) (
@@ -39,39 +41,57 @@ module vdma_rd
 );
     localparam int OW  = $bits(o.data);
     localparam int R   = AXI_DW / OW;
-    localparam int LW  = $clog2(FIFO_WORDS);
+    localparam int LW  = $clog2(FIFO_BEATS);
+    localparam int RW  = $clog2(R + 1);
 
     initial begin
         if (AXI_DW % OW != 0)
             $error("vdma_rd: word width %0d does not divide the AXI beat", OW);
-        if (RD_BURST * R > FIFO_WORDS)
+        if (RD_BURST > FIFO_BEATS)
             $error("vdma_rd: one burst does not fit the FIFO");
     end
 
-    // ---------------------------------------------------------- output FIFO
-    logic          q_wen;
-    logic [OW+1:0] q_wdata;
-    logic          q_full;
-    logic [LW:0]   q_wlevel;
+    // ---------------------------------------------------------- beat FIFO
+    logic              q_wen;
+    logic [AXI_DW+1:0] q_wdata;          // {sof, eol, beat}
+    logic              q_full;
+    logic [LW:0]       q_wlevel;
+    logic              b_valid, b_ready, b_sof, b_eol;
+    logic [AXI_DW-1:0] b_data;
 
     if (ASYNC) begin : g_async
         logic [LW:0] unused_rlevel;
-        fifo_async_core #(.W(OW + 2), .DEPTH(FIFO_WORDS)) u_fifo (
+        fifo_async_core #(.W(AXI_DW + 2), .DEPTH(FIFO_BEATS)) u_fifo (
             .wclk   (m.clk),   .wrst_n (m.rst_n),
             .wen    (q_wen),   .wdata  (q_wdata), .wfull (q_full), .wlevel (q_wlevel),
             .rclk   (o.clk),   .rrst_n (o.rst_n),
-            .rready (o.ready), .rvalid (o.valid),
-            .rdata  ({o.sof, o.eol, o.data}),     .rlevel (unused_rlevel));
+            .rready (b_ready), .rvalid (b_valid),
+            .rdata  ({b_sof, b_eol, b_data}),     .rlevel (unused_rlevel));
     end else begin : g_sync
         logic [LW:0] lvl;
-        fifo_sync_core #(.W(OW + 2), .DEPTH(FIFO_WORDS)) u_fifo (
+        fifo_sync_core #(.W(AXI_DW + 2), .DEPTH(FIFO_BEATS)) u_fifo (
             .clk    (m.clk),   .rst_n  (m.rst_n),
             .wen    (q_wen),   .wdata  (q_wdata), .wfull (q_full),
-            .rready (o.ready), .rvalid (o.valid),
-            .rdata  ({o.sof, o.eol, o.data}),     .level (lvl));
-        // The word on the output register still occupies a slot.
-        assign q_wlevel = lvl + (LW + 1)'(o.valid);
+            .rready (b_ready), .rvalid (b_valid),
+            .rdata  ({b_sof, b_eol, b_data}),     .level (lvl));
+        // The beat on the output register still occupies a slot.
+        assign q_wlevel = lvl + (LW + 1)'(b_valid);
     end
+
+    // ------------------------------------------------- beats to words (o.clk)
+    // Word 0 (lowest) first; sof on the first word of a sof beat, eol on the
+    // last word of an eol beat.
+    logic [RW-1:0] g_i;
+    wire           g_last = (g_i == RW'(R - 1));
+    assign o.valid = b_valid;
+    assign o.data  = b_data[int'(g_i) * OW +: OW];
+    assign o.sof   = b_sof && (g_i == 0);
+    assign o.eol   = b_eol && g_last;
+    assign b_ready = o.ready && g_last;
+
+    always_ff @(posedge o.clk or negedge o.rst_n)
+        if (!o.rst_n)                 g_i <= '0;
+        else if (o.valid && o.ready)  g_i <= g_last ? '0 : g_i + 1'b1;
 
     // ------------------------------------------------------------- control
     typedef enum logic [1:0] { ST_IDLE, ST_ACQ, ST_RUN, ST_REL } state_e;
@@ -84,35 +104,28 @@ module vdma_rd
     // Request side.
     logic [12:0]       y_q;              // line being requested
     logic [7:0]        xb_q;             // beats of that line already requested
-    logic [LW+1:0]     inflight;         // words requested, not yet in the FIFO
+    logic [LW+1:0]     inflight;         // beats requested, not yet in the FIFO
 
     // Receive side.
     logic [12:0]       y_r;
     logic [7:0]        xb_r;             // beats of the line received
-    logic [AXI_DW-1:0] gear;             // beat being split into words
-    logic [$clog2(R+1)-1:0] gear_n;      // words left in gear
-    logic [$clog2(R+1)-1:0] gear_i;      // word index within the beat
 
     wire [7:0] q_remain = nb - xb_q;
     wire [7:0] q_n      = (q_remain > 8'(RD_BURST)) ? 8'(RD_BURST) : q_remain;
     wire       q_more   = (y_q != lines);
-    wire       credit   = ((LW + 2)'(q_wlevel) + inflight + (LW + 2)'(q_n) * (LW + 2)'(R))
-                          <= (LW + 2)'(FIFO_WORDS);
+    wire       credit   = ((LW + 2)'(q_wlevel) + inflight + (LW + 2)'(q_n))
+                          <= (LW + 2)'(FIFO_BEATS);
+    wire       rx_done  = (y_r == lines);
 
-    wire last_word_of_beat = (gear_i == ($clog2(R+1))'(R - 1));
-    wire rx_done           = (y_r == lines);
+    assign busy     = (state != ST_IDLE);
+    assign m.arid   = '0;
+    // Credit guarantees FIFO room for every beat requested.
+    assign m.rready = (state == ST_RUN);
+    assign q_wen    = m.rvalid && m.rready;
+    assign q_wdata  = {(y_r == 0) && (xb_r == 0), (xb_r == nb - 1'b1), m.rdata};
 
-    assign busy    = (state != ST_IDLE);
-    assign m.arid  = '0;
-    // Take the next beat on the cycle the last word of the current one
-    // leaves, so words flow at one per clock.
-    assign m.rready = (state == ST_RUN) && (gear_n <= ($clog2(R+1))'(1));
-
-    // Words leave gear one per cycle; credit guarantees FIFO room.
-    assign q_wen   = (gear_n != 0);
-    assign q_wdata = {(y_r == 0) && (xb_r == 0) && (gear_i == 0),        // sof
-                      (xb_r == nb - 1'b1) && last_word_of_beat,          // eol
-                      gear[OW-1:0]};
+    logic unused_q_full;
+    assign unused_q_full = q_full;
 
     always_ff @(posedge m.clk or negedge m.rst_n) begin
         if (!m.rst_n) begin
@@ -126,9 +139,6 @@ module vdma_rd
             inflight  <= '0;
             y_r       <= '0;
             xb_r      <= '0;
-            gear      <= '0;
-            gear_n    <= '0;
-            gear_i    <= '0;
             m.arvalid <= 1'b0;
             m.araddr  <= '0;
             m.arlen   <= '0;
@@ -143,29 +153,19 @@ module vdma_rd
             if (start && state != ST_IDLE)
                 st_late <= st_late + 1'b1;
 
-            // Words in flight: + a burst when its AR is accepted, - a word
+            // Beats in flight: + a burst when its AR is accepted, - a beat
             // as it enters the FIFO.
             inflight <= inflight
-                      + ((m.arvalid && m.arready) ? (LW + 2)'(m.arlen + 1'b1) * (LW + 2)'(R) : '0)
+                      + ((m.arvalid && m.arready) ? (LW + 2)'(m.arlen) + 1'b1 : '0)
                       - (q_wen ? (LW + 2)'(1) : '0);
 
-            // Split each received beat into words, word 0 first (lowest).
-            if (gear_n != 0 && last_word_of_beat) begin
+            if (q_wen) begin
                 if (xb_r == nb - 1'b1) begin
                     xb_r <= '0;
                     y_r  <= y_r + 1'b1;
                 end else begin
                     xb_r <= xb_r + 1'b1;
                 end
-            end
-            if (m.rvalid && m.rready) begin
-                gear   <= m.rdata;
-                gear_n <= ($clog2(R+1))'(R);
-                gear_i <= '0;
-            end else if (gear_n != 0) begin
-                gear   <= gear >> OW;
-                gear_n <= gear_n - 1'b1;
-                gear_i <= gear_i + 1'b1;
             end
 
             unique case (state)
@@ -211,7 +211,7 @@ module vdma_rd
                             xb_q <= xb_q + q_n;
                         end
                     end
-                    if (rx_done && gear_n == 0 && !m.arvalid) begin
+                    if (rx_done && !m.arvalid) begin
                         ring.op  <= RING_C_REL;
                         ring.req <= 1'b1;
                         state    <= ST_REL;
