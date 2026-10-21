@@ -230,9 +230,9 @@ package vid_pkg;
   function automatic rgb888_t pat_pixel(input logic [11:0] x, input logic [11:0] y,
                                         input logic [15:0] frame);
     logic [11:0] mx;
-    logic [11:0] d;
+    logic [5:0]  d;        // (x - y) mod 64: a diagonal every 64 pixels
     mx = 12'((32'(frame) * 4) % CAM_W);
-    d  = x - y;
+    d  = x[5:0] - y[5:0];
     if (x < 4 || x >= 12'(CAM_W - 4) || y < 4 || y >= 12'(CAM_H - 4))
       return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
     if (y < 120)
@@ -243,7 +243,7 @@ package vid_pkg;
       return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
     if (y < 440)
       return '{r: x[10:3], g: x[10:3], b: x[10:3]};
-    if (d[5:0] == 6'd0)
+    if (d == 6'd0)
       return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
     return '{r: 8'h20, g: 8'h20, b: 8'h40};
   endfunction
