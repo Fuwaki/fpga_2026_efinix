@@ -11,6 +11,7 @@
 #   tools/build_all.sh --no-ip      # 只重编固件+FPGA (没改 SoC 配置时更快)
 #   tools/build_all.sh --fpga-only  # 只重跑 FPGA 流程 (改 RTL 时最快)
 #   tools/build_all.sh --fpga-only --program  # 编译后通过 JTAG 临时下载
+#   tools/build_all.sh --no-fpga --flash      # 把现有 outflow/fpga_src.hex 写入 SPI Flash
 #
 # 环境:
 #   RISCV_TOOLCHAIN  工具链 bin 目录，默认 /opt/toolchains/xpack-riscv-none-elf-gcc-15.2.0-1/bin
@@ -50,6 +51,7 @@ DO_FW=1
 DO_IP=1
 DO_FPGA=1
 DO_PROGRAM=0
+DO_FLASH=0
 
 for a in "$@"; do
   case "$a" in
@@ -57,6 +59,7 @@ for a in "$@"; do
     --no-ip)     DO_IP=0 ;;
     --no-fpga)   DO_FPGA=0 ;;
     --program)   DO_PROGRAM=1 ;;
+    --flash)     DO_FLASH=1; DO_FW=0; DO_IP=0 ;;
     -h|--help)   sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "未知参数: $a" >&2; exit 2 ;;
   esac
@@ -179,4 +182,20 @@ if [ "$DO_PROGRAM" = 1 ]; then
   [ -f outflow/fpga_src.bit ] || { echo "找不到 outflow/fpga_src.bit" >&2; exit 1; }
   echo "=== [4/4] 通过 JTAG 临时下载（不修改 SPI Flash） ==="
   efx_run --prj fpga_src.xml -f program --pgm_opts mode=jtag --dir .
+fi
+
+# ------------------------------------------------------------- 5) 可选写 Flash
+# FT4232 的 SPI 通道接不到这块板的 Flash（mode=active 报 could not get flash
+# device），所以走 JTAG Bridge：先经 JTAG 下载 Efinity 自带的 flash loader
+# (pgm/fli/titanium/u<IDCODE>.bit)，再由它写 W25Q64 并回读校验。写完 FPGA 里
+# 跑的是 loader，断电重上电（或按复位）后才从 Flash 启动新设计。
+if [ "$DO_FLASH" = 1 ]; then
+  [ -f outflow/fpga_src.hex ] || { echo "找不到 outflow/fpga_src.hex" >&2; exit 1; }
+  FLI="${EFINITY_HOME:-/opt/efinity/2026.1}/pgm/fli/titanium/u10660A79.bit"
+  [ -f "$FLI" ] || { echo "找不到 flash loader $FLI" >&2; exit 1; }
+  echo "=== 写 SPI Flash: $(ls -l --time-style=+%F' '%T outflow/fpga_src.hex | awk '{print $6, $7}') 的 outflow/fpga_src.hex ==="
+  efx_run --prj fpga_src.xml -f program --pgm_opts mode=jtag "source=$FLI" --dir .
+  efx_run --prj fpga_src.xml -f program --pgm_opts mode=jtag_bridge --dir . | tee /tmp/fpga_flash.log
+  grep -q "Flash verify successful" /tmp/fpga_flash.log || { echo "Flash 写入或校验失败" >&2; exit 1; }
+  echo "Flash 已写入并校验；断电重上电后从 Flash 启动。"
 fi

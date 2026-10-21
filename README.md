@@ -7,6 +7,7 @@
 ```sh
 tools/build_all.sh --fpga-only          # 综合、布局布线并生成 bit/hex
 tools/build_all.sh --fpga-only --program # 同上，并经 JTAG 临时下载，不写 Flash
+tools/build_all.sh --no-fpga --flash     # 把现有 outflow/fpga_src.hex 写入 SPI Flash（JTAG Bridge）
 python3 tools/board_smoke_test.py --port /dev/ttyUSB2 --json
 ```
 
@@ -500,10 +501,9 @@ DE/HS/VS、每行 DE 宽度、两个视频时钟心跳和 ST tile 推进。输�
 {"ok":true,"frames":5,"latest":{"de":64800,"hs":67500,"vs":60,"slow_hb":567,"video_hb":283,"status":15,"seq":4,"st_tiles":1139,"st_busy":true}}
 ```
 
-当前运行版本打开 UART 遥测以验证 ST tile 完成计数；它用于 JTAG 调试版，不能
-作为最终时序基线。`DBG_UART_EN=1` 曾让 DDR FIFO 路径出现约 0.05ns 负 slack；
-完成遥测后恢复到 `1'b0` 并重新综合，再作为 release bitstream。不要把 debug
-bitstream 烧入 Flash。
+`DBG_UART_EN=1`（UART 遥测）曾让 DDR FIFO 路径出现约 0.05ns 负 slack。写 Flash 前
+先看 `outflow/fpga_src.timing.rpt` 的 setup/hold 是否全部为正；`sobel-demo`
+（遥测打开）全部为正，已写入 Flash。
 
 最近一次 JTAG 下载后的实测为 `DE_WIDTH=1293` 个 core_clk 周期，即约 1920 个
 HDMI 像素时钟；`ΔST=4`/0.5s，说明推理管线持续完成 tile。此前顶层误用
