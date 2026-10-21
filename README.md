@@ -29,27 +29,28 @@ python3 tools/board_smoke_test.py --port /dev/ttyUSB2 --json
 
 ```mermaid
 graph LR
-  CAM[SC431HAI 4-lane CSI-2] -->|LVDS| CSI[csi_rx_controller]
-  CSI -->|40bit RAW10 取高 8 位| FB[frame_buffer V3 + ddr3_top]
-  FB -->|1920x1080 HDMI pixel stream| DB[debayer + 白平衡 rgb_gain_v1]
-  DB --> G[gamma 校正 SRGB_ENC.mem]
-  G --> SAT[饱和度增强]
-  SAT --> ENC[dvi_encoder]
-  ENC --> HDMI[TMDS 1080p60]
+  CAM[SC431HAI 4-lane CSI-2<br/>1280x720 2x2 binning] -->|LVDS| CSI[csi_rx_controller]
+  CSI -->|4 px RAW10 / clk| ISP[csi_capture → line_release → isp_top<br/>BLC/WB → demosaic → gamma → sat → 565]
+  ISP --> W[vdma_wr] --> RI[(ISP 帧环 4 槽)]
+  RI --> P[proc_engine<br/>proc_stub 占位]
+  P --> RP[(PROC 帧环 3 槽)]
+  RI --> C[compositor 1080p60<br/>单层居中 / 左右分屏]
+  RP --> C
+  C --> ENC[dvi_encoder] --> HDMI[TMDS 1080p60]
+  RI -.-> DDR[(DDR3, axi_arb)]
 
   CPU[Sapphire RV32 SoC<br/>riscv_soc0 @100MHz] -.I2C0 开漏.-> CAM
-  CPU -.GPIO0[0].-> LED[led1: 配置完成]
 ```
 
-| 环节 | 频率 | 说明 |
+| 时钟 | 频率 | 用途 |
 |---|---|---|
-| `i_mipi_rx_pclk` | 50 MHz | CSI RX 像素时钟 |
-| `core_clk` | 100 MHz | DDR3/DDR 逻辑 + **SoC 主频** |
-| `vid_clk_dvi2` | 74.25 MHz | debayer/白平衡/gamma 域 |
-| `hdmi_tx_slow_clk` | 148.5 MHz | 饱和度 + TMDS 编码，1080p60 |
+| `i_mipi_rx_pclk` | 50 MHz | CSI RX、`csi_capture` |
+| `core_clk` | 100 MHz | ISP、帧环、DMA、DDR AXI、SoC |
+| `hdmi_tx_slow_clk` | 148.5 MHz | 合成器（每拍 1 像素）、TMDS 编码 |
+| `vid_clk_dvi2` | 74.25 MHz | 只剩视频复位延时与心跳 |
 | `sdram_clk` | 400 MHz | DDR3 |
 
-输出时序为 CEA 1080p60（HFP/HSP/HBP = 88/44/148，VFP/VSP/VBP = 4/5/36）。
+架构与各级契约见 `docs/video_architecture.md`。
 
 ---
 
@@ -58,15 +59,15 @@ graph LR
 ```
 fpga_src.xml            工程文件（顶层 fpga_src，rtl/fpga_src_top.v）
 fpga_src.peri.xml       Interface Designer 引脚/外围（沿用参考工程）
-fpga_src.sdc            时序约束（沿用参考工程）
+fpga_src.sdc            时序约束（沿用参考工程，加 HDMI/core 异步组）
+sim/                    Verilator 仿真（make -C sim）与 ISP 参考模型 sim/ref/isp_ref.py
 rtl/
-  fpga_src_top.v        顶层：视频通路 + SoC 例化 + 引脚保持逻辑
+  fpga_src_top.v        顶层：CSI RX、vid_subsystem、DDR、SoC、HDMI 编码、遥测
   csi_rx_controller.sv  MIPI CSI-2 RX IP（加密核，参数在文件头明文）
   ddr3_controller/      软 DDR3 控制器 + 校准
-  frame_buffer_V3/      DDR3 三帧缓冲（bank_switch / ddr_buffer / ...）
-  debayer/              Bayer→RGB + 白平衡增益
+  vid/                  视频子系统（SV）：common/ isp/ dma/ proc/ disp/ dbg/
   dvi_tx/               HDMI TMDS 编码器（加密核）
-  gamma_conrrection/    gamma 校正 + 曲线 mem
+  gamma_conrrection/    gamma 曲线 SRGB_ENC.mem（isp_gamma 用）
   st_accel/             ST 加速器、tile 视频管线和生成物
 ip/riscv_soc0/          SoC 生成物（不跟踪；由 config/riscv_soc0_settings.json 生成）
 embedded_sw/riscv_soc0/ BSP + 固件；camera_i2c.hex 直接嵌入 SoC
@@ -89,13 +90,12 @@ clone 第一次运行 `tools/build_all.sh` 会根据 `config/riscv_soc0_settings
 
 ## 3. 与参考工程的差异
 
-**照搬**：整条视频通路 RTL、`peri.xml`、`sdc`、引脚、DDR3 参数、gamma 曲线用法。
+**照搬**：`peri.xml`、`sdc`、引脚、DDR3 控制器与参数、CSI RX、TMDS 编码器、gamma 曲线。
 
 **改动**：
 1. 顶层改名 `fpga_src`，文件放 `rtl/fpga_src_top.v`（放在 `rtl/` 是为了
    `include "ddr3_controller/ddr3_parameter.vh"` 的相对路径与参考工程一致）。
 2. **删除 JTAG debug core**（VIO / Logic Analyzer）。因此：
-   - `gamma_sel`（原来自 VIO）改成 `localparam GAMMA_BYPASS`；
    - 参考工程里"VIO 写入不生效、白平衡只能硬编码"的问题不复存在；
    - 未使用的 JTAG/DSI 输入引脚由一段 `pin keep` 异或逻辑保留（否则综合会把
      无负载输入裁掉，PnR 报 `Required pin ... is not found`）。见
@@ -103,6 +103,9 @@ clone 第一次运行 `tools/build_all.sh` 会根据 `config/riscv_soc0_settings
 3. **摄像头 I2C 上移到 RISC-V**：删掉 `i2c_master_ctrl_top` 及其 164 条 ROM 播放器，
    改为 Sapphire SoC 的 I2C0 直接驱动 `io_cam_scl/sda`，寄存器表搬进固件。
 4. 增加 SoC 状态灯：`SoC GPIO0[0] -> led[1]`。
+5. **视频通路重写**（`rtl/vid`）：参考工程的 RAW8 帧缓冲 + 显示域 debayer/gamma/饱和度
+   全部删除，换成 ISP 前置、RGB565 帧环、处理占位和合成器。过程记录在
+   `docs/720p_binning_black_screen_issue.md`。
 
 ---
 

@@ -21,7 +21,7 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          isp/isp_demosaic.sv isp/isp_gamma.sv isp/isp_sat.sv isp/isp_dither565.sv isp/isp_top.sv \
          proc/proc_stub.sv proc/proc_engine.sv \
          disp/layer_unpack.sv disp/compositor.sv vid_subsystem.sv) \
-       $(ROOT)/rtl/display/raster_gen.sv
+       $(ROOT)/rtl/vid/disp/raster_gen.sv
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
        $(ROOT)/rtl/vid/common/sva/axi4_sva.sv \
        $(ROOT)/sim/bind/vid_bind.sv

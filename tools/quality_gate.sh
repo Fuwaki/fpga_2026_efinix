@@ -16,12 +16,12 @@ stage_geometry() {
 }
 stage_rtl() {
   iverilog -g2012 -DST_PIPE_ASSERT -s st_vid_pipe -o "$LOG_DIR/st_vid_pipe_compile" \
-    rtl/st_accel/st_vid_pipe.v rtl/debayer/true_dual_port_ram.v
+    rtl/st_accel/st_vid_pipe.v rtl/true_dual_port_ram.v
   echo "PASS RTL compile"
 }
 stage_lint() {
   verilator --lint-only --Wno-fatal --top-module st_vid_pipe \
-    rtl/st_accel/st_vid_pipe.v rtl/debayer/true_dual_port_ram.v >"$LOG_DIR/verilator_vid.log" 2>&1
+    rtl/st_accel/st_vid_pipe.v rtl/true_dual_port_ram.v >"$LOG_DIR/verilator_vid.log" 2>&1
   verilator --lint-only --Wno-fatal --top-module st_axi_mm rtl/st_accel/st_axi_mm.v \
     >"$LOG_DIR/verilator_axi.log" 2>&1
   echo "PASS Verilator lint (logs: $LOG_DIR)"
@@ -29,12 +29,12 @@ stage_lint() {
 stage_sim() {
   iverilog -g2012 -DST_PIPE_ASSERT -s tb_st_vid_pipe -o "$LOG_DIR/st_vid_pipe_tb" \
     rtl/st_accel/tb_st_vid_pipe.sv rtl/st_accel/st_vid_pipe.v \
-    rtl/debayer/true_dual_port_ram.v
+    rtl/true_dual_port_ram.v
   vvp "$LOG_DIR/st_vid_pipe_tb" | tee "$LOG_DIR/simulation.log"
 }
 stage_formal() {
   : > ram_init_file.mem
-  yosys -q -p 'read_verilog -formal rtl/debayer/true_dual_port_ram.v rtl/st_accel/st_vid_pipe.v; prep -top st_vid_pipe -flatten; check' \
+  yosys -q -p 'read_verilog -formal rtl/true_dual_port_ram.v rtl/st_accel/st_vid_pipe.v; prep -top st_vid_pipe -flatten; check' \
     >"$LOG_DIR/yosys_check.log" 2>&1
   echo "PASS Yosys structural/formal read (log: $LOG_DIR/yosys_check.log)"
 }

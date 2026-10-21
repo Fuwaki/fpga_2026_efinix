@@ -6,9 +6,9 @@
 // burst type, cache, prot, lock, strobes) are fixed in one place.
 //
 // Contents:
-//   axi_arb      write masters: 0 legacy, 1 display producer, 2 processing,
+//   axi_arb      write masters: 0 external, 1 display producer, 2 processing,
 //                               3 self-test
-//                read  masters: 0 legacy, 1-2 display layers, 3 processing,
+//                read  masters: 0 external, 1-2 display layers, 3 processing,
 //                               4 self-test
 //                (lower index = higher priority)
 //   self-test    vid_testgen -> vdma_wr -> frame_ring (test) -> vdma_rd ->
@@ -26,9 +26,10 @@ module vid_subsystem
     import vid_pkg::*;
 #(
     parameter bit ENABLE_SELFTEST = 1,
-    // 0 = the legacy frame store gets no DDR access (its requests are never
-    // accepted, so it simply stalls).
-    parameter bit LEGACY_EN       = 1,
+    // External AXI master (ext_*, the ST accelerator today; a frame
+    // accelerator that is not a proc_engine later).  0 = it gets no DDR
+    // access: its requests are never accepted.
+    parameter bit EXT_EN          = 1,
     // Display producer: 0 = vid_patgen test picture, 1 = camera through the ISP.
     parameter bit DISP_SRC        = 0,
     // Camera path: 1 = replace the sensor's pixels with csi_capture's fixed
@@ -50,7 +51,7 @@ module vid_subsystem
     // because of how the board's (encrypted) controller behaves:
     //   reads:  a second read issued before the first completes returns
     //           wrong data (about 8% of self-test frames carried another
-    //           master's data; the legacy picture showed horizontal glitches);
+    //           master's data; the old picture path showed horizontal glitches);
     //   writes: queued writes are served before reads, so with 8 writes in
     //           flight a read waited up to 11 us and the display reader fell
     //           to 30 frames/s with underflows; with 1, reads wait at most
@@ -61,31 +62,31 @@ module vid_subsystem
     input  logic                  clk,          // AXI / core clock
     input  logic                  rst_n,
 
-    // ---------------------------------------- legacy frame store (AXI slave)
-    input  logic [AXI_IW-1:0]     lg_awid,
-    input  logic [AXI_AW-1:0]     lg_awaddr,
-    input  logic [7:0]            lg_awlen,
-    input  logic                  lg_awvalid,
-    output logic                  lg_awready,
-    input  logic [AXI_DW-1:0]     lg_wdata,
-    input  logic                  lg_wlast,
-    input  logic                  lg_wvalid,
-    output logic                  lg_wready,
-    output logic [AXI_IW-1:0]     lg_bid,
-    output logic [1:0]            lg_bresp,
-    output logic                  lg_bvalid,
-    input  logic                  lg_bready,
-    input  logic [AXI_IW-1:0]     lg_arid,
-    input  logic [AXI_AW-1:0]     lg_araddr,
-    input  logic [7:0]            lg_arlen,
-    input  logic                  lg_arvalid,
-    output logic                  lg_arready,
-    output logic [AXI_IW-1:0]     lg_rid,
-    output logic [AXI_DW-1:0]     lg_rdata,
-    output logic [1:0]            lg_rresp,
-    output logic                  lg_rlast,
-    output logic                  lg_rvalid,
-    input  logic                  lg_rready,
+    // ------------------------------------- external master (AXI slave port)
+    input  logic [AXI_IW-1:0]     ext_awid,
+    input  logic [AXI_AW-1:0]     ext_awaddr,
+    input  logic [7:0]            ext_awlen,
+    input  logic                  ext_awvalid,
+    output logic                  ext_awready,
+    input  logic [AXI_DW-1:0]     ext_wdata,
+    input  logic                  ext_wlast,
+    input  logic                  ext_wvalid,
+    output logic                  ext_wready,
+    output logic [AXI_IW-1:0]     ext_bid,
+    output logic [1:0]            ext_bresp,
+    output logic                  ext_bvalid,
+    input  logic                  ext_bready,
+    input  logic [AXI_IW-1:0]     ext_arid,
+    input  logic [AXI_AW-1:0]     ext_araddr,
+    input  logic [7:0]            ext_arlen,
+    input  logic                  ext_arvalid,
+    output logic                  ext_arready,
+    output logic [AXI_IW-1:0]     ext_rid,
+    output logic [AXI_DW-1:0]     ext_rdata,
+    output logic [1:0]            ext_rresp,
+    output logic                  ext_rlast,
+    output logic                  ext_rvalid,
+    input  logic                  ext_rready,
 
     // ------------------------------------------------ DDR controller (master)
     output logic [AXI_IW-1:0]     ddr_awid,
@@ -159,32 +160,32 @@ module vid_subsystem
     axi4_wr_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dw (.clk(clk), .rst_n(rst_n));
     axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dr (.clk(clk), .rst_n(rst_n));
 
-    // ------------------------------------------------- legacy = master 0
-    assign mw[0].awid    = lg_awid;
-    assign mw[0].awaddr  = lg_awaddr;
-    assign mw[0].awlen   = lg_awlen;
-    assign mw[0].awvalid = lg_awvalid && LEGACY_EN;
-    assign lg_awready    = mw[0].awready && LEGACY_EN;
-    assign mw[0].wdata   = lg_wdata;
-    assign mw[0].wlast   = lg_wlast;
-    assign mw[0].wvalid  = lg_wvalid && LEGACY_EN;
-    assign lg_wready     = mw[0].wready && LEGACY_EN;
-    assign lg_bid        = mw[0].bid;
-    assign lg_bresp      = mw[0].bresp;
-    assign lg_bvalid     = mw[0].bvalid;
-    assign mw[0].bready  = lg_bready;
+    // ------------------------------------------------ external = master 0
+    assign mw[0].awid    = ext_awid;
+    assign mw[0].awaddr  = ext_awaddr;
+    assign mw[0].awlen   = ext_awlen;
+    assign mw[0].awvalid = ext_awvalid && EXT_EN;
+    assign ext_awready    = mw[0].awready && EXT_EN;
+    assign mw[0].wdata   = ext_wdata;
+    assign mw[0].wlast   = ext_wlast;
+    assign mw[0].wvalid  = ext_wvalid && EXT_EN;
+    assign ext_wready     = mw[0].wready && EXT_EN;
+    assign ext_bid        = mw[0].bid;
+    assign ext_bresp      = mw[0].bresp;
+    assign ext_bvalid     = mw[0].bvalid;
+    assign mw[0].bready  = ext_bready;
 
-    assign mr[0].arid    = lg_arid;
-    assign mr[0].araddr  = lg_araddr;
-    assign mr[0].arlen   = lg_arlen;
-    assign mr[0].arvalid = lg_arvalid && LEGACY_EN;
-    assign lg_arready    = mr[0].arready && LEGACY_EN;
-    assign lg_rid        = mr[0].rid;
-    assign lg_rdata      = mr[0].rdata;
-    assign lg_rresp      = mr[0].rresp;
-    assign lg_rlast      = mr[0].rlast;
-    assign lg_rvalid     = mr[0].rvalid;
-    assign mr[0].rready  = lg_rready;
+    assign mr[0].arid    = ext_arid;
+    assign mr[0].araddr  = ext_araddr;
+    assign mr[0].arlen   = ext_arlen;
+    assign mr[0].arvalid = ext_arvalid && EXT_EN;
+    assign ext_arready    = mr[0].arready && EXT_EN;
+    assign ext_rid        = mr[0].rid;
+    assign ext_rdata      = mr[0].rdata;
+    assign ext_rresp      = mr[0].rresp;
+    assign ext_rlast      = mr[0].rlast;
+    assign ext_rvalid     = mr[0].rvalid;
+    assign mr[0].rready  = ext_rready;
 
     // ------------------------------------------------------- self-test
     if (ENABLE_SELFTEST) begin : g_selftest
@@ -425,58 +426,6 @@ module vid_subsystem
         assign status.cp1_bad_lines = cp_bad[1];
         assign status.cp_resyncs    = cp_rs[0];
         assign status.cp1_resyncs   = cp_rs[1];
-    end
-
-    // ---------------------------------------- legacy burst-length monitor
-    // The legacy writer's wlast logic is hand-rolled; check that each burst
-    // carries exactly awlen + 1 beats, because the arbiter orders W by AW and
-    // a mismatch would hand beats to the next master's burst.
-    logic       lm_valid, lm_full;
-    logic [7:0] lm_len;
-    logic [3:0] lm_level;
-    logic [8:0] lm_beats;
-    wire        lm_w    = lg_wvalid && mw[0].wready;
-    wire        lm_last = lm_w && lg_wlast;
-
-    fifo_sync_core #(.W(8), .DEPTH(8)) u_lm (
-        .clk(clk), .rst_n(rst_n),
-        .wen(lg_awvalid && mw[0].awready), .wdata(lg_awlen), .wfull(lm_full),
-        .rready(lm_last), .rvalid(lm_valid), .rdata(lm_len), .level(lm_level));
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            lm_beats             <= '0;
-            status.lg_wlen_err   <= '0;
-            status.lg_last_len   <= '0;
-            status.lg_last_beats <= '0;
-        end else if (lm_w) begin
-            lm_beats <= lm_last ? '0 : lm_beats + 1'b1;
-            // Early wlast, missing wlast, or W with no AW outstanding.
-            if ((lm_last && lm_beats != 9'(lm_len)) || (!lm_last && lm_beats == 9'(lm_len))
-                || !lm_valid) begin
-                status.lg_wlen_err   <= status.lg_wlen_err + 1'b1;
-                status.lg_last_len   <= lm_len;
-                status.lg_last_beats <= 8'(lm_beats + 1'b1);
-            end
-        end
-    end
-
-    // AXI forbids withdrawing an address before it is accepted; the legacy
-    // engines do it when they reset at frame boundaries.  Count it.
-    logic lg_arv_d, lg_arr_d, lg_awv_d, lg_awr_d;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            lg_arv_d <= 1'b0; lg_arr_d <= 1'b0; lg_awv_d <= 1'b0; lg_awr_d <= 1'b0;
-            status.lg_ar_wd <= '0;
-            status.lg_aw_wd <= '0;
-        end else begin
-            lg_arv_d <= lg_arvalid; lg_arr_d <= mr[0].arready;
-            lg_awv_d <= lg_awvalid; lg_awr_d <= mw[0].awready;
-            if (lg_arv_d && !lg_arr_d && !lg_arvalid)
-                status.lg_ar_wd <= status.lg_ar_wd + 1'b1;
-            if (lg_awv_d && !lg_awr_d && !lg_awvalid)
-                status.lg_aw_wd <= status.lg_aw_wd + 1'b1;
-        end
     end
 
     // ------------------------------------------------- DDR read latency

@@ -1,5 +1,5 @@
 // tb_vidsub.sv -- vid_subsystem with its self-test running against the DDR
-// model, while a busy random master on the legacy port competes for DDR at
+// model, while a busy random master on the external port competes for DDR at
 // higher priority.  Passes when the self-test reads back every frame intact.
 module tb_vidsub #(parameter bit BAD_IDS = 0);
     import vid_pkg::*;
@@ -19,10 +19,10 @@ module tb_vidsub #(parameter bit BAD_IDS = 0);
     axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dr (.clk(clk), .rst_n(rst_n));
     axi_mem_model #(.READY_PCT(75), .BAD_IDS(BAD_IDS)) u_mem (.wr(dw), .rd(dr));
 
-    // Legacy port: a busy random master in its own region.  Like the real
-    // frame store it keeps at most two read bursts outstanding (the real one
-    // is limited by its FIFO); without a limit any in-order memory would
-    // queue requests without bound.
+    // External port: a busy random master in its own region.  Like any real
+    // master with a finite buffer it keeps at most two read bursts
+    // outstanding; without a limit any in-order memory would queue requests
+    // without bound.
     axi4_wr_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) lw (.clk(clk), .rst_n(rst_n));
     axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) lr (.clk(clk), .rst_n(rst_n));
 
@@ -69,13 +69,13 @@ module tb_vidsub #(parameter bit BAD_IDS = 0);
 
     vid_subsystem #(.TEST_LINES(LINES), .TEST_FRAME_CYCLES(FRAME_CYC), .TEST_LINE_CYCLES(LINE_CYC)) dut (
         .clk(clk), .rst_n(rst_n),
-        .lg_awid(lw.awid), .lg_awaddr(lw.awaddr), .lg_awlen(lw.awlen), .lg_awvalid(lw.awvalid),
-        .lg_awready(lw.awready), .lg_wdata(lw.wdata), .lg_wlast(lw.wlast), .lg_wvalid(lw.wvalid),
-        .lg_wready(lw.wready), .lg_bid(lw.bid), .lg_bresp(lw.bresp), .lg_bvalid(lw.bvalid),
-        .lg_bready(lw.bready),
-        .lg_arid(lr.arid), .lg_araddr(lr.araddr), .lg_arlen(lr.arlen), .lg_arvalid(lr.arvalid),
-        .lg_arready(lr.arready), .lg_rid(lr.rid), .lg_rdata(lr.rdata), .lg_rresp(lr.rresp),
-        .lg_rlast(lr.rlast), .lg_rvalid(lr.rvalid), .lg_rready(lr.rready),
+        .ext_awid(lw.awid), .ext_awaddr(lw.awaddr), .ext_awlen(lw.awlen), .ext_awvalid(lw.awvalid),
+        .ext_awready(lw.awready), .ext_wdata(lw.wdata), .ext_wlast(lw.wlast), .ext_wvalid(lw.wvalid),
+        .ext_wready(lw.wready), .ext_bid(lw.bid), .ext_bresp(lw.bresp), .ext_bvalid(lw.bvalid),
+        .ext_bready(lw.bready),
+        .ext_arid(lr.arid), .ext_araddr(lr.araddr), .ext_arlen(lr.arlen), .ext_arvalid(lr.arvalid),
+        .ext_arready(lr.arready), .ext_rid(lr.rid), .ext_rdata(lr.rdata), .ext_rresp(lr.rresp),
+        .ext_rlast(lr.rlast), .ext_rvalid(lr.rvalid), .ext_rready(lr.rready),
         .ddr_awid(dw.awid), .ddr_awaddr(dw.awaddr), .ddr_awlen(dw.awlen), .ddr_awsize(),
         .ddr_awburst(), .ddr_awlock(), .ddr_awcache(), .ddr_awprot(), .ddr_awvalid(dw.awvalid),
         .ddr_awready(dw.awready), .ddr_wdata(dw.wdata), .ddr_wstrb(), .ddr_wlast(dw.wlast),
@@ -91,7 +91,7 @@ module tb_vidsub #(parameter bit BAD_IDS = 0);
     initial begin
         wait (rst_n);
         repeat (FRAME_CYC * (FRAMES + 1)) @(posedge clk);
-        $display("tb_vidsub: written %0d (err %0d skip %0d), checked %0d good / %0d bad (%0d bad words), legacy %0d wr %0d rd bursts",
+        $display("tb_vidsub: written %0d (err %0d skip %0d), checked %0d good / %0d bad (%0d bad words), external %0d wr %0d rd bursts",
                  st.tw_frames, st.tw_errors, st.tw_skipped, st.tc_frames, st.tc_bad_frames,
                  st.tc_bad_words, lw_bursts, lr_bursts);
         $display("  ring commits %0d aborts %0d drops %0d | reader state %0d busy %0b inflight %0d y_q %0d y_r %0d miss %0d | writer state %0d",

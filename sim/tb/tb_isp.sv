@@ -81,14 +81,14 @@ module tb_isp #(
 
     // -------------------------------------------------------------- DUT
     vid_status_t st;
-    vid_subsystem #(.ENABLE_SELFTEST(0), .LEGACY_EN(0), .DISP_SRC(1), .CSI_PATTERN(PATTERN),
+    vid_subsystem #(.ENABLE_SELFTEST(0), .EXT_EN(0), .DISP_SRC(1), .CSI_PATTERN(PATTERN),
                     .ISP_CFG(cfg_for(BYPASS))) dut (
         .clk(clk), .rst_n(rst_n),
-        .lg_awid('0), .lg_awaddr('0), .lg_awlen('0), .lg_awvalid(1'b0), .lg_awready(),
-        .lg_wdata('0), .lg_wlast(1'b0), .lg_wvalid(1'b0), .lg_wready(),
-        .lg_bid(), .lg_bresp(), .lg_bvalid(), .lg_bready(1'b1),
-        .lg_arid('0), .lg_araddr('0), .lg_arlen('0), .lg_arvalid(1'b0), .lg_arready(),
-        .lg_rid(), .lg_rdata(), .lg_rresp(), .lg_rlast(), .lg_rvalid(), .lg_rready(1'b1),
+        .ext_awid('0), .ext_awaddr('0), .ext_awlen('0), .ext_awvalid(1'b0), .ext_awready(),
+        .ext_wdata('0), .ext_wlast(1'b0), .ext_wvalid(1'b0), .ext_wready(),
+        .ext_bid(), .ext_bresp(), .ext_bvalid(), .ext_bready(1'b1),
+        .ext_arid('0), .ext_araddr('0), .ext_arlen('0), .ext_arvalid(1'b0), .ext_arready(),
+        .ext_rid(), .ext_rdata(), .ext_rresp(), .ext_rlast(), .ext_rvalid(), .ext_rready(1'b1),
         .ddr_awid(dw.awid), .ddr_awaddr(dw.awaddr), .ddr_awlen(dw.awlen), .ddr_awsize(),
         .ddr_awburst(), .ddr_awlock(), .ddr_awcache(), .ddr_awprot(), .ddr_awvalid(dw.awvalid),
         .ddr_awready(dw.awready), .ddr_wdata(dw.wdata), .ddr_wstrb(), .ddr_wlast(dw.wlast),

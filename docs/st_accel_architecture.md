@@ -73,7 +73,7 @@ planner 对逐层 DDR 回写估算 108.7 MB/帧（假设 DW→PW 融合），30 
 2. 在当前加速器加入每层/每 tile cycle、MAC busy、输入等待、输出等待、DDR stall 计数，首先取得可靠的板上基线。
 3. `st_stream` 已增加 per-layer fold JSON override；`configs/ink_dw_480p10.json` 固定当前真实 manifest 在 480p/10 fps 周期预算下的折叠配置。将该 plan 与资源、RAM/DDR 成本关联，不能只看单层周期。
 4. 抽取统一的共享 MAC/累加/REQUANT engine 和 3×3 行窗口单元，完成 tile 级仿真与固定向量比对。
-5. 接 AXI M1 双缓冲 tile DMA，测量与 frame_buffer 并发时的持续读写带宽；验证一组 tile 内 DW→PW 融合。
+5. 接 AXI M1 双缓冲 tile DMA，测量与视频子系统并发时的持续读写带宽（接 vid_subsystem 外部端口）；验证一组 tile 内 DW→PW 融合。
 6. 只有整工程 P&R、AXI 仿真和板上图像/周期/校验值均通过后，才扩大分辨率和追求帧率。
 
 ## 当前分支结论

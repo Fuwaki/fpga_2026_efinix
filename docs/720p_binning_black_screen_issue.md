@@ -139,3 +139,13 @@ FIFO 存整拍，AXI 每时钟一拍：ISP 写入 474/474 帧、0 错，读延�
 
 Memory 去向：SoC 81、DDR 控制器 39、CSI RX 11、u_vid 59。旧帧缓冲已被综合裁掉（不占 Memory），
 所以 Phase 4 删旧代码省不出 Memory；关掉 DMA 自检可省 14 块。每个 DMA 引擎 7 块是 130 位宽 FIFO 的下限（RAM 最宽 20 位）。
+
+## 10. Phase 4：退役旧通路（2026-10-21）
+
+用户确认 Phase 3 画面：左边颜色正确、右边反色、稳定正常。随后删除：`rtl/frame_buffer_V3/`、`rtl/debayer/`、
+`rtl/display/{layer_fetch,frame_sync}.sv`、`rtl/video/`、`gamma_correction.v`、`axi2_pri_arb.v`，以及顶层的显示域
+BLC / 白平衡 / gamma / 饱和度、`DBG_PATTERN`、旧采集探针和旧遥测分支。`raster_gen.sv` 移入 `rtl/vid/disp/`。
+`vid_subsystem` 的旧帧缓冲端口改为通用外部主机端口 `ext_*`，接 ST 加速器（随 `ENABLE_ST_ACCEL` 启用）。
+
+上板：XLR 29.5k → 28.6k（旧帧缓冲本已被综合裁掉，Memory 不变 192），遥测各项与 Phase 3 相同，
+`board_smoke_test.py --vid` 的 `ok` 改为按当前遥测判定并通过。架构文档重写为 `docs/video_architecture.md`。

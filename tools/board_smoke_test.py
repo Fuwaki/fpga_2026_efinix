@@ -42,15 +42,7 @@ def frames(port, seconds):
                 "vs": int.from_bytes(raw[10:14], "big"),
                 "slow_hb": int.from_bytes(raw[14:16], "big"),
                 "video_hb": int.from_bytes(raw[16:18], "big"),
-                # Bytes 18[7:4], 24[7:4] and 27 together carry the low 16 bits
-                # of the capture-side words-per-frame counter.
-                # 1280x720 -> 230400 (0x38400, low16 = 0x8400)
-                # 1080p    -> 518400 (0x7E900, low16 = 0xE900)
-                # 2-lane   -> 115200 (0x1C200, low16 = 0xC200)
                 "status": raw[18] & 0x0F,
-                "frame_pix_num": (raw[27] << 8)
-                                 | ((raw[18] >> 4) << 4)
-                                 | (raw[24] >> 4),
                 "seq": raw[19],
                 "st_tiles": int.from_bytes(raw[20:24], "big"),
                 "st_busy": bool(raw[24] & 1),
@@ -114,6 +106,9 @@ def decode_vid(got):
             "mean_10": round(sums[2] / n, 1), "mean_11": round(sums[3] / n, 1),
             "clipped": p["last_x"] << 4,
             "dark":    p["last_y"] << 4,
+            # CSI-2 RX error flags, sticky: {receive, frame_vc0, line_vc0,
+            # undersize, ecc2, ecc1, crc, pixel_fifo_full}
+            "csi_errors": f"{p['last_commit_addr']:#04x}",
         }
     p = pages.get(3)
     if p:
@@ -166,20 +161,21 @@ def main():
         delta = {k: latest[k] - prev[k]
                  for k in ("de", "hs", "vs", "slow_hb", "video_hb", "st_tiles",
                            "cap_samples", "cap_tiles", "commit_count")}
+    # Board alive: clocks, resets, camera configured, 1080p60 on HDMI.
+    #   R = {PLLs locked, DDR calibrated, video reset released, camera I2C done}
+    #   per 0.5 s: 32400 DE and 33750 HS rising edges, 30 VS, heartbeats
+    #   ~566 (148.5 MHz) and ~283 (74.25 MHz); one DE is 1920 px = 1293 core clocks
     ok = bool(latest and delta and latest["status"] == 0x0F and
-              25000 <= delta["de"] <= 40000 and
-              27000 <= delta["hs"] <= 42000 and
-              20 <= delta["vs"] <= 40 and
-              400 <= delta["slow_hb"] <= 750 and
-              180 <= delta["video_hb"] <= 400 and
-              1 <= delta["st_tiles"] <= 32 and
-              delta["cap_samples"] % 256 == 0 and
-              delta["cap_tiles"] == delta["commit_count"] and
-              latest["last_cap_addr"] == 255 and
-              1200 <= latest["de_width_core_cycles"] <= 1400)
+              31000 <= delta["de"] <= 34000 and
+              32000 <= delta["hs"] <= 35500 and
+              28 <= delta["vs"] <= 32 and
+              500 <= delta["slow_hb"] <= 650 and
+              250 <= delta["video_hb"] <= 320 and
+              1250 <= latest["de_width_core_cycles"] <= 1340)   # 1920 px = 12.9 us
     result = {"ok": ok, "frames": len(got), "latest": latest, "delta": delta}
     if args.vid and latest is not None:
         result["vid"] = decode_vid(got)
+        result["ok"] = ok and result["vid"]["ok"]
     if args.json:
         print(json.dumps(result, separators=(",", ":")))
     elif latest is None:

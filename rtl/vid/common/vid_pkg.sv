@@ -70,8 +70,8 @@ package vid_pkg;
   localparam int LINE_STRIDE = 4096;
   localparam int SLOT_BYTES  = 4 * 1024 * 1024;        // 720 lines * 4 KiB = 2.8 MiB used
 
-  // Ring regions sit above everything the legacy frame store touches
-  // (0 .. ~24 MiB), so both paths can coexist while the new one is brought up.
+  // Ring regions sit at 64 MiB and up; the space below is free for other
+  // masters (the ST accelerator's buffers).
   localparam logic [AXI_AW-1:0] RING_ISP_BASE  = 32'h0400_0000;
   localparam logic [AXI_AW-1:0] RING_PROC_BASE = 32'h0600_0000;
   localparam logic [AXI_AW-1:0] RING_TEST_BASE = 32'h0700_0000;
@@ -223,11 +223,6 @@ package vid_pkg;
     logic [31:0]      tc_last_bad;    //              last wrong word received
     logic [31:0]      tc_last_pos;    //              where: {frame[7:0], line[11:0], word[11:0]}
     logic [SEQ_W-1:0] tr_miss;        // test reader: nothing new to read
-    logic [15:0]      lg_wlen_err;    // legacy writer: bursts whose W beat count != awlen + 1
-    logic [7:0]       lg_last_len;    //                awlen of the last such burst
-    logic [7:0]       lg_last_beats;  //                beats it actually sent
-    logic [15:0]      lg_ar_wd;       // legacy reader: arvalid dropped before arready
-    logic [15:0]      lg_aw_wd;       // legacy writer: awvalid dropped before awready
     logic [SEQ_W-1:0] pw_frames;      // display producer's writer (pattern or ISP): committed
     logic [SEQ_W-1:0] pw_errors;      //                 aborted (short, long or torn frame)
     logic [SEQ_W-1:0] pw_skipped;     //                 no free slot
