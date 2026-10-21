@@ -882,9 +882,14 @@ wire [31:0] fb_vin  = (DBG_PATTERN == 2'd1) ? {pat_word, pat_word + 16'd1} :
 // picture path.
 //=====================================================================================
 vid_pkg::vid_status_t w_vid_status;
+wire [7:0] vid_pix_r, vid_pix_g, vid_pix_b;
+wire       vid_pix_de, vid_pix_hs, vid_pix_vs;
 
 vid_subsystem #(
-    .ENABLE_SELFTEST (1)
+    .ENABLE_SELFTEST (1),
+    // The screen shows the new path (VIDEO_PIPE_NEW); the legacy frame store
+    // is not needed and only competes for DDR reads.
+    .LEGACY_EN       (0)
 ) u_vid (
     .clk         (core_clk),
     .rst_n       (vid_rst_n),
@@ -912,6 +917,10 @@ vid_subsystem #(
     .ddr_arvalid (s_axi_arvalid), .ddr_arready(s_axi_arready),
     .ddr_rid     (s_axi_rid),     .ddr_rdata  (s_axi_rdata),  .ddr_rresp  (s_axi_rresp),
     .ddr_rlast   (s_axi_rlast),   .ddr_rvalid (s_axi_rvalid), .ddr_rready (s_axi_rready),
+
+    .pix_clk     (hdmi_tx_slow_clk),
+    .pix_r       (vid_pix_r),  .pix_g (vid_pix_g),  .pix_b (vid_pix_b),
+    .pix_de      (vid_pix_de), .pix_hs(vid_pix_hs), .pix_vs(vid_pix_vs),
 
     .status      (w_vid_status)
 );
@@ -1539,12 +1548,23 @@ always @(*) begin
   endcase
 end
 
-wire [7:0] enc_r = TP_EN ? tp_r   : sat_rdata;
-wire [7:0] enc_g = TP_EN ? tp_g   : sat_gdata;
-wire [7:0] enc_b = TP_EN ? tp_b   : sat_bdata;
-wire       enc_de = TP_EN ? tp_de  : sat_de;
-wire       enc_hs = TP_EN ? tp_hs  : sat_hs;
-wire       enc_vs = TP_EN ? tp_vs  : sat_vs;
+// VIDEO_PIPE_NEW = 1: the encoder shows the vid_subsystem compositor (frames
+// from the DDR ring, rtl/vid); 0: the legacy camera path above.  The legacy
+// path keeps running either way.
+localparam VIDEO_PIPE_NEW = 1'b1;
+wire [7:0] sel_r  = VIDEO_PIPE_NEW ? vid_pix_r  : sat_rdata;
+wire [7:0] sel_g  = VIDEO_PIPE_NEW ? vid_pix_g  : sat_gdata;
+wire [7:0] sel_b  = VIDEO_PIPE_NEW ? vid_pix_b  : sat_bdata;
+wire       sel_de = VIDEO_PIPE_NEW ? vid_pix_de : sat_de;
+wire       sel_hs = VIDEO_PIPE_NEW ? vid_pix_hs : sat_hs;
+wire       sel_vs = VIDEO_PIPE_NEW ? vid_pix_vs : sat_vs;
+
+wire [7:0] enc_r = TP_EN ? tp_r   : sel_r;
+wire [7:0] enc_g = TP_EN ? tp_g   : sel_g;
+wire [7:0] enc_b = TP_EN ? tp_b   : sel_b;
+wire       enc_de = TP_EN ? tp_de  : sel_de;
+wire       enc_hs = TP_EN ? tp_hs  : sel_hs;
+wire       enc_vs = TP_EN ? tp_vs  : sel_vs;
 
 dvi_encoder dvi_encoder_m0
 (
@@ -1915,20 +1935,20 @@ always @(posedge core_clk) begin
 		end else if (TELEM_VID) begin
 			// vid_subsystem status (rtl/vid).  Decoded by board_smoke_test.py
 			// --vid:  cap_samples  = {checked frames, written frames}
-			//         cap_tiles    = {bad frames, bad words[15:0]}
-			//         commit_count = last wrong word received
-			//         st_tiles     = legacy {AR withdrawals, AW withdrawals}
-			//         last_x/last_y          = ring commits / writer errors
+			//         cap_tiles    = DDR read latency {max, last} in core clocks
+			//         commit_count = {display frames read, pattern frames written}
+			//         st_tiles     = compositor {bad lines, resyncs}
+			//         last_x/last_y          = display misses / self-test writer errors
 			//         last_cap_addr          = {proto_err, writer skips[6:0]}
-			//         last_commit_addr       = ring aborts[7:0]
+			//         last_commit_addr       = display late starts[7:0]
 			c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tw_frames};
-			c_cap_tiles    <= {vid_st_s2.tc_bad_frames, vid_st_s2.tc_bad_words[15:0]};
-			c_commit_count <= vid_st_s2.tc_last_bad;
-			c_st_frame     <= {vid_st_s2.lg_ar_wd, vid_st_s2.lg_aw_wd};
-			c_last_x       <= vid_st_s2.test_ring.commits;
+			c_cap_tiles    <= {vid_st_s2.rd_lat_max, vid_st_s2.rd_lat_last};
+			c_commit_count <= {vid_st_s2.dr_frames, vid_st_s2.pw_frames};
+			c_st_frame     <= {vid_st_s2.cp_bad_lines, vid_st_s2.cp_resyncs};
+			c_last_x       <= vid_st_s2.dr_miss;
 			c_last_y       <= vid_st_s2.tw_errors;
 			c_last_cap_addr    <= {vid_st_s2.test_ring.proto_err, vid_st_s2.tw_skipped[6:0]};
-			c_last_commit_addr <= vid_st_s2.test_ring.aborts[7:0];
+			c_last_commit_addr <= vid_st_s2.dr_late[7:0];
 		end else if (DBG_PATTERN_EN) begin
 			// Pattern checker; see frame_buffer_read dbg_seq.
 			c_cap_samples  <= rd_seq_s2[111:80];

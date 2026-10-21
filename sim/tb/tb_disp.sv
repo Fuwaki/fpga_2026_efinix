@@ -1,0 +1,123 @@
+// tb_disp.sv -- the display path end to end: vid_patgen -> vdma_wr -> ring
+// -> DDR model -> vdma_rd (dual-clock) -> compositor at 148.5 MHz.
+//
+// Every output pixel of every raster frame is compared with the expected
+// picture: black outside the centred layer, pat_pixel() through RGB565 inside,
+// for the frame the reader acquired.  Passes when at least NGOOD consecutive
+// raster frames match exactly and the compositor reports no bad lines in them.
+module tb_disp #(
+    parameter int NGOOD = 3
+);
+    import vid_pkg::*;
+
+    logic clk = 0, pclk = 0, rst_n = 0;
+    always #5     clk  = ~clk;      // 100 MHz
+    always #3.367 pclk = ~pclk;     // 148.5 MHz
+    initial begin
+        repeat (10) @(posedge clk);
+        rst_n <= 1;
+    end
+
+    axi4_wr_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dw (.clk(clk), .rst_n(rst_n));
+    axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dr (.clk(clk), .rst_n(rst_n));
+    axi_mem_model #(.READY_PCT(75), .BAD_IDS(1)) u_mem (.wr(dw), .rd(dr));
+
+    logic [7:0] r, g, b;
+    logic       de, hs, vs;
+    vid_status_t st;
+
+    vid_subsystem #(.ENABLE_SELFTEST(0), .PAT_FRAME_CYCLES(1_500_000), .PAT_LINE_CYCLES(2_000)) dut (
+        .clk(clk), .rst_n(rst_n),
+        .lg_awid('0), .lg_awaddr('0), .lg_awlen('0), .lg_awvalid(1'b0), .lg_awready(),
+        .lg_wdata('0), .lg_wlast(1'b0), .lg_wvalid(1'b0), .lg_wready(),
+        .lg_bid(), .lg_bresp(), .lg_bvalid(), .lg_bready(1'b1),
+        .lg_arid('0), .lg_araddr('0), .lg_arlen('0), .lg_arvalid(1'b0), .lg_arready(),
+        .lg_rid(), .lg_rdata(), .lg_rresp(), .lg_rlast(), .lg_rvalid(), .lg_rready(1'b1),
+        .ddr_awid(dw.awid), .ddr_awaddr(dw.awaddr), .ddr_awlen(dw.awlen), .ddr_awsize(),
+        .ddr_awburst(), .ddr_awlock(), .ddr_awcache(), .ddr_awprot(), .ddr_awvalid(dw.awvalid),
+        .ddr_awready(dw.awready), .ddr_wdata(dw.wdata), .ddr_wstrb(), .ddr_wlast(dw.wlast),
+        .ddr_wvalid(dw.wvalid), .ddr_wready(dw.wready), .ddr_bid(dw.bid), .ddr_bresp(dw.bresp),
+        .ddr_bvalid(dw.bvalid), .ddr_bready(dw.bready),
+        .ddr_arid(dr.arid), .ddr_araddr(dr.araddr), .ddr_arlen(dr.arlen), .ddr_arsize(),
+        .ddr_arburst(), .ddr_arlock(), .ddr_arcache(), .ddr_arprot(), .ddr_arvalid(dr.arvalid),
+        .ddr_arready(dr.arready), .ddr_rid(dr.rid), .ddr_rdata(dr.rdata), .ddr_rresp(dr.rresp),
+        .ddr_rlast(dr.rlast), .ddr_rvalid(dr.rvalid), .ddr_rready(dr.rready),
+        .pix_clk(pclk), .pix_r(r), .pix_g(g), .pix_b(b), .pix_de(de), .pix_hs(hs), .pix_vs(vs),
+        .status(st));
+
+    localparam int X0 = (1920 - CAM_W) / 2, Y0 = (1080 - CAM_H) / 2;
+
+    // Output raster position, rebuilt from de/vs.
+    int  ox, oy, frames, good_run, bad_px, bad_lines_at_start;
+    bit  de_d, vs_d, frame_has_layer;
+    int  shown;      // pattern frame number shown in this raster frame (-1: black)
+    int  hist[$];
+
+    always_ff @(posedge pclk) begin
+        if (rst_n) begin
+            de_d <= de;
+            vs_d <= vs;
+            if (vs && !vs_d) begin
+                // End of a raster frame (vsync starts after the active area).
+                if (frames > 0) begin
+                    hist.push_back(shown);
+                    // Frames before the first commit are black by design:
+                    // they must be correct but do not count.
+                    if (bad_px != 0)
+                        good_run <= 0;
+                    else if (frame_has_layer && st.cp_bad_lines == 16'(bad_lines_at_start))
+                        good_run <= good_run + 1;
+                    $display("raster frame %0d: pattern frame %0d, %0d bad pixels, bad lines total %0d",
+                             frames, shown, bad_px, st.cp_bad_lines);
+                end
+                frames             <= frames + 1;
+                oy                 <= 0;
+                bad_px             <= 0;
+                frame_has_layer    <= 0;
+                bad_lines_at_start <= int'(st.cp_bad_lines);
+            end
+            if (de) begin
+                rgb888_t want;
+                bit in_l;
+                int f;
+                in_l = ox >= X0 && ox < X0 + CAM_W && oy >= Y0 && oy < Y0 + CAM_H;
+                // The frame on screen is the one the reader holds when the
+                // layer starts; none held (nothing committed yet) = black.
+                f = (ox == X0 && oy == Y0)
+                  ? (dut.g_display.rd_tok.valid ? int'(dut.g_display.rd_tok.src_seq) : -1)
+                  : shown;
+                if (in_l && ox == X0 && oy == Y0)
+                    shown <= f;
+                if (in_l && f >= 0) begin
+                    want = unpack565(pack565(pat_pixel(12'(ox - X0), 12'(oy - Y0), 16'(f))));
+                    frame_has_layer <= 1;
+                end else begin
+                    want = '0;
+                end
+                if ({r, g, b} != want && frames > 0) begin
+                    if (bad_px < 4 && good_run < NGOOD)
+                        $display("  (%0d,%0d) got %h%h%h want %h", ox, oy, r, g, b, want);
+                    bad_px <= bad_px + 1;
+                end
+                ox <= ox + 1;
+            end else if (de_d) begin
+                ox <= 0;
+                oy <= oy + 1;
+            end
+        end else begin
+            ox <= 0; oy <= 0; frames <= 0; good_run <= 0; bad_px <= 0; shown <= -1;
+            de_d <= 0; vs_d <= 0; frame_has_layer <= 0; bad_lines_at_start <= 0;
+        end
+    end
+
+    initial begin
+        wait (rst_n);
+        wait (good_run >= NGOOD || frames > NGOOD + 4);
+        $display("tb_disp: pattern frames written %0d, display reads %0d (miss %0d, late %0d), bad lines %0d, resyncs %0d",
+                 st.pw_frames, st.dr_frames, st.dr_miss, st.dr_late, st.cp_bad_lines, st.cp_resyncs);
+        if (good_run < NGOOD)
+            $fatal(1, "tb_disp FAIL: only %0d consecutive correct frames", good_run);
+        $display("tb_disp PASS");
+        $finish;
+    end
+endmodule

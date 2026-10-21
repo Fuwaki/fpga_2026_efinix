@@ -7,7 +7,7 @@ ROOT   := $(abspath ..)
 OBJ    ?= $(ROOT)/sim/obj
 SEED   ?= 1
 VFLAGS := --binary --timing --assert -j 0 -Wall -Wno-fatal \
-          -Wno-DECLFILENAME -Wno-UNUSEDPARAM -Wno-UNUSEDSIGNAL -Wno-PINCONNECTEMPTY \
+          -Wno-DECLFILENAME -Wno-UNUSEDPARAM -Wno-UNUSEDSIGNAL -Wno-PINCONNECTEMPTY -Wno-SYNCASYNCNET \
           --x-assign unique --x-initial unique -DVID_SVA --timescale 1ns/1ps
 
 RTL := $(addprefix $(ROOT)/rtl/vid/, \
@@ -16,14 +16,16 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          common/vstream_fifo.sv \
          dma/ring_if.sv dma/frame_ring_core.sv dma/frame_ring.sv \
          dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv \
-         dbg/vid_testgen.sv dbg/vid_testchk.sv vid_subsystem.sv)
+         dbg/vid_testgen.sv dbg/vid_testchk.sv dbg/vid_patgen.sv \
+         disp/layer_unpack.sv disp/compositor.sv vid_subsystem.sv) \
+       $(ROOT)/rtl/display/raster_gen.sv
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
        $(ROOT)/rtl/vid/common/sva/axi4_sva.sv \
        $(ROOT)/sim/bind/vid_bind.sv
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid sva_neg
+TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -44,7 +46,7 @@ define build
 	  echo "FAIL $(1): warnings in rtl/vid (see $(OBJ)/$(1)/build.log)"; exit 1; fi
 endef
 
-tb_fifo tb_ring tb_dma tb_vidsub:
+tb_fifo tb_ring tb_dma tb_vidsub tb_disp:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 

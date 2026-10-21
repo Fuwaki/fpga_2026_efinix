@@ -25,6 +25,10 @@ create_clock -period 10.000 -name i_cam_ck_CLKOUT [get_ports {i_cam_ck_CLKOUT}]
 set_clock_groups -exclusive  -group {i_mipi_rx_pclk} -group {jtag_inst1_TCK}
 set_clock_groups -exclusive -group {core_clk} -group {tx_cal_clk} -group {i_mipi_tx_pclk} -group {vid_clk_dvi2} -group {CLK_5M} -group {i_mipi_rx_pclk} -group {sdram_clk} -group {rx_cal_clk}
 set_clock_groups -exclusive -group {i_mipi_tx_pclk}    -group {i_mipi_rx_pclk}
+# The HDMI clocks (USER_PLL) and core_clk (another PLL) are unrelated.  Every
+# crossing between them is synchronised (vid_subsystem display FIFO, telemetry
+# 2-FF syncs), so their paths are not timed.
+set_clock_groups -asynchronous -group {hdmi_tx_slow_clk hdmi_tx_fast_clk vid_clk_dvi2} -group {core_clk}
 
 #set_clock_groups -exclusive -group {i_sysclk} -group {jtag_inst1_TCK}                       2.500           -0.197           (R-R)
 

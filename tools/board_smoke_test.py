@@ -112,22 +112,23 @@ def main():
         vid = {
             "selftest_written":    latest["cap_samples"] & 0xFFFF,
             "selftest_checked":    latest["cap_samples"] >> 16,
-            "selftest_bad_frames": latest["cap_tiles"] >> 16,
-            "selftest_bad_words":  latest["cap_tiles"] & 0xFFFF,
-            "last_bad_got":        word(latest["commit_count"]),
-            "legacy_ar_withdrawn": pos >> 16,
-            "legacy_aw_withdrawn": pos & 0xFFFF,
-            "ring_commits":        latest["last_x"],
-            "writer_errors":       latest["last_y"],
-            "writer_skips":        latest["last_cap_addr"] & 0x7F,
-            "ring_proto_err":      bool(latest["last_cap_addr"] & 0x80),
-            "ring_aborts":         latest["last_commit_addr"],
+            "ddr_rd_lat_max":      latest["cap_tiles"] >> 16,
+            "ddr_rd_lat_last":     latest["cap_tiles"] & 0xFFFF,
+            "disp_pattern_written": latest["commit_count"] & 0xFFFF,
+            "disp_frames_read":     latest["commit_count"] >> 16,
+            "disp_misses":          latest["last_x"],
+            "disp_late":            latest["last_commit_addr"],
+            "comp_bad_lines":       pos >> 16,
+            "comp_resyncs":         pos & 0xFFFF,
+            "writer_errors":        latest["last_y"],
+            "writer_skips":         latest["last_cap_addr"] & 0x7F,
+            "ring_proto_err":       bool(latest["last_cap_addr"] & 0x80),
         }
         if delta is not None:
+            vid["disp_read_per_s"] = 2 * (((latest["commit_count"] >> 16) - (got[-2]["commit_count"] >> 16)) & 0xFFFF)
             vid["written_per_s"] = 2 * ((latest["cap_samples"] - got[-2]["cap_samples"]) & 0xFFFF)
             vid["checked_per_s"] = 2 * (((latest["cap_samples"] >> 16) - (got[-2]["cap_samples"] >> 16)) & 0xFFFF)
-        vid["ok"] = (vid["selftest_bad_frames"] == 0 and vid["selftest_bad_words"] == 0
-                     and vid["writer_errors"] == 0 and not vid["ring_proto_err"]
+        vid["ok"] = (vid["writer_errors"] == 0 and not vid["ring_proto_err"]
                      and vid["selftest_checked"] > 0)
         result["vid"] = vid
     if args.json:

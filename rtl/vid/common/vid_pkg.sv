@@ -192,6 +192,14 @@ package vid_pkg;
     logic [7:0]       lg_last_beats;  //                beats it actually sent
     logic [15:0]      lg_ar_wd;       // legacy reader: arvalid dropped before arready
     logic [15:0]      lg_aw_wd;       // legacy writer: awvalid dropped before awready
+    logic [SEQ_W-1:0] pw_frames;      // display pattern writer: committed
+    logic [SEQ_W-1:0] dr_frames;      // display reader: frames read
+    logic [SEQ_W-1:0] dr_miss;        //                 no frame to show
+    logic [SEQ_W-1:0] dr_late;        //                 start while still reading
+    logic [15:0]      cp_bad_lines;   // compositor: lines shown black (underflow / misaligned)
+    logic [15:0]      cp_resyncs;     //             times it dropped words to re-align
+    logic [15:0]      rd_lat_max;     // DDR read: cycles from AR accepted to first R beat, max
+    logic [15:0]      rd_lat_last;    //           the same, most recent read
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern
@@ -210,6 +218,35 @@ package vid_pkg;
     return {f[5:0], y[9:0], w[9:0], chk};
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
+
+  // ------------------------------------------------------ display pattern
+  // A picture that makes display faults visible to the eye:
+  //   white 4 px frame at the layer edge      cropping or offset
+  //   red | green | blue bands at the top     channel order
+  //   gray ramp, left dark to right bright    bit order, banding
+  //   white block moving 4 px per frame       frames update, no tearing
+  //   1 px diagonal lines at the bottom       pixel order within a word
+  //                                           (a swapped pair shows as a zigzag)
+  function automatic rgb888_t pat_pixel(input logic [11:0] x, input logic [11:0] y,
+                                        input logic [15:0] frame);
+    logic [11:0] mx;
+    logic [11:0] d;
+    mx = 12'((32'(frame) * 4) % CAM_W);
+    d  = x - y;
+    if (x < 4 || x >= 12'(CAM_W - 4) || y < 4 || y >= 12'(CAM_H - 4))
+      return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
+    if (y < 120)
+      return (x < 426) ? '{r: 8'hFF, g: 8'h00, b: 8'h00}
+           : (x < 853) ? '{r: 8'h00, g: 8'hFF, b: 8'h00}
+           :             '{r: 8'h00, g: 8'h00, b: 8'hFF};
+    if (y >= 300 && y < 400 && x >= mx && x < mx + 32)
+      return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
+    if (y < 440)
+      return '{r: x[10:3], g: x[10:3], b: x[10:3]};
+    if (d[5:0] == 6'd0)
+      return '{r: 8'hFF, g: 8'hFF, b: 8'hFF};
+    return '{r: 8'h20, g: 8'h20, b: 8'h40};
+  endfunction
 
   // ---------------------------------------------------------------- helpers
   function automatic int clog2u(input int v);

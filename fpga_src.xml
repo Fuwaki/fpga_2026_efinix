@@ -77,6 +77,9 @@
         <efx:design_file name="rtl/vid/dma/vdma_rd.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dbg/vid_testgen.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/dbg/vid_testchk.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/dbg/vid_patgen.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/disp/layer_unpack.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/disp/compositor.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/vid_subsystem.sv" version="default" library="default" />
         <efx:design_file name="rtl/video/video_contract_pkg.sv" version="default" library="default" />
         <efx:design_file name="rtl/display/raster_gen.sv" version="default" library="default" />

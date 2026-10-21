@@ -5,26 +5,39 @@
 // attributes the controller needs but the subsystem never varies (size,
 // burst type, cache, prot, lock, strobes) are fixed in one place.
 //
-// Phase 1 contents:
-//   axi_arb      master 0 = legacy frame store (highest priority), master 1
-//                = self-test path
+// Contents:
+//   axi_arb      write masters: 0 legacy, 1 self-test, 2 display producer
+//                read  masters: 0 legacy, 1 display, 2 self-test
+//                (lower index = higher priority)
 //   self-test    vid_testgen -> vdma_wr -> frame_ring (test) -> vdma_rd ->
 //                vid_testchk, every word compared, results in status
+//   display      producer (Phase 2a: vid_patgen) -> vdma_wr -> frame_ring
+//                (ISP) -> vdma_rd (dual-clock) -> compositor, in the pixel
+//                clock, out to the HDMI encoder
 module vid_subsystem
     import vid_pkg::*;
 #(
     parameter bit ENABLE_SELFTEST = 1,
+    // 0 = the legacy frame store gets no DDR access (its requests are never
+    // accepted, so it simply stalls).
+    parameter bit LEGACY_EN       = 1,
+    // Display pattern timing; simulation shortens the frame period.
+    parameter int PAT_FRAME_CYCLES  = 3_333_333,
+    parameter int PAT_LINE_CYCLES   = 2_000,
     // Self-test geometry and timing; simulation shortens them.
     parameter int TEST_LINES        = CAM_H,
     parameter int TEST_FRAME_CYCLES = 3_333_333,
     parameter int TEST_LINE_CYCLES  = 2_000,
-    // Outstanding bursts allowed at the DDR port, per direction.  The board's
-    // (encrypted) controller returns wrong data when a second read is issued
-    // before the first completes: with two masters reading, about 8% of
-    // self-test frames carried the other master's data, and the legacy
-    // picture showed occasional horizontal glitches.  One read at a time is
-    // clean (thousands of frames, 0 errors); pipelined writes are fine.
-    parameter int DDR_MAX_WR        = 8,
+    // Outstanding bursts allowed at the DDR port, per direction.  Both are 1
+    // because of how the board's (encrypted) controller behaves:
+    //   reads:  a second read issued before the first completes returns
+    //           wrong data (about 8% of self-test frames carried another
+    //           master's data; the legacy picture showed horizontal glitches);
+    //   writes: queued writes are served before reads, so with 8 writes in
+    //           flight a read waited up to 11 us and the display reader fell
+    //           to 30 frames/s with underflows; with 1, reads wait at most
+    //           6 us and the display holds 60 frames/s.
+    parameter int DDR_MAX_WR        = 1,
     parameter int DDR_MAX_RD        = 1
 ) (
     input  logic                  clk,          // AXI / core clock
@@ -93,9 +106,26 @@ module vid_subsystem
     input  logic                  ddr_rvalid,
     output logic                  ddr_rready,
 
+    // ------------------------------------------------- display (pixel clock)
+    input  logic                  pix_clk,
+    output logic [7:0]            pix_r,
+    output logic [7:0]            pix_g,
+    output logic [7:0]            pix_b,
+    output logic                  pix_de,
+    output logic                  pix_hs,
+    output logic                  pix_vs,
+
     output vid_status_t           status
 );
-    localparam int NW = 2, NR = 2;
+    localparam int NW = 3, NR = 3;
+    localparam int W_SELF = 1, W_DISP = 2;
+    localparam int R_DISP = 1, R_SELF = 2;
+
+    // Pixel-clock reset: asserted with rst_n, released synchronously.
+    logic pix_rst_q1, pix_rst_n;
+    always_ff @(posedge pix_clk or negedge rst_n)
+        if (!rst_n) {pix_rst_n, pix_rst_q1} <= 2'b00;
+        else        {pix_rst_n, pix_rst_q1} <= {pix_rst_q1, 1'b1};
 
     axi4_wr_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) mw [NW] (.clk(clk), .rst_n(rst_n));
     axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) mr [NR] (.clk(clk), .rst_n(rst_n));
@@ -106,12 +136,12 @@ module vid_subsystem
     assign mw[0].awid    = lg_awid;
     assign mw[0].awaddr  = lg_awaddr;
     assign mw[0].awlen   = lg_awlen;
-    assign mw[0].awvalid = lg_awvalid;
-    assign lg_awready    = mw[0].awready;
+    assign mw[0].awvalid = lg_awvalid && LEGACY_EN;
+    assign lg_awready    = mw[0].awready && LEGACY_EN;
     assign mw[0].wdata   = lg_wdata;
     assign mw[0].wlast   = lg_wlast;
-    assign mw[0].wvalid  = lg_wvalid;
-    assign lg_wready     = mw[0].wready;
+    assign mw[0].wvalid  = lg_wvalid && LEGACY_EN;
+    assign lg_wready     = mw[0].wready && LEGACY_EN;
     assign lg_bid        = mw[0].bid;
     assign lg_bresp      = mw[0].bresp;
     assign lg_bvalid     = mw[0].bvalid;
@@ -120,8 +150,8 @@ module vid_subsystem
     assign mr[0].arid    = lg_arid;
     assign mr[0].araddr  = lg_araddr;
     assign mr[0].arlen   = lg_arlen;
-    assign mr[0].arvalid = lg_arvalid;
-    assign lg_arready    = mr[0].arready;
+    assign mr[0].arvalid = lg_arvalid && LEGACY_EN;
+    assign lg_arready    = mr[0].arready && LEGACY_EN;
     assign lg_rid        = mr[0].rid;
     assign lg_rdata      = mr[0].rdata;
     assign lg_rresp      = mr[0].rresp;
@@ -147,7 +177,7 @@ module vid_subsystem
             .clk(clk), .rst_n(rst_n), .p(rp), .c(rc), .status(status.test_ring));
 
         vdma_wr #(.FIFO_WORDS(1024)) u_wr (
-            .s(gen), .m(mw[1]), .ring(rp),
+            .s(gen), .m(mw[W_SELF]), .ring(rp),
             .ring_base(RING_TEST_BASE), .geom(geom), .src_seq(gen_frame),
             .st_frames(status.tw_frames), .st_skipped(status.tw_skipped),
             .st_errors(status.tw_errors), .st_sig(status.tw_sig));
@@ -159,8 +189,8 @@ module vid_subsystem
             if (!rst_n) rd_start <= 1'b0;
             else        rd_start <= !rd_busy && !rd_start;
 
-        vdma_rd #(.FIFO_WORDS(512), .RD_BURST(32)) u_rd (
-            .m(mr[1]), .ring(rc[0]), .o(back),
+        vdma_rd #(.FIFO_WORDS(1024), .RD_BURST(128)) u_rd (
+            .m(mr[R_SELF]), .ring(rc[0]), .o(back),
             .ring_base(RING_TEST_BASE), .start(rd_start), .policy(ACQ_NEW_ONLY), .geom(geom),
             .x0_beat(8'd0), .nbeats(8'(CAM_W / BEAT_PIX)),
             .busy(rd_busy), .token(rd_tok),
@@ -172,19 +202,19 @@ module vid_subsystem
             .st_bad_words(status.tc_bad_words), .st_first_bad(status.tc_first_bad),
             .st_last_bad(status.tc_last_bad), .st_last_pos(status.tc_last_pos));
     end else begin : g_no_selftest
-        assign mw[1].awvalid = 1'b0;
-        assign mw[1].awid    = '0;
-        assign mw[1].awaddr  = '0;
-        assign mw[1].awlen   = '0;
-        assign mw[1].wvalid  = 1'b0;
-        assign mw[1].wdata   = '0;
-        assign mw[1].wlast   = 1'b0;
-        assign mw[1].bready  = 1'b1;
-        assign mr[1].arvalid = 1'b0;
-        assign mr[1].arid    = '0;
-        assign mr[1].araddr  = '0;
-        assign mr[1].arlen   = '0;
-        assign mr[1].rready  = 1'b1;
+        assign mw[W_SELF].awvalid = 1'b0;
+        assign mw[W_SELF].awid    = '0;
+        assign mw[W_SELF].awaddr  = '0;
+        assign mw[W_SELF].awlen   = '0;
+        assign mw[W_SELF].wvalid  = 1'b0;
+        assign mw[W_SELF].wdata   = '0;
+        assign mw[W_SELF].wlast   = 1'b0;
+        assign mw[W_SELF].bready  = 1'b1;
+        assign mr[R_SELF].arvalid = 1'b0;
+        assign mr[R_SELF].arid    = '0;
+        assign mr[R_SELF].araddr  = '0;
+        assign mr[R_SELF].arlen   = '0;
+        assign mr[R_SELF].rready  = 1'b1;
         assign status.test_ring     = '0;
         assign status.tw_frames     = '0;
         assign status.tw_errors     = '0;
@@ -197,6 +227,54 @@ module vid_subsystem
         assign status.tc_last_bad   = '0;
         assign status.tc_last_pos   = '0;
         assign status.tr_miss       = '0;
+    end
+
+    // --------------------------------------------------------- display
+    if (1) begin : g_display
+        vstream_if #(.T(rgb565_t), .PPC(2)) pat  (.clk(clk), .rst_n(rst_n));
+        vstream_if #(.T(rgb565_t), .PPC(2)) lay0 (.clk(pix_clk), .rst_n(pix_rst_n));
+        ring_prod_if rp ();
+        ring_cons_if rc [1] ();
+        ring_status_t ring_st;
+
+        logic [15:0] pat_frame;
+        vid_patgen #(.FRAME_CYCLES(PAT_FRAME_CYCLES), .LINE_CYCLES(PAT_LINE_CYCLES)) u_pat (
+            .o(pat), .enable(1'b1), .frame(pat_frame));
+
+        frame_ring #(.SLOTS(3), .NCONS(1)) u_ring (
+            .clk(clk), .rst_n(rst_n), .p(rp), .c(rc), .status(ring_st));
+
+        logic [SEQ_W-1:0] pw_skip, pw_err;
+        logic [31:0]      pw_sig;
+        vdma_wr #(.FIFO_WORDS(1024)) u_wr (
+            .s(pat), .m(mw[W_DISP]), .ring(rp),
+            .ring_base(RING_ISP_BASE), .geom(CAM_GEOM), .src_seq(pat_frame),
+            .st_frames(status.pw_frames), .st_skipped(pw_skip),
+            .st_errors(pw_err), .st_sig(pw_sig));
+
+        // Raster frame request, pixel clock -> core clock.
+        logic frame_req;
+        (* async_reg = "true" *) logic [2:0] req_sync;
+        always_ff @(posedge clk or negedge rst_n)
+            if (!rst_n) req_sync <= '0;
+            else        req_sync <= {req_sync[1:0], frame_req};
+        wire rd_start = req_sync[2] ^ req_sync[1];
+
+        logic         rd_busy;
+        frame_token_t rd_tok;
+        // Long bursts: the DDR port serves one read at a time (DDR_MAX_RD),
+        // so every burst pays the full read latency; 128 beats amortise it.
+        vdma_rd #(.FIFO_WORDS(1024), .RD_BURST(128), .ASYNC(1)) u_rd (
+            .m(mr[R_DISP]), .ring(rc[0]), .o(lay0),
+            .ring_base(RING_ISP_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
+            .x0_beat(8'd0), .nbeats(8'(CAM_W / BEAT_PIX)),
+            .busy(rd_busy), .token(rd_tok),
+            .st_frames(status.dr_frames), .st_miss(status.dr_miss), .st_late(status.dr_late));
+
+        compositor u_comp (
+            .layer0(lay0), .frame_req(frame_req),
+            .r(pix_r), .g(pix_g), .b(pix_b), .de(pix_de), .hs(pix_hs), .vs(pix_vs),
+            .st_bad_lines(status.cp_bad_lines), .st_resyncs(status.cp_resyncs));
     end
 
     // ---------------------------------------- legacy burst-length monitor
@@ -248,6 +326,31 @@ module vid_subsystem
                 status.lg_ar_wd <= status.lg_ar_wd + 1'b1;
             if (lg_awv_d && !lg_awr_d && !lg_awvalid)
                 status.lg_aw_wd <= status.lg_aw_wd + 1'b1;
+        end
+    end
+
+    // ------------------------------------------------- DDR read latency
+    // With one read outstanding at a time, a single counter suffices.
+    logic        lat_run;
+    logic [15:0] lat_cnt;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            lat_run            <= 1'b0;
+            lat_cnt            <= '0;
+            status.rd_lat_max  <= '0;
+            status.rd_lat_last <= '0;
+        end else begin
+            if (dr.arvalid && dr.arready) begin
+                lat_run <= 1'b1;
+                lat_cnt <= '0;
+            end else if (lat_run && dr.rvalid && dr.rready) begin
+                lat_run            <= 1'b0;
+                status.rd_lat_last <= lat_cnt;
+                if (lat_cnt > status.rd_lat_max)
+                    status.rd_lat_max <= lat_cnt;
+            end else if (lat_run && lat_cnt != 16'hFFFF) begin
+                lat_cnt <= lat_cnt + 1'b1;
+            end
         end
     end
 
