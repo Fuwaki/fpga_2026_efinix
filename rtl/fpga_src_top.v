@@ -692,11 +692,13 @@ wire       vid_pix_de, vid_pix_hs, vid_pix_vs;
 // picture (sensor timing kept).  The ISP ring's frame signature (telemetry
 // page 1) must then read 0xa4f003e6 (sim/ref/isp_ref.py pattern-sig).
 localparam CSI_PATTERN = 1'b0;
-// Phase 3: the processing placeholder (invert) writes the PROC ring; the
+// The processing placeholder (VID_PROC_MODE) writes the PROC ring; the
 // compositor shows the camera left of the split column and the processed
 // frame from it on.  VID_SPLIT = 0 shows the camera alone.
 localparam VID_SPLIT = 1'b1;
 localparam [11:0] VID_SPLIT_COL = 12'd640;
+// What the right half shows: PROC_SOBEL (edges), PROC_INVERT, PROC_PASS.
+localparam vid_pkg::proc_mode_e VID_PROC_MODE = vid_pkg::PROC_SOBEL;
 localparam vid_pkg::comp_cfg_t VID_COMP = '{
     mode:       VID_SPLIT ? vid_pkg::COMP_SPLIT : vid_pkg::COMP_SINGLE,
     single_sel: 1'b0,
@@ -707,7 +709,7 @@ vid_subsystem #(
     .DISP_SRC        (1),            // camera through the ISP
     .CSI_PATTERN     (CSI_PATTERN),
     .PROC_EN         (VID_SPLIT),
-    .PROC_MODE       (vid_pkg::PROC_INVERT),
+    .PROC_MODE       (VID_PROC_MODE),
     .COMP_CFG        (VID_COMP),
     .EXT_EN          (ENABLE_ST_ACCEL)
 ) u_vid (

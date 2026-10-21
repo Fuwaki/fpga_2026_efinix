@@ -149,3 +149,10 @@ BLC / 白平衡 / gamma / 饱和度、`DBG_PATTERN`、旧采集探针和旧遥�
 
 上板：XLR 29.5k → 28.6k（旧帧缓冲本已被综合裁掉，Memory 不变 192），遥测各项与 Phase 3 相同，
 `board_smoke_test.py --vid` 的 `ok` 改为按当前遥测判定并通过。架构文档重写为 `docs/video_architecture.md`。
+
+## 11. Sobel 占位（2026-10-21）
+
+`proc_stub` 加 `PROC_SOBEL`：亮度 (R+2G+B)/4 → 3×3 Sobel → (|gx|+|gy|)/2 灰度；两行亮度缓冲（4 块 Memory），
+两级弹性流水，输出 (x, y) 以输入 (x−2, y−1) 为中心。`tb_disp_split` 逐像素核对，`tb_proc` 核对随机反压下输出不变。
+仿真首版在色带边界处边缘变成 4 像素宽、半强度：行缓冲里一行的两个像素顺序反了（非压缩数组字面量 `'{a, b}` 中 a 是元素 0）。
+Efinity 不接受嵌套的 `'{default: '{default: ...}}`，复位改为循环。上板满负载 0 错 0 丢。

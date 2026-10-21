@@ -29,7 +29,7 @@ MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
 TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
-         tb_disp_split tb_disp_split0 tb_isp tb_isp_bypass tb_isp_pat sva_neg
+         tb_proc tb_disp_split tb_disp_split0 tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -59,10 +59,19 @@ tb_ring_tight:
 	$(call build,$@,tb_ring,tb_ring,-GSLOTS=3)
 	$(OBJ)/$@/Vtb_ring +verilator+seed+$(SEED) +verilator+rand+reset+2
 
-# Processing engine (invert) shown right of an unaligned split column, and
+# Sobel is elastic: the same input with and without output stalls must give
+# the same output.
+tb_proc:
+	$(call build,$@,tb_proc,tb_proc,)
+	$(call build,$@_rnd,tb_proc,tb_proc,-GRND=1)
+	@a=$$($(OBJ)/$@/Vtb_proc | grep hash); b=$$($(OBJ)/$@_rnd/Vtb_proc | grep hash); \
+	  if [ "$$a" = "$$b" ]; then echo "PASS tb_proc ($$a)"; else echo "FAIL tb_proc: $$a vs $$b"; exit 1; fi
+
+# Processing engine (Sobel) shown right of an unaligned split column, and
+# (invert)
 # the edge case of a split at column 0 (layer 0 not read at all).
 tb_disp_split:
-	$(call build,$@,tb_disp,tb_disp,-GPROC=1 -GSPLIT=643)
+	$(call build,$@,tb_disp,tb_disp,-GPROC=1 -GSPLIT=643 -GPMODE=2)
 	$(OBJ)/$@/Vtb_disp +verilator+seed+$(SEED) +verilator+rand+reset+2
 tb_disp_split0:
 	$(call build,$@,tb_disp,tb_disp,-GPROC=1 -GSPLIT=0)

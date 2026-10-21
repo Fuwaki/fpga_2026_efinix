@@ -33,7 +33,7 @@ vid_testgen ─ vdma_wr ─ 测试环 ─ vdma_rd ─ vid_testchk   (DMA 自检)
 | `isp/isp_top` | core | `isp_blc_wb` → `isp_demosaic`（双线性，输出第 k 行以输入第 k−1 行为中心，第 0 行黑）→ `isp_gamma`（三张 1024×10 表）→ `isp_sat`（1.5×）→ `isp_dither565`（2×2 有序抖动）；`isp_stats` 统计原始四相位均值、过曝/近黑数。`bypass_all` 时原始值高 8 位作灰度直出 |
 | `dma/vdma_wr` | core | 字在 FIFO 前打包成整拍，FIFO 里够一个突发才发 AW，W 每时钟一拍；逐拍核对 sof/eol，短帧/长帧/错位帧 ABORT；帧签名 `sig = rotl(sig,1) ^ word` |
 | `dma/vdma_rd` | core（输出可异步） | 按行按裁切窗口发读突发，按 FIFO 余量计信用，R 每时钟一拍进 FIFO，FIFO 后拆字；最后一拍收到后释放帧 |
-| `proc/proc_engine` | core | 以 NEW_ONLY 读 ISP 环每个新帧 → `proc_stub`（PASS / INVERT）→ 写 PROC 环，结果帧带源帧 `src_seq` |
+| `proc/proc_engine` | core | 以 NEW_ONLY 读 ISP 环每个新帧 → `proc_stub`（PASS / INVERT / SOBEL）→ 写 PROC 环，结果帧带源帧 `src_seq` |
 | `disp/compositor` | pixel | `raster_gen` 出 1080p60；两层共用居中的 1280×720 窗口，`COMP_SINGLE` 或 `COMP_SPLIT`（分屏列任意）；每层 `layer_unpack` 按 sof/eol 逐行对齐，欠载只黑当行 |
 | `dma/axi_arb` | core | 读写独立仲裁，低编号优先 + 饿死超时；按发出顺序路由响应，下游 ID 恒 0 |
 
@@ -62,6 +62,7 @@ DSP 全部留给神经网络：子系统里所有乘法经 `common/mul_nodsp.sv`
 | 开关 | 默认 | 作用 |
 |---|---|---|
 | `VID_SPLIT` / `VID_SPLIT_COL` | 1 / 640 | 1 = 左摄像头、右处理结果；0 = 只显示摄像头（处理单元不综合） |
+| `VID_PROC_MODE` | `PROC_SOBEL` | 右半显示什么：`PROC_SOBEL` 边缘（亮度 (R+2G+B)/4 的 3×3 Sobel，(|gx|+|gy|)/2）、`PROC_INVERT`、`PROC_PASS` |
 | `CSI_PATTERN` | 0 | 1 = 采集侧固定图；遥测页 1 的帧签名应为 `0xa4f003e6`（`isp_ref.py pattern-sig`），证明 CSI→ISP→DDR 逐位正确 |
 | `TP_EN` | 0 | 1 = HDMI 本地彩条，与视频通路无关 |
 | `ENABLE_ST_ACCEL` | 0 | ST 加速器，打开时它的 AXI 主机接 `vid_subsystem` 外部端口 |
@@ -84,7 +85,8 @@ ISP 参数是 `vid_subsystem` 的 `ISP_CFG`（`vid_pkg::isp_cfg_t`，默认 `ISP
 
 ## 7. 资源（Phase 4 完成时）
 
-全片 XLR 28.6k / 60.8k、Memory 192 / 256、DSP 4（只有 SoC）。u_vid：10.1k XLR、59 块 Memory、0 DSP。
+全片 XLR 29.1k / 60.8k、Memory 196 / 256、DSP 4（只有 SoC）。u_vid：10.6k XLR、63 块 Memory、0 DSP
+（Sobel 的两行亮度缓冲 4 块）。
 Memory 大头：SoC 81、DDR 控制器 39、CSI RX 11；u_vid 中每个 DMA 引擎 7 块（130 位宽 FIFO），ISP 7 块。
 关掉 DMA 自检（`ENABLE_SELFTEST=0`）省 14 块。
 
@@ -94,3 +96,4 @@ Memory 大头：SoC 81、DDR 控制器 39、CSI RX 11；u_vid 中每个 DMA 引�
 - 曝光、增益、白平衡固定；AE/AWB 可由固件读 `isp_stats` 实现（需 APB 寄存器）。
 - 去马赛克是双线性，细节处有轻微彩色噪点。
 - RGB565 量化靠 2×2 抖动掩盖，暗部渐变仍可能看到细纹。
+- Sobel 输出相对原图右移 2 像素、下移 1 行（每个输出拍随输入拍产生，弹性流里不需要单独补发）。

@@ -6,15 +6,42 @@
 // for the frame the reader acquired.  Passes when at least NGOOD consecutive
 // raster frames match exactly and the compositor reports no bad lines in them.
 //
-// With PROC = 1 the processing engine inverts each frame into the PROC ring,
-// and SPLIT >= 0 shows layer 0 left of that column and the PROC ring from it
-// on (any column, not only multiples of 8).
+// With PROC = 1 the processing engine writes each frame, inverted (PMODE 1)
+// or as Sobel edges (PMODE 2), into the PROC ring, and SPLIT >= 0 shows
+// layer 0 left of that column and the PROC ring from it on (any column, not
+// only multiples of 8).
 module tb_disp #(
     parameter int NGOOD = 3,
     parameter bit PROC  = 0,
-    parameter int SPLIT = -1
+    parameter int SPLIT = -1,
+    parameter int PMODE = 1
 );
     import vid_pkg::*;
+
+    // Expected processed pixel at layer (x, y) of source frame f.  Sobel:
+    // centred on (x - 2, y - 1), black in the first line and the first two
+    // columns, neighbours above row 0 and left of column 0 mirrored.
+    function automatic rgb888_t proc_pixel(input int x, input int y, input int f);
+        rgb565_t    src;
+        logic [7:0] w [3][3];
+        if (PMODE == 1)
+            return unpack565(rgb565_t'(~pack565(pat_pixel(12'(x), 12'(y), 16'(f)))));
+        if (y == 0 || x < 2)
+            return '0;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) begin
+                int yy, xx;
+                yy = y - 1 + dy; if (yy < 0) yy = 1;
+                xx = x - 2 + dx; if (xx < 0) xx = 1;
+                src = pack565(pat_pixel(12'(xx), 12'(yy), 16'(f)));
+                w[dy + 1][dx + 1] = luma8(src);
+            end
+        begin
+            logic [7:0] e;
+            e = sobel8(w);
+            return unpack565(pack565('{r: e, g: e, b: e}));
+        end
+    endfunction
 
     function automatic comp_cfg_t comp_for(input int split);
         comp_cfg_t c = COMP_CFG_DEFAULT;
@@ -42,7 +69,7 @@ module tb_disp #(
     vid_status_t st;
 
     vid_subsystem #(.ENABLE_SELFTEST(0), .PAT_FRAME_CYCLES(1_500_000), .PAT_LINE_CYCLES(2_000),
-                    .PROC_EN(PROC), .PROC_MODE(PROC_INVERT), .COMP_CFG(comp_for(SPLIT))) dut (
+                    .PROC_EN(PROC), .PROC_MODE(PMODE == 2 ? PROC_SOBEL : PROC_INVERT), .COMP_CFG(comp_for(SPLIT))) dut (
         .clk(clk), .rst_n(rst_n),
         .ext_awid('0), .ext_awaddr('0), .ext_awlen('0), .ext_awvalid(1'b0), .ext_awready(),
         .ext_wdata('0), .ext_wlast(1'b0), .ext_wvalid(1'b0), .ext_wready(),
@@ -119,7 +146,7 @@ module tb_disp #(
                     want = unpack565(pack565(pat_pixel(12'(ox - X0), 12'(oy - Y0), 16'(f))));
                     frame_has_layer <= 1;
                 end else if (in_l && right && f1 >= 0) begin
-                    want = unpack565(rgb565_t'(~pack565(pat_pixel(12'(ox - X0), 12'(oy - Y0), 16'(f1)))));
+                    want = proc_pixel(ox - X0, oy - Y0, f1);
                     frame_has_layer <= 1;
                 end else begin
                     want = '0;

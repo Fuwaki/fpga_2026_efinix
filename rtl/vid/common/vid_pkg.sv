@@ -170,8 +170,33 @@ package vid_pkg;
   // Placeholder processing (rtl/vid/proc/proc_stub.sv).
   typedef enum logic [1:0] {
     PROC_PASS   = 2'd0,
-    PROC_INVERT = 2'd1
+    PROC_INVERT = 2'd1,
+    PROC_SOBEL  = 2'd2      // edge strength of luma, as gray
   } proc_mode_e;
+
+  // Luma for edge detection: (R + 2G + B) / 4 of the 8-bit expansion.
+  /* verilator lint_off UNUSEDSIGNAL */
+  function automatic logic [7:0] luma8(input rgb565_t p);
+    rgb888_t q;
+    logic [9:0] s;
+    q = unpack565(p);
+    s = 10'(q.r) + {1'b0, q.g, 1'b0} + 10'(q.b);
+    return s[9:2];
+  endfunction
+
+  // Sobel magnitude of a 3x3 luma window w[row][col], row 0 on top:
+  // min((|gx| + |gy|) / 2, 255).
+  function automatic logic [7:0] sobel8(input logic [7:0] w [3][3]);
+    logic signed [11:0] gx, gy;
+    logic [11:0] m;
+    gx = 12'(w[0][2]) + 12'({w[1][2], 1'b0}) + 12'(w[2][2])
+       - 12'(w[0][0]) - 12'({w[1][0], 1'b0}) - 12'(w[2][0]);
+    gy = 12'(w[2][0]) + 12'({w[2][1], 1'b0}) + 12'(w[2][2])
+       - 12'(w[0][0]) - 12'({w[0][1], 1'b0}) - 12'(w[0][2]);
+    m = 12'(gx < 0 ? -gx : gx) + 12'(gy < 0 ? -gy : gy);
+    return (m[11:1] > 11'd255) ? 8'd255 : m[8:1];
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   typedef enum logic [1:0] {
     COMP_SINGLE = 2'd0,     // one layer, centred
