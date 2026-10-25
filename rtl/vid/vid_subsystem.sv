@@ -141,7 +141,16 @@ module vid_subsystem
     output logic                  pix_hs,
     output logic                  pix_vs,
 
-    output vid_status_t           status
+    output vid_status_t           status,
+
+    // Menu, core clock.  Defaults leave the benches on the compile-time crop.
+    // ui_live is tied and not toggled; view_full only changes the pixel mux.
+    input  logic                  ui_osd_en     = 1'b0,
+    input  logic                  ui_view_full  = 1'b0,
+    input  logic                  ui_single_sel = 1'b1,
+    input  logic                  ui_cursor     = 1'b0,
+    input  logic [1:0]            ui_style      = 2'd0,
+    input  logic                  ui_live       = 1'b0
 );
     localparam int NW = 4, NR = 5;
     // Lower index = higher priority.  The camera cannot wait and the display
@@ -348,7 +357,8 @@ module vid_subsystem
             vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
                 .m(mr[R_DISP]), .ring(rc[0]), .o(lay0),
                 .ring_base(RING_ISP_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
-                .x0_beat(X0B0), .nbeats(NB0),
+                .x0_beat(ui_live ? 8'd0 : X0B0),
+                .nbeats(ui_live ? 8'(CAM_W / BEAT_PIX) : NB0),
                 .busy(rd_busy), .token(rd_tok),
                 .st_frames(status.dr_frames), .st_miss(status.dr_miss), .st_late(status.dr_late));
         end else begin : g_no_rd0
@@ -399,7 +409,8 @@ module vid_subsystem
             vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
                 .m(mr[R_DISP1]), .ring(pc[0]), .o(lay1),
                 .ring_base(RING_PROC_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
-                .x0_beat(X0B1), .nbeats(NB1),
+                .x0_beat(ui_live ? 8'd0 : X0B1),
+                .nbeats(ui_live ? 8'(CAM_W / BEAT_PIX) : NB1),
                 .busy(rd1_busy), .token(rd1_tok),
                 .st_frames(status.dr1_frames), .st_miss(status.dr1_miss), .st_late(rd1_late));
         end else begin : g_no_rd1
@@ -416,12 +427,62 @@ module vid_subsystem
             if (!rst_n)                          status.seq_gap <= '0;
             else if (rd_tok.valid && rd1_tok.valid) status.seq_gap <= rd_tok.src_seq - rd1_tok.src_seq;
 
+        // Processed-frame completions in the last 1 s of core_clk.  Stays 0
+        // while PROC_EN is off (pr_frames never moves).  Clamped at 99.
+        logic [26:0]          fps_div;
+        logic [SEQ_W-1:0]     pr_prev;
+        logic [6:0]           fps_core;
+        wire [SEQ_W-1:0]      fps_delta = status.pr_frames - pr_prev;
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                fps_div  <= '0;
+                pr_prev  <= '0;
+                fps_core <= '0;
+            end else if (fps_div == 27'd99_999_999) begin
+                fps_div  <= '0;
+                pr_prev  <= status.pr_frames;
+                fps_core <= (fps_delta > SEQ_W'(99)) ? 7'd99 : fps_delta[6:0];
+            end else begin
+                fps_div <= fps_div + 27'd1;
+            end
+        end
+
+        // Core clock -> pixel clock.  A one-frame torn sample is acceptable.
+        (* async_reg = "true" *) logic       osd_s0, osd_s1;
+        (* async_reg = "true" *) logic       full_s0, full_s1;
+        (* async_reg = "true" *) logic       sel_s0, sel_s1;
+        (* async_reg = "true" *) logic       cur_s0, cur_s1;
+        (* async_reg = "true" *) logic [1:0] sty_s0, sty_s1;
+        (* async_reg = "true" *) logic       live_s0, live_s1;
+        (* async_reg = "true" *) logic [6:0] fps_s0, fps_s1;
+        always_ff @(posedge pix_clk or negedge pix_rst_n) begin
+            if (!pix_rst_n) begin
+                osd_s0 <= 1'b0; osd_s1 <= 1'b0;
+                full_s0 <= 1'b0; full_s1 <= 1'b0;
+                sel_s0 <= 1'b0; sel_s1 <= 1'b0;
+                cur_s0 <= 1'b0; cur_s1 <= 1'b0;
+                sty_s0 <= '0; sty_s1 <= '0;
+                live_s0 <= 1'b0; live_s1 <= 1'b0;
+                fps_s0 <= '0; fps_s1 <= '0;
+            end else begin
+                osd_s0 <= ui_osd_en;    osd_s1 <= osd_s0;
+                full_s0 <= ui_view_full; full_s1 <= full_s0;
+                sel_s0 <= ui_single_sel; sel_s1 <= sel_s0;
+                cur_s0 <= ui_cursor;    cur_s1 <= cur_s0;
+                sty_s0 <= ui_style;     sty_s1 <= sty_s0;
+                live_s0 <= ui_live;     live_s1 <= live_s0;
+                fps_s0 <= fps_core;     fps_s1 <= fps_s0;
+            end
+        end
+
         logic [15:0] cp_bad [2], cp_rs [2];
         compositor #(.CFG(COMP_CFG)) u_comp (
             .layer0(lay0), .layer1(lay1), .frame_req(frame_req),
             .r(pix_r), .g(pix_g), .b(pix_b), .de(pix_de), .hs(pix_hs), .vs(pix_vs),
             .st_bad_lines(cp_bad), .st_resyncs(cp_rs),
-            .st_frame_sum(status.cp_frame_sum), .st_jumps(status.cp_jumps));
+            .st_frame_sum(status.cp_frame_sum), .st_jumps(status.cp_jumps),
+            .live(live_s1), .osd_en(osd_s1), .view_full(full_s1),
+            .single_sel(sel_s1), .cursor(cur_s1), .style(sty_s1), .fps(fps_s1));
         assign status.cp_bad_lines  = cp_bad[0];
         assign status.cp1_bad_lines = cp_bad[1];
         assign status.cp_resyncs    = cp_rs[0];

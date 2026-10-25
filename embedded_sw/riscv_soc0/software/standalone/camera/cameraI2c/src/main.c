@@ -85,15 +85,50 @@ void main(void)
 
     camLed(chip_ok);
 
+    /* OSD on.  MENU resets to SPLIT / cursor on the view row / style 0,
+     * single_sel held at 1 (full screen is the processed layer). */
+    ST_DBG32(0x8000) = 1u;
+    uint32_t view_full = 0u;
+    uint32_t cursor = 0u;
+    uint32_t style = 0u;
+    uint32_t keys_prev = gpio_getInput(GPIO_CTRL);
+
+    /* The debug print plus the 5e6-nop delay used to sample the keys once
+     * per loop, so a press that rose and fell between samples was lost.
+     * Poll throughout that delay.  KEY0 selects the view row, KEY2 the
+     * style row, KEY3 confirms.  Bit 0 is the camera LED, not a key. */
     while (1) {
+        for (volatile uint32_t delay = 0; delay < 5000000u; ++delay) {
+            if ((delay & 1023u) == 0u) {
+                uint32_t keys = gpio_getInput(GPIO_CTRL);
+                uint32_t rose = keys & ~keys_prev;
+                uint32_t changed = 0u;
+                keys_prev = keys;
+                if (rose & 0x2u) {
+                    if (cursor != 0u) { cursor = 0u; changed = 1u; }
+                }
+                if (rose & 0x4u) {
+                    if (cursor != 1u) { cursor = 1u; changed = 1u; }
+                }
+                if (rose & 0x8u) {
+                    if (cursor == 0u)
+                        view_full ^= 1u;
+                    else
+                        style = (style + 1u) & 3u;
+                    changed = 1u;
+                }
+                if (changed) {
+                    ST_DBG32(0x8004) = (style << 3) | (cursor << 2) | 0x2u | (view_full & 1u);
+                }
+            }
+            __asm__ volatile ("nop");
+        }
+
         /* CPU 作为板上调试跳板：读取硬件 tile 管线的 APB 只读窗口。 */
         uint32_t hb = ST_DBG32(0x54) + 1u;
         ST_DBG32(0x54) = hb;
         bsp_printf("[st] cap=%x tiles=%x commit=%x xy=%x addr=%x state=%x hb=%x\r\n",
                    ST_DBG32(0x40), ST_DBG32(0x44), ST_DBG32(0x48),
                    ST_DBG32(0x4c), ST_DBG32(0x50), ST_DBG32(0x34), hb);
-        for (volatile uint32_t delay = 0; delay < 5000000u; ++delay) {
-            __asm__ volatile ("nop");
-        }
     }
 }

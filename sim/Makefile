@@ -20,7 +20,7 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          isp/csi_capture.sv isp/line_release.sv isp/isp_stats.sv isp/isp_blc_wb.sv \
          isp/isp_demosaic.sv isp/isp_gamma.sv isp/isp_sat.sv isp/isp_dither565.sv isp/isp_top.sv \
          proc/proc_stub.sv proc/proc_engine.sv \
-         disp/layer_unpack.sv disp/compositor.sv vid_subsystem.sv) \
+         disp/layer_unpack.sv disp/osd_font.sv disp/compositor.sv vid_subsystem.sv) \
        $(ROOT)/rtl/vid/disp/raster_gen.sv
 SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
        $(ROOT)/rtl/vid/common/sva/axi4_sva.sv \
@@ -29,7 +29,7 @@ MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
 TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
-         tb_proc tb_disp_split tb_disp_split0 tb_isp tb_isp_bypass tb_isp_pat sva_neg
+         tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
 all: lint $(TESTS)
@@ -50,7 +50,7 @@ define build
 	  echo "FAIL $(1): warnings in rtl/vid (see $(OBJ)/$(1)/build.log)"; exit 1; fi
 endef
 
-tb_fifo tb_ring tb_dma tb_vidsub tb_disp:
+tb_fifo tb_ring tb_dma tb_vidsub tb_disp tb_osd:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 

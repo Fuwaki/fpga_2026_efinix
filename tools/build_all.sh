@@ -38,7 +38,10 @@ SOC_PARAMS=(
   "SOC_MODE=0"            # Standard
   "Frequency=100"
   "DDR=1'b0"              # 不用外部 DDR，代码/数据全在片上 RAM
-  "OCRSize=65536"         # 64KB 片上 RAM
+  "OCRSize=16384"         # 16KB 片上 RAM
+  "Cache=1'b0"            # 代码在片上 RAM，缓存不省访问
+  "ICache_EN=1'b0"
+  "DCache_EN=1'b0"
   "I2C0=1'b1"             # 摄像头配置
   "UART0=1'b1"            # 预留（本设计未引出引脚）
   "GPIO0=1'b1"            # 预留按键 + 状态灯
@@ -90,12 +93,14 @@ if [ "$DO_FW" = 1 ]; then
   grep -q ':02000004F900' "$FW_HEX_STABLE" || {
     echo "firmware hex is not linked at 0xF9000000: $FW_HEX_STABLE" >&2; exit 1; }
   # The vendor devkit BSP uses a bootloader map (0x1000/124K).  This design runs
-  # the application directly from on-chip RAM at 0xF9000000/64K; catch the wrong
+  # the application directly from on-chip RAM at 0xF9000000/16K; catch the wrong
   # BSP before it gets linked into the bitstream.
   grep -q 'ORIGIN = 0xF9000000' "$BSP_LD" || {
     echo "BSP linker is not the 0xF9000000 application map: $BSP_LD" >&2; exit 1; }
-  grep -q 'SYSTEM_RAM_A_SIZE 65536' "$BSP_SOC_H" || {
-    echo "BSP soc.h does not describe 64 KiB on-chip RAM: $BSP_SOC_H" >&2; exit 1; }
+  grep -q 'LENGTH = 16K' "$BSP_LD" || {
+    echo "BSP linker is not 16K: $BSP_LD" >&2; exit 1; }
+  grep -q 'SYSTEM_RAM_A_SIZE 16384' "$BSP_SOC_H" || {
+    echo "BSP soc.h does not describe 16 KiB on-chip RAM: $BSP_SOC_H" >&2; exit 1; }
   echo "固件 hex -> $FW_HEX_STABLE"
 fi
 
@@ -125,8 +130,12 @@ if [ "$DO_IP" = 1 ]; then
       "$EFINITY_HOME/bin/python3" tools/gen_ip.py \
       --vlnv "$SOC_VLNV" --gen-name "$SOC_GEN_NAME" "${PARAM_ARGS[@]}"
   # Fail closed if the IP Manager ignored the requested configuration.
-  grep -q 'ram_symbol0 \[0:16383\]' "$SOC_V" || {
-    echo "SoC OCR is not 64 KiB (expected ram_symbol0 [0:16383]): $SOC_V" >&2; exit 1; }
+  grep -q 'ram_symbol0 \[0:4095\]' "$SOC_V" || {
+    echo "SoC OCR is not 16 KiB (expected ram_symbol0 [0:4095]): $SOC_V" >&2; exit 1; }
+  grep -q 'SYSTEM_RAM_A_SIZE 16384' "$BSP_SOC_H" || {
+    echo "BSP soc.h does not describe 16 KiB on-chip RAM after IP generation: $BSP_SOC_H" >&2; exit 1; }
+  grep -q 'LENGTH = 16K' "$BSP_LD" || {
+    echo "BSP linker is not 16K after IP generation: $BSP_LD" >&2; exit 1; }
   if grep -qE 'axiA_awready|io_memoryClk|system_spi_0_io_sclk_write' "$SOC_V"; then
     echo "SoC was generated with DDR/AXI/SPI enabled; top-level does not connect them: $SOC_V" >&2
     exit 1

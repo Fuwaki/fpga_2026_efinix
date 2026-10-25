@@ -161,17 +161,18 @@ def main():
         delta = {k: latest[k] - prev[k]
                  for k in ("de", "hs", "vs", "slow_hb", "video_hb", "st_tiles",
                            "cap_samples", "cap_tiles", "commit_count")}
-    # Board alive: clocks, resets, camera configured, 1080p60 on HDMI.
+    # Board alive: clocks, resets, camera configured, 720p60 on HDMI.
     #   R = {PLLs locked, DDR calibrated, video reset released, camera I2C done}
-    #   per 0.5 s: 32400 DE and 33750 HS rising edges, 30 VS, heartbeats
-    #   ~566 (148.5 MHz) and ~283 (74.25 MHz); one DE is 1920 px = 1293 core clocks
+    #   per 0.5 s: 21600 DE and 22500 HS rising edges, 30 VS, heartbeats
+    #   ~283 (74.25 MHz) on both slow and vid_clk_dvi2; one DE is 1280 px
+    #   = 1724 core clocks
     ok = bool(latest and delta and latest["status"] == 0x0F and
-              31000 <= delta["de"] <= 34000 and
-              32000 <= delta["hs"] <= 35500 and
+              20000 <= delta["de"] <= 23000 and
+              21000 <= delta["hs"] <= 24000 and
               28 <= delta["vs"] <= 32 and
-              500 <= delta["slow_hb"] <= 650 and
+              250 <= delta["slow_hb"] <= 320 and
               250 <= delta["video_hb"] <= 320 and
-              1250 <= latest["de_width_core_cycles"] <= 1340)   # 1920 px = 12.9 us
+              1650 <= latest["de_width_core_cycles"] <= 1800)   # 1280 px = 17.2 us
     result = {"ok": ok, "frames": len(got), "latest": latest, "delta": delta}
     if args.vid and latest is not None:
         result["vid"] = decode_vid(got)

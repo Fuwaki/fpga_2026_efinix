@@ -1,8 +1,9 @@
 // tb_disp.sv -- the display path end to end: vid_patgen -> vdma_wr -> ring
-// -> DDR model -> vdma_rd (dual-clock) -> compositor at 148.5 MHz.
+// -> DDR model -> vdma_rd (dual-clock) -> compositor at 74.25 MHz.
 //
 // Every output pixel of every raster frame is compared with the expected
-// picture: black outside the centred layer, pat_pixel() through RGB565 inside,
+// picture: the 1280x720 layer fills the 720p60 raster, pat_pixel() through
+// RGB565 inside,
 // for the frame the reader acquired.  Passes when at least NGOOD consecutive
 // raster frames match exactly and the compositor reports no bad lines in them.
 //
@@ -54,7 +55,7 @@ module tb_disp #(
 
     logic clk = 0, pclk = 0, rst_n = 0;
     always #5     clk  = ~clk;      // 100 MHz
-    always #3.367 pclk = ~pclk;     // 148.5 MHz
+    always #6.734 pclk = ~pclk;     // 74.25 MHz
     initial begin
         repeat (10) @(posedge clk);
         rst_n <= 1;
@@ -89,7 +90,7 @@ module tb_disp #(
         .pix_clk(pclk), .pix_r(r), .pix_g(g), .pix_b(b), .pix_de(de), .pix_hs(hs), .pix_vs(vs),
         .status(st));
 
-    localparam int X0 = (1920 - CAM_W) / 2, Y0 = (1080 - CAM_H) / 2;
+    localparam int X0 = 0, Y0 = 0;
 
     // Output raster position, rebuilt from de/vs.
     int  ox, oy, frames, good_run, bad_px, bad_lines_at_start;

@@ -33,7 +33,7 @@
 
 #define USER_SOFTWARE_MEMORY 0xF9000000
 #define USER_SOFTWARE_FLASH  0x00380000
-#define USER_SOFTWARE_SIZE   0xfc00
+#define USER_SOFTWARE_SIZE   0x3c00
 
 #define SINGLE_SPI 1 //define DUAL_SPI for dual data SPI or QUAD_SPI for quad data SPI
 

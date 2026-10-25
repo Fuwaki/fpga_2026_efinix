@@ -73,9 +73,12 @@
         <efx:design_file name="rtl/vid/proc/proc_stub.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/proc/proc_engine.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/disp/layer_unpack.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/disp/osd_font.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/disp/compositor.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/vid_subsystem.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/disp/raster_gen.sv" version="default" library="default" />
+        <efx:design_file name="rtl/ui_regs.sv" version="default" library="default" />
+        <efx:design_file name="rtl/key_debounce.sv" version="default" library="default" />
         <efx:design_file name="rtl/fpga_src_top.v" version="default" library="default" />
         <efx:top_vhdl_arch name="" />
         <efx:msg_config name="" />
