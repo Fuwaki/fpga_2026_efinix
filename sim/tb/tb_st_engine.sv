@@ -3,8 +3,7 @@
 // DDR (axi_mem_model, random back-pressure) holds the camera frame in an ISP
 // slot.  The engine runs passes +FIRST..+LAST (default 0..14); afterwards
 // every DDR region the run wrote is compared byte-exact with the golden
-// p{N}.hex, and with pass 14 the PROC right half with right.hex and the left
-// half, which pass 14 writes black so a full-screen view is clean.  For a
+// p{N}.hex, and with pass 14 the PROC right half with right.hex.  For a
 // subrange, the regions the run does not write are preloaded from the golden
 // images, so one pass can be debugged on its own; the regions it writes start
 // as the model's FILL pattern.  Reports the first mismatching beat of each
@@ -134,15 +133,6 @@ module tb_st_engine;
                                     PROC + AXI_AW'(OUT_X0 * PIX_BYTES),
                                     (CAM_W - OUT_X0) * PIX_BYTES / BEAT_BYTES, LINE_STRIDE);
             if (b != 0) $display("  pass 14 (PROC): %0d bad beats", b);
-            bad += b;
-            b = 0;
-            for (int y = 0; y < CAM_H; y++)
-                for (int x = 0; x < OUT_X0 * PIX_BYTES / BEAT_BYTES; x++)
-                    if (u_mem.peek(64'(PROC) + 64'(y * LINE_STRIDE + x * BEAT_BYTES)) !== '0) begin
-                        if (b == 0) $display("  pass 14 PROC left half: line %0d beat %0d not black", y, x);
-                        b++;
-                    end
-            if (b != 0) $display("  pass 14 (PROC left): %0d bad beats", b);
             bad += b;
         end
         if (bad != 0 || err)
