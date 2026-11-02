@@ -21,8 +21,9 @@ Usage:
   st_guided.py --manifest DIR --compare IN_DIR INT_DIR FP32_DIR
 --image takes the 640x360 network input.  --frame takes a 1280x720 camera
 frame and runs the board path (RGB565, pre, network, 2x2 post); --out is
-then the PROC slot.  --dump writes every point (int16 CHW .npy), its DDR
-image p{N}.bin, and with --frame frame.bin / proc.bin.  --compare runs every
+then the PROC slot.  --dump writes every point as its producer writes it to DDR (int16 CHW
+p{N}.npy, before any upsample) and its DDR image p{N}.bin; out.npy (the RGB8
+output, HWC); with --frame also frame.bin / proc.bin.  --compare runs every
 IN_DIR image both ways and prints PSNR against intref (INT_DIR) and fp32.
 """
 import argparse
@@ -100,6 +101,8 @@ FILM_F = 8          # zq = z * 2^F / in_scale
 FILM_P = 15         # affine: y = (x*mul + off + 2^(P-1)) >> P
 FILM_GS = 6         # GAP sum pre-shift: Sg = (S + 32) >> 6
 MBITS = 17          # |multiplier| < 2^17
+MUL_MAX = (1 << 17) - 1
+OFF_MAX = (1 << 23) - 1
 
 
 def _fit(vals):
@@ -142,8 +145,9 @@ def film_coeffs(spec, gap_sum, plane):
     zq = np.maximum(0, rshift_round(a * c["mz"], c["sz"]))
     big_g = h["gamma"]["b"] * 2 ** FILM_F + h["gamma"]["w"] @ zq
     big_b = h["beta"]["b"] * 2 ** FILM_F + h["beta"]["w"] @ zq
-    mul = c["c0"] + rshift_round(big_g * c["mg"], c["sg"])
-    off = rshift_round(big_b * c["mb"], c["sb"])
+    # Saturated to the affine unit's operands: mul 18 bit, off 24 bit signed.
+    mul = np.clip(c["c0"] + rshift_round(big_g * c["mg"], c["sg"]), -MUL_MAX, MUL_MAX)
+    off = np.clip(rshift_round(big_b * c["mb"], c["sb"]), -OFF_MAX, OFF_MAX)
     return mul, off, dict(sg=sg, a=a, zq=zq, g=big_g, b=big_b)
 
 
@@ -208,7 +212,11 @@ class Guided(Net):
         self.wide = {op["point"] for op in self.m["graph"] if op["op"] == "add"}
 
     def run(self, rgb, dump=None):
+        """RGB8 HWC -> RGB8 HWC.  self.ddr[p] is point p as its producer pass
+        writes it to DDR: the value before the point is upsampled (an
+        upsample, and anything after it, happens in the consuming pass)."""
         pts = {0: self.quantize_input(rgb)}
+        self.ddr = {}
         img = None
         for op in self.m["graph"]:
             k = op["op"]
@@ -226,6 +234,7 @@ class Guided(Net):
                 pts[p] = self.add_requant(pts[s], s, p) + pts[p]
             elif k == "upsample_nearest2x":
                 p = op["point"]
+                self.ddr.setdefault(p, pts[p])
                 pts[p] = pts[p].repeat(2, axis=1).repeat(2, axis=2)
             elif k == "avg_pool2x":
                 s, p = op["source_point"], op["point"]
@@ -243,15 +252,16 @@ class Guided(Net):
                 break
             else:
                 raise ValueError(f"unknown op {k}")
-            if dump is not None and "point" in op and op["point"] in pts and k != "relu":
-                p = op["point"] if k != "conv" else self.L[op["layer"]]["out_point"]
-                if p in pts:
-                    np.save(os.path.join(dump, f"p{p}.npy"), pts[p].astype(np.int16))
+        for p, t in pts.items():
+            self.ddr.setdefault(p, t)
+        out = img.transpose(1, 2, 0).astype(np.uint8)
         if dump is not None:
-            for p, t in pts.items():
+            for p, t in self.ddr.items():
+                np.save(os.path.join(dump, f"p{p}.npy"), t.astype(np.int16))
                 with open(os.path.join(dump, f"p{p}.bin"), "wb") as fh:
                     fh.write(self.ddr_image(t, p))
-        return img.transpose(1, 2, 0).astype(np.uint8)
+            np.save(os.path.join(dump, "out.npy"), out)
+        return out
 
     def ddr_image(self, t, pt):
         """CHW int tensor -> DDR bytes: HWC, pixel = roundup16(C * elem) bytes."""
