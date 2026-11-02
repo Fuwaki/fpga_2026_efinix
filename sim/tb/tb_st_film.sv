@@ -54,7 +54,7 @@ module tb_st_film;
     logic [3:0]  vcgrp [NG];
     logic [17:0] vcmul [NG][4];
     logic [23:0] vcoff [NG][4];
-    int  nbeat = 0, npix = 0, g = 0;
+    int  nbeat = 0, npix = 0, gpx = 0;
     int  mbeat = 0, mpix = 0, mg = 0;
     int  fd;
     bit  loaded = 0;
@@ -71,7 +71,7 @@ module tb_st_film;
         if (mbeat != mpix * mg) $fatal(1, "tb_st_film: %0d beats for %0d pixels", mbeat, mpix);
         nbeat = mbeat;
         npix  = mpix;
-        g     = mg;
+        gpx   = mg;
         fd = $fopen({dir, "/tap.hex"}, "r");
         if (fd == 0) $fatal(1, "tb_st_film: cannot open %s/tap.hex", dir);
         mbeat = 0;
@@ -88,7 +88,8 @@ module tb_st_film;
                 $fatal(1, "tb_st_film: coef.hex ends at group %0d", g);
         $fclose(fd);
         for (int g = 0; g < NG; g++)
-            if (vcgrp[g] != g) $fatal(1, "tb_st_film: coef %0d has grp %0d", g, vcgrp[g]);
+            if (vcgrp[g] != 4'(g))
+                $fatal(1, "tb_st_film: coef %0d has grp %0d", g, vcgrp[g]);
         $display("tb_st_film: %0d beats, %0d pixels from %s", nbeat, npix, dir);
         loaded = 1;
     end
@@ -144,7 +145,7 @@ module tb_st_film;
     initial begin
         for (int c = 0; c < NC; c++) want[c] = '0;
         for (int i = 0; i < nbeat; i++) begin
-            automatic int b = i % g;
+            automatic int b = i % gpx;
             for (int j = 0; j < 4; j++)
                 want[4*b + j] += 25'(signed'(vdata[i][10*j +: 10]));
         end
@@ -155,7 +156,8 @@ module tb_st_film;
             if (dut.gap[c] !== want[c]) begin
                 gap_errs++;
                 if (gap_errs <= 10)
-                    $display("MISMATCH GAP sum %0d: %0d want %0d", c, dut.gap[c], want[c]);
+                    $display("MISMATCH GAP sum %0d: %0d want %0d", c,
+                             dut.gap[c], want[c]);
             end
     endtask
 

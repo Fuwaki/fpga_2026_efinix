@@ -10,15 +10,23 @@
 // padding).  |S| <= 57600 * 254 < 2**24, so 25 bits hold every sum.  gap_clear
 // zeroes all 40 sums in one cycle, when a new plane starts.
 //
-// The sums live in a 40-word shift register that rotates by four on every
-// tapped beat, so the four channels of the current beat are always lanes
-// 0..3 of the array and the write needs no 40-way address decoder and no
-// read mux: a beat shifts the array (gap[i] <= gap[i+4]) and adds the four
-// lanes into the tail.  Ten beats per pixel turn the array through 4*10 = 40
-// words, so it is back in channel order at every pixel boundary and at the
-// end of the pass; the MLP reads channel c at index c through one 40:1 mux.
-// The array therefore requires cfg_g = 10 (NC/4), which the FiLM plane of the
-// net always is -- the assertions check it.
+// The sums are a 40-word shift register that turns by four on every tapped
+// beat: lane j of beat b is channel 4b + j, so a beat adds its four lanes
+// into the tail and the array rotates, which brings the next beat's group to
+// the head.  Ten beats are a whole turn, so the array is in channel order at
+// every pixel boundary.  Neither side needs an address mux -- the rotation is
+// pure rewiring -- and a flat 40-word array with an indexed read and write
+// measured three times the logic.
+//
+// The MLP reads the same head.  A reduce row sums over channels 0..39, and
+// the sum is exact integer arithmetic, so the order is free: product k reads
+// gap[k mod 4] (a 4:1 mux) and the array turns by four after every fourth
+// product, on the tap's own rotation.  Forty products are ten turns, so the
+// array is back in channel order after every row, and the read costs a 4:1
+// mux and nothing else.
+//
+// The tap must therefore be a whole number of pixels of NC/4 beats: cfg_g is
+// 10 for the FiLM plane of the net, which the assertions check.
 //
 // MLP.  After the pass, mlp_start runs the sequencer of film_coeffs on the
 // GAP sums, all integer, `>>>` arithmetic, rshift_round(v, s) = (v + 2**(s-1))
@@ -127,22 +135,46 @@ module st_film #(
     localparam signed [55:0] C0_EXT = 56'(C0);
 
     // ------------------------------------------------------------ GAP sums
-    // Channel (i + 4*beats) mod 40 sits in gap[i]; a tapped beat adds its
-    // four lanes into the tail and rotates the array by four, which brings
-    // the next beat's group to the head.  Ten beats are a whole turn.
-    logic signed [24:0] gap [NC];
+    // Channel 4*b + j of beat b is always at gap[j] when the beat arrives:
+    // a beat adds its four lanes into the tail and rotates the array by four,
+    // so the next beat's group comes to the head.  Ten beats are a whole
+    // turn.  The MLP turns the same array by four every fourth product, so it
+    // reads the head too (see the header).  |S| <= 57600 * 254 < 2**24.
+    // The array is one packed vector so that the rotation is a slice and a
+    // concatenation, not 36 separate assignments: Efinity maps the first form
+    // as a shift register and the second as a 40-way decoder (measured).
+    logic [NC-1:0][24:0] gapv;
+    wire  [24:0]         gap [NC];    // the same words, for the read mux
+    wire                 gap_rot;     // the MLP consumed four sums
+
+    for (genvar i = 0; i < NC; i++) begin : g_gapv
+        assign gap[i] = gapv[i];
+    end
 
     assign tap_ready = 1'b1;
 
+    // gap_clear makes the next pixel's beat write each sum instead of adding
+    // to it.  Ten beats turn the whole array, so after one pixel every word
+    // holds the new pass's sum and nothing of the last pass is left -- the
+    // sums are zero at the start of the pass, in the one cycle the port
+    // promises, and the array keeps no clear path at all.  A wide
+    // synchronous clear would cost 800 FF by taking the array out of the
+    // SRLs (measured); the whole array maps to 100 SRLs and 200 FF this way.
+    logic fresh;                      // the next pixel's beats overwrite
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            for (int i = 0; i < NC; i++) gap[i] <= '0;
-        end else if (gap_clear) begin
-            for (int i = 0; i < NC; i++) gap[i] <= '0;
-        end else if (tap_valid) begin
-            for (int i = 0; i < NC - 4; i++) gap[i] <= gap[i + 4];
+            gapv  <= '0;
+            fresh <= 1'b1;
+        end else if (tap_valid || gap_rot) begin
+            if (gap_clear) fresh <= 1'b1;
+            else if (tap_valid && tap_last) fresh <= 1'b0;
+            gapv <= {gapv[3:0], gapv[NC-1:4]};
             for (int j = 0; j < 4; j++)
-                gap[NC - 4 + j] <= gap[j] + 25'(signed'(tap_data[10*j +: 10]));
+                gapv[NC - 4 + j] <= fresh
+                    ? 25'(signed'(tap_data[10*j +: 10]))
+                    : gapv[j] + (tap_valid ? 25'(signed'(tap_data[10*j +: 10]))
+                                           : 25'sd0);
         end
     end
 
@@ -159,49 +191,62 @@ module st_film #(
     always_ff @(posedge clk) rom_dout <= rom[rom_addr];
 
     // ---------------------------------------------------------- serial MAC
-    // mac_load starts a product (load, then 18 shift-add steps) and mac_done
+    // One DSP block, 18x18 signed, in two steps.  a is 36-bit signed and
+    // splits into a_lo = a[17:0] and a_hi = a[35:18], with
+    //     a = a_hi * 2**18 + a_lo,   a_lo in [0, 2**18)
+    // so a_lo is unsigned while the DSP port is signed.  Multiplying the
+    // signed reading of a_lo is off by 2**18*b exactly when a_lo[17] is set,
+    // and that correction is a shift of b -- no second product:
+    //
+    //     a*b = a_hi*b*2**18 + a_lo_s*b + (a_lo[17] ? b*2**18 : 0)
+    //
+    // A product takes three cycles (load, low half, high half) and mac_done
     // pulses in the cycle mac_acc holds the finished sum, so the next product
-    // may be loaded in that same cycle.
-    logic               mac_load, mac_done, mac_run;
+    // may be loaded in that same cycle -- the row's running sum is chained
+    // through ld_init = mac_acc.  The 1290 products of the layer take ~3.9k
+    // cycles, well inside the 50k budget of the pass.  No scratch RAM: A, Gb
+    // and Bb are consumed in the step that produces them.
+    logic               mac_load, mac_done;
     logic signed [35:0] ld_a;
     logic signed [17:0] ld_b;
     logic signed [55:0] ld_init;
 
-    logic        [4:0]  mac_t;
-    logic signed [53:0] mac_a;
-    logic signed [17:0] mac_b;
+    logic signed [17:0] mac_lo, mac_hi, mac_b;
+    logic               mac_corr;     // a_lo[17]: add b*2**18 in the low step
+    logic        [1:0]  mac_ph;       // 0 idle, 1 low half, 2 high half
     logic signed [55:0] mac_acc;
 
-    // b is a two's complement multiplier: bits 0..16 add a*2**t and bit 17
-    // (the sign bit, reached after 17 arithmetic shifts) subtracts a*2**17.
-    wire signed [55:0] mac_term = {{2{mac_a[53]}}, mac_a};
-    wire signed [55:0] mac_add  = (mac_t == 5'd17) ? -mac_term : mac_term;
+    wire signed [17:0] mac_op  = (mac_ph == 2'd1) ? mac_lo : mac_hi;
+    wire signed [35:0] mac_p   = mac_op * mac_b;          // the DSP
+    wire signed [55:0] mac_term = 56'(mac_p);
+    wire signed [55:0] mac_corrt = 56'(mac_b) <<< 18;
+    wire signed [55:0] mac_low  = mac_term + (mac_corr ? mac_corrt : 56'sd0);
+    wire signed [55:0] mac_high = mac_term <<< 18;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            mac_run  <= 1'b0;
             mac_done <= 1'b0;
-            mac_t    <= '0;
-            mac_a    <= '0;
+            mac_ph   <= 2'd0;
+            mac_lo   <= '0;
+            mac_hi   <= '0;
             mac_b    <= '0;
+            mac_corr <= 1'b0;
             mac_acc  <= '0;
         end else begin
-            mac_done <= 1'b0;
+            mac_done <= (mac_ph == 2'd2);
             if (mac_load) begin
-                mac_run  <= 1'b1;
-                mac_t    <= 5'd0;
-                mac_a    <= {{18{ld_a[35]}}, ld_a};
+                mac_ph   <= 2'd1;
+                mac_lo   <= ld_a[17:0];
+                mac_hi   <= ld_a[35:18];
                 mac_b    <= ld_b;
+                mac_corr <= ld_a[17];
                 mac_acc  <= ld_init;
-            end else if (mac_run) begin
-                mac_acc <= mac_acc + (mac_b[0] ? mac_add : 56'sd0);
-                mac_a   <= mac_a <<< 1;
-                mac_b   <= {mac_b[17], mac_b[17:1]};
-                mac_t   <= mac_t + 5'd1;
-                if (mac_t == 5'd17) begin
-                    mac_run  <= 1'b0;
-                    mac_done <= 1'b1;
-                end
+            end else if (mac_ph == 2'd1) begin
+                mac_ph  <= 2'd2;
+                mac_acc <= mac_acc + mac_low;
+            end else if (mac_ph == 2'd2) begin
+                mac_ph  <= 2'd0;
+                mac_acc <= mac_acc + mac_high;
             end
         end
     end
@@ -238,13 +283,15 @@ module st_film #(
     // re-associated but not re-ordered (all integer, no rounding inside).
     wire [5:0] k_raw = (state == S_ROW0) ? 6'(wc) * 6'd5
                                          : 6'(wc) * 6'd5 + 6'(bi) + 6'd1;
-    // Only products 0..4 of a word are ever loaded, so the clamp never bites;
-    // it keeps the array index inside the sums for the unused combination.
     wire [5:0] k_idx = (k_raw > 6'(NC - 1)) ? 6'(NC - 1) : k_raw;
-    wire [5:0] widx  = k_idx;         // channel of a reduce row
-    wire [3:0] hidx  = 4'(k_idx);     // hidden unit of a gamma or beta row
+    // Only products 0..9 of a gamma or beta row are ever loaded, so the clamp
+    // never bites; it keeps the zq index inside the array.
+    wire [3:0] hidx  = (k_idx > 6'(NO - 1)) ? 4'(NO - 1) : 4'(k_idx);
 
-    wire signed [24:0] gap_sel = gap[widx];
+    // Product k of a reduce row is channel k, and the head holds channels
+    // 4*(k/4) .. 4*(k/4)+3, so the read is a 4:1 mux of the lane.
+    wire [5:0]         pj      = {4'd0, 2'(k_raw)};
+    wire signed [24:0] gap_sel = gap[pj];
     wire signed [25:0] sg_sel  = ($signed(gap_sel) + 26'sd32) >>> GS;
     wire signed [35:0] a_row   = (kind == 2'd0) ? {{10{sg_sel[25]}}, sg_sel}
                                                 : {12'b0, zq[hidx]};
@@ -287,6 +334,12 @@ module st_film #(
     assign mac_load = (state == S_BR1) || (state == S_ROW0) ||
                       ((state == S_ROWLOOP) && mac_done && (bi != 3'd4)) ||
                       (state == S_ZQ0) || (state == S_MM1) || (state == S_OFF0);
+
+    // A reduce-row product consumes one of the four head sums; after every
+    // fourth the array turns by four, which is the tap's own rotation.
+    wire row_load = mac_load && ((state == S_ROW0) || (state == S_ROWLOOP));
+    assign gap_rot = row_load && (kind == 2'd0) && (pj == 6'd3);
+
 
     // ------------------------------------------------------------ results
     // The shifts are by parameters, so each is a wiring shift; only the
@@ -493,12 +546,17 @@ module st_film #(
     always @(posedge clk)
         if (rst_done && gap_clear && tap_valid)
             $error("st_film: gap_clear and tap_valid in the same cycle");
+
     // The sums are a rotating shift register: the tap must be a whole number
     // of pixels of NC/4 beats, or the array is not in channel order when the
     // MLP reads it.
     always @(posedge clk)
         if (rst_done && tap_valid && (cfg_g != 5'(GB)))
             $error("st_film: cfg_g %0d, the GAP tap needs %0d groups", cfg_g, GB);
+    // The tap and the MLP share the rotation.
+    always @(posedge clk)
+        if (rst_done && gap_rot && (tap_valid || !busy))
+            $error("st_film: MLP rotation outside the MLP pass");
     // Beat structure of the tapped stream: tap_last closes a pixel of GB beats.
     logic [3:0] beat_chk;
     always_ff @(posedge clk or negedge rst_n)
