@@ -62,7 +62,7 @@ module tile_dma_wr
 
     wire [AXI_AW-1:0] p_addr   = lbase + (AXI_AW'(xb) << $clog2(BEAT_BYTES));
     wire [15:0]       p_remain = nb - xb;
-    wire [15:0]       p_page   = 16'((13'h1000 - {1'b0, p_addr[11:0]}) >> $clog2(BEAT_BYTES));
+    wire [15:0]       p_page   = (16'h1000 - 16'(p_addr[11:0])) >> $clog2(BEAT_BYTES);
     wire [15:0]       p_n1     = (p_remain < 16'(WR_BURST)) ? p_remain : 16'(WR_BURST);
     wire [15:0]       p_n      = (p_page < p_n1) ? p_page : p_n1;
 

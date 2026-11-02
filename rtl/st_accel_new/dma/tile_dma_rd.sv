@@ -69,7 +69,7 @@ module tile_dma_rd
 
     wire [AXI_AW-1:0] q_addr   = lbase + (AXI_AW'(xb_q) << $clog2(BEAT_BYTES));
     wire [15:0]       q_remain = nb - xb_q;
-    wire [15:0]       q_page   = 16'((13'h1000 - {1'b0, q_addr[11:0]}) >> $clog2(BEAT_BYTES));
+    wire [15:0]       q_page   = (16'h1000 - 16'(q_addr[11:0])) >> $clog2(BEAT_BYTES);
     wire [15:0]       q_n1     = (q_remain < 16'(RD_BURST)) ? q_remain : 16'(RD_BURST);
     wire [15:0]       q_n      = (q_page < q_n1) ? q_page : q_n1;
     wire              q_more   = busy && (y_q != nl);
