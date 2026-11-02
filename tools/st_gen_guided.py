@@ -106,8 +106,6 @@ def build(mdir: Path):
             mant, exp = f32_parts(l["requant"][oc])
             k = 24 - exp
             assert 16 <= k <= 47, f"{l['name']}[{oc}]: k={k} outside the lane's 16..47"
-            assert -2**19 <= l["bias_int32"][oc] < 2**19, \
-                f"{l['name']}[{oc}]: bias outside st_rq_rom's 20-bit form"
             rq_words.append(rq_word(int(l["bias_int32"][oc]), mant, k))
         assert cin < (1 << W_CIN) and cout < (1 << W_COUT), f"{l['name']}: channels"
         ltbl.append(dict(index=layers.index(l), name=l["name"], kind=kind, cin=cin, cout=cout,
@@ -228,21 +226,21 @@ def pw_lines(words: list[bytes]) -> list[bytes]:
     return out
 
 
-RQ_NB, RQ_LINES = 4, 512      # st_rq_rom: NB words of 49 bits per line
+RQ_NB, RQ_LINES, RQ_SW = 4, 512, 45   # st_rq_rom: NB words of 45 bits per line
 
 
 def rq_lines(words: list[bytes]) -> str:
     """st_rq_rom's line image: word i is lane i % 4 of line i // 4, in the
-    49-bit form {k, mant[22:0], bias[19:0]}; 4 x 49 = 196 bits per line."""
+    45-bit form {k, mant[22:0], bias[15:0]}; 4 x 45 = 180 bits per line."""
     lines = [0] * RQ_LINES
     for i, w in enumerate(words):
         v = int.from_bytes(w, "little")
         bias, mant, k = v & 0xFFFF_FFFF, (v >> 32) & 0xFF_FFFF, (v >> 56) & 0x3F
         if bias >= 2**31:
             bias -= 2**32
-        assert -2**19 <= bias < 2**19 and mant >> 23 == 1, f"rq word {i}"
-        lines[i // RQ_NB] |= ((k << 43) | ((mant & 0x7F_FFFF) << 20) | (bias & 0xF_FFFF)) << (49 * (i % RQ_NB))
-    return "".join(f"{x:049x}\n" for x in lines)
+        assert -2**15 <= bias < 2**15 and mant >> 23 == 1, f"rq word {i}: outside the 45-bit form"
+        lines[i // RQ_NB] |= ((k << 39) | ((mant & 0x7F_FFFF) << 16) | (bias & 0xFFFF)) << (RQ_SW * (i % RQ_NB))
+    return "".join(f"{x:045x}\n" for x in lines)
 
 
 def self_check(net, out: Path, wts, m):

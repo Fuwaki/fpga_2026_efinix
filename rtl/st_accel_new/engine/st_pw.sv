@@ -89,7 +89,7 @@
 // is 1536 flops (w_cur, rd1).  The PW ROM is PW_DEPTH lines of 512 bits
 // (512 x 512 = 26 RAM10 at 512x20; the guided net's 204 words are 408 lines),
 // the requant ROM RQ_DEPTH x 4 x 64 bits (512 x 4 words per bank: 1496 words
-// in all) and the output FIFO 512 x 43 bits (3 RAM10 at 512x20).
+// in all) and the output FIFO 512 x 39 bits (2 RAM10 at 512x20).
 module st_pw #(
     parameter int    TILE_DEPTH = 8,        // accumulator tiles in the tile FIFO
     parameter int    OUT_DEPTH  = 512,      // output beats, two regions of half
@@ -322,9 +322,12 @@ module st_pw #(
     logic [R_AW:0]    of_wp [2], of_rp [2];
     logic             rd_reg;       // region being drained: pixel parity
     logic [4:0]       rd_cnt;       // beats of the current pixel read
-    logic [42:0]      of_mem [OUT_DEPTH];
-    logic [42:0]      of_din;
-    logic [42:0]      of_rdata;
+    // A lane is clamped to cfg_lo..cfg_hi, inside -256..255 (int8, or u8 for
+    // the output layer), so the FIFO keeps 9 bits of it: 3 + 4 x 9 = 39 bits,
+    // two RAM10 at 512x20 instead of three for the 43-bit word.
+    logic [38:0]      of_mem [OUT_DEPTH];
+    logic [38:0]      of_din;
+    logic [38:0]      of_rdata;
     logic             of_rvld;
     logic             of_we;
     wire  [R_AW:0]    of_lvl [2] = {of_wp[0] - of_rp[0], of_wp[1] - of_rp[1]};
@@ -704,7 +707,8 @@ module st_pw #(
     wire beat_push = lane_out_valid && wb_keep;
     assign of_din  = {wb_sof && (wb_g == 5'd0),
                       wb_eol && (wb_g == (g_r - 5'd1)),
-                      (wb_g == (g_r - 5'd1)), beat};
+                      (wb_g == (g_r - 5'd1)),
+                      beat[38:30], beat[28:20], beat[18:10], beat[8:0]};
 
     // -------------------------------------------------------- output FIFO
     // One block RAM of OUT_DEPTH words, two regions of REG_DEPTH beats by pixel
@@ -778,7 +782,10 @@ module st_pw #(
         end
     end
 
-    assign {out_sof, out_eol, out_last, out_data} = of_rdata;
+    assign {out_sof, out_eol, out_last} = of_rdata[38:36];
+    for (genvar j = 0; j < 4; j++) begin : g_unpack
+        assign out_data[10*j +: 10] = {of_rdata[9*j + 8], of_rdata[9*j +: 9]};
+    end
     assign out_valid = of_rvld;
 
     // Empty: no word in either region and none on the read port.  The pointers
@@ -877,6 +884,9 @@ module st_pw #(
                 $error("st_pw: the layer's %0d ROM lines exceed PW_DEPTH", n_lines);
             else if (cfg_rq_base[1:0] != 2'd0)
                 $error("st_pw: the rq base is not a multiple of 4");
+            else if (cfg_lo < -10'sd256 || cfg_hi > 10'sd255)
+                $error("st_pw: clamp %0d..%0d exceeds the FIFO's 9-bit lanes",
+                       cfg_lo, cfg_hi);
             else if (int'(cfg_rq_base) + 8 * int'(div8(cfg_cout)) > 4 * RQ_DEPTH)
                 $error("st_pw: the layer's requant words exceed the rq ROM");
         end

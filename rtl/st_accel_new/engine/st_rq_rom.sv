@@ -19,12 +19,12 @@
 // would cost 13 RAM10.  The ROM stores a 49-bit form of each word instead,
 // NB of them per line, and expands it on the way out:
 //
-//   [19:0]  bias, sign-extended to 32 bits (|bias| < 2**19)
-//   [42:20] mant[22:0]; mant[23] is always 1
-//   [48:43] k
+//   [15:0]  bias, sign-extended to 32 bits (|bias| < 2**15)
+//   [38:16] mant[22:0]; mant[23] is always 1
+//   [44:39] k
 //
-// NB x 49 = 196 bits per line, 10 RAM10.  The line image (HEX, NB x 49 bits
-// per line, lane j in bits [49j+48:49j], MSB first) is written by
+// NB x 45 = 180 bits per line, 9 RAM10.  The line image (HEX, NB x 45 bits
+// per line, lane j in bits [45j+44:45j], MSB first) is written by
 // tools/st_gen_guided.py and installed by ONE $readmemh straight into the
 // array: that is the only form Efinity infers RAM contents from (a copy loop
 // with any bit slicing in it leaves the array undriven, and the ROM turns
@@ -39,7 +39,7 @@ module st_rq_rom #(
     input  logic [$clog2(DEPTH)-1:0] addr,   // word address / NB
     output logic [NB-1:0][63:0]      dout
 );
-    localparam int SW = 49;            // stored bits per word
+    localparam int SW = 45;            // stored bits per word
 
     logic [NB*SW-1:0] mem [DEPTH];
     logic [NB*SW-1:0] q;
@@ -55,9 +55,9 @@ module st_rq_rom #(
         $readmemh(path, img);
         for (int i = 0; i < NB * DEPTH; i++) begin
             if (img[i] != '0 && (img[i][63:62] != 2'b00 || !img[i][55]
-                    || img[i][31:19] != {13{img[i][19]}}))
-                $error("st_rq_rom: word %0d (%h) outside the 49-bit form", i, img[i]);
-            mem[i / NB][SW*(i % NB) +: SW] = {img[i][61:56], img[i][54:32], img[i][19:0]};
+                    || img[i][31:15] != {17{img[i][15]}}))
+                $error("st_rq_rom: word %0d (%h) outside the 45-bit form", i, img[i]);
+            mem[i / NB][SW*(i % NB) +: SW] = {img[i][61:56], img[i][54:32], img[i][15:0]};
         end
     endtask
 `endif
@@ -68,8 +68,8 @@ module st_rq_rom #(
     // which no channel reads.
     always_comb begin
         for (int b = 0; b < NB; b++)
-            dout[b] = {2'b00, q[SW*b+43 +: 6], 1'b1, q[SW*b+20 +: 23],
-                       {12{q[SW*b+19]}}, q[SW*b +: 20]};
+            dout[b] = {2'b00, q[SW*b+39 +: 6], 1'b1, q[SW*b+16 +: 23],
+                       {16{q[SW*b+15]}}, q[SW*b +: 16]};
     end
 
     initial begin
