@@ -288,11 +288,12 @@ module st_engine
         .in_last(pki_l), .in_eol(pki_e), .in_sof(pki_s),
         .out_valid(pk_v), .out_ready(pk_r), .out_data(pk_d), .out_sof(pk_s), .out_eol(pk_e));
 
-    // FiLM GAP: every beat st_pack takes in the gap pass
+    // FiLM GAP: every beat st_pack takes in the gap pass (the tap never stalls)
+    logic film_tap_r;
     st_film u_film (
         .clk(clk), .rst_n(rst_n), .cfg_g(pk_g),
         .gap_clear(go && use_gap),
-        .tap_valid(use_gap && pki_v && pk_in_r), .tap_ready(), .tap_data(pki_d), .tap_last(pki_l),
+        .tap_valid(use_gap && pki_v && pk_in_r), .tap_ready(film_tap_r), .tap_data(pki_d), .tap_last(pki_l),
         .mlp_start(mlp_start), .mlp_busy(mlp_busy),
         .coef_we(cf_we), .coef_idx(cf_idx), .coef_mul(cf_mul), .coef_off(cf_off));
 

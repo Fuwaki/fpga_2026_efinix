@@ -5,10 +5,11 @@ The table is the 256-entry LUT of tools/st_golden.py, Net.quantize_input:
 
     LUT[p] = clamp(round_half_away(f32(p) / 255 / f32(s0)), -qmax, qmax)
 
-with s0 = point_scales[0] of the manifest.  st_pre applies it to the 3x3 box
+with s0 = point_scales[0] of the manifest.  st_pre applies it to the 2x2 box
 average of the unpacked RGB8 codes, so the table is taken from the golden
 model itself rather than recomputed here: the RTL and the reference cannot
-disagree.
+disagree.  The default manifest is the guided net's
+(/data/competition/2026fpga/st_work/p90_ln_w8a8); --manifest picks another.
 
 Output (--out): one 8-bit value per line, two hex digits, addressed by the
 average 0..255; the file is read with $readmemh.
@@ -27,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_golden import Net  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = ROOT / "config/manifest/ink_dw_w8a8"
-DEFAULT_OUT = ROOT / "rtl/st_accel_new/gen/tiny_dw/st_pre_lut.hex"
+DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+DEFAULT_OUT = ROOT / "rtl/st_accel_new/gen/guided/st_pre_lut.hex"
 
 
 def lut_of(net: Net) -> np.ndarray:
@@ -56,7 +57,7 @@ def render(lut: np.ndarray, manifest: Path, mean: float) -> str:
         "// LUT[p] = clamp(round_half_away(f32(p) / 255 / f32(s0)), -qmax, qmax),",
         "// the tools/st_golden.py table Net.quantize_input builds.",
         f"// s0 = {mean!r}",
-        f"// {len(lut)} entries, addressed by the 3x3 box average of the RGB8 code.",
+        f"// {len(lut)} entries, addressed by the 2x2 box average of the RGB8 code.",
     ]
     lines += [f"{int(v) & 0xFF:02X}" for v in lut]
     return "\n".join(lines) + "\n"

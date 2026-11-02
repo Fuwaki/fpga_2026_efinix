@@ -153,21 +153,25 @@ tb_st_norm:
 	    +CASE_DIR=$(NORM_DIR)/$$c || exit 1; \
 	done
 
-# Pass 0 (pre) and pass 14 (post) against tools/st_prepost_vectors.py: a
-# synthetic 1280x720 camera frame through the golden model's pre(), the
-# network's head layer and post(); both cases are full frames, pre in and out
-# beats included.
-EXTRA_tb_st_prepost      := $(ST_ENG)
-EXTRA_tb_st_prepost_post := $(ST_ENG)
+# Pass 0 (pre, FULL and POOL) and the head pass (post) against
+# tools/st_prepost_vectors.py: the guided net's 1280x720 camera frame through
+# the golden model's pre(), the network, pool_int() and post().  post43 is the
+# same head output through st_post's other replication (REP_X = 4, REP_Y = 3,
+# the tiny_dw engine's).  Each case is a whole frame, every input and output
+# beat and flag compared; it runs once with random gaps and back-pressure,
+# then clean for the cycle count.
+PREPOST_CASES := pre_full pre_pool post post43
+EXTRA_tb_st_prepost := $(ST_ENG)
 tb_st_prepost:
 	@mkdir -p $(OBJ)/$@
 	$(ROOT)/tools/st_prepost_vectors.py --out $(OBJ)/$@
-	$(call build,$@,$@,tb_st_prepost,-GCASE_POST=0)
-	cd $(ROOT) && $(OBJ)/$@/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
-	  +VEC=$(OBJ)/$@
-	$(call build,$@_post,$@,tb_st_prepost,-GCASE_POST=1)
-	cd $(ROOT) && $(OBJ)/$@_post/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
-	  +VEC=$(OBJ)/$@
+	$(call build,$@,$@,tb_st_prepost,)
+	@for c in $(PREPOST_CASES); do \
+	  cd $(ROOT) && $(OBJ)/$@/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +VEC=$(OBJ)/$@ +CASE=$$c +CLEAN=0 || exit 1; \
+	  cd $(ROOT) && $(OBJ)/$@/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +VEC=$(OBJ)/$@ +CASE=$$c +CLEAN=1 | grep ' (clean)' || exit 1; \
+	done
 
 # The FiLM GAP tap and MLP sequencer against tools/st_film_vectors.py: the
 # real FiLM pass input (net.ddr[17] of g360/in/cat.png), all codes at +254

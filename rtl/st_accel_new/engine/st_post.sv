@@ -1,42 +1,50 @@
 // st_post.sv -- pass 14 (head) output -> the whole PROC slot.
 //
 // Input: the engine's group stream from the PW stage, head layer: one group
-// beat per pixel, 320x240 pixels in raster order, lanes 0..2 = R, G, B as
+// beat per pixel, W x H pixels in raster order, lanes 0..2 = R, G, B as
 // 0..255 in a 10-bit lane, `last` on every beat, `sof` on the first beat of
 // the frame, `eol` on the last beat of every line.
 // Output: 128-bit beats for tile_dma_wr, one AXI beat per 8 pixels:
 //
 //   base = slot, 160 beats per line, 720 lines, stride LINE_STRIDE
-//   line 3*sy + d, d = 0..2: source line sy with every pixel repeated 4 times
+//   line REP_Y*sy + d, d = 0..REP_Y-1: source line sy with every pixel
+//   repeated REP_X times
 //   px = vid_pkg::pack565(rgb), pixel 0 in bits [15:0]
 //   sof on the first beat of the frame, eol on the last beat of every line
 //
-// That is exactly st_golden.post(), the proc.bin of `--frame --dump`: the
-// inverse of st_pre's 4x3 box, so the PROC slot lines up pixel for pixel with
-// the ISP slot it came from.
+// With the guided net's defaults (W = 640, H = 360, REP_X = REP_Y = 2) that is
+// exactly st_guided.post(), the PROC slot of `--frame --dump`: the inverse of
+// st_pre's 2x2 box, so the PROC slot lines up pixel for pixel with the ISP
+// slot it came from.  The tiny_dw engine used W = 320, H = 240, REP = 4x3,
+// the 4:3 network input stretched over the 16:9 slot.
 //
-// Design.  Two line buffers of 80 x 64 bits, ping-pong: word w of a buffer
-// holds source pixels 4w..4w+3 as RGB565.  Output beat b of a line shows
-// source pixels 2b and 2b+1, each four times: word b/2, half b mod 2.  Line
-// sy fills buffer sy mod 2 while line sy-1 is emitted three times.
+// Design.  Two line buffers of W/4 x 64 bits, ping-pong: word w of a buffer
+// holds source pixels 4w..4w+3 as RGB565.  An output beat carries SPB =
+// 8/REP_X source pixels, each REP_X times: SPB = 4 (REP_X = 2) is one whole
+// word, SPB = 2 (REP_X = 4) is half a word.  Line sy fills buffer sy mod 2
+// while line sy-1 is emitted REP_Y times.
 //
 // Fill and emit stay within one source line of each other, so the bank being
 // written is never the bank being read: the fill may only run on line e_sy+1
 // while the emitter reads line e_sy, and the emitter leaves line e_sy with the
 // issue (and read) of its last beat, before the fill can start line e_sy+2 in
-// the same bank.  The fill needs 320 input beats per source line and the
-// emission 480 output beats, so the emission sets the rate: about 116k cycles
-// per frame without back-pressure.
+// the same bank.  The fill needs W input beats per source line and the
+// emission REP_Y*W*REP_X/8 output beats per line.  With REP_X = REP_Y = 2 and
+// W = 640 the fill is the slower of the two (640 vs 320), so the frame takes
+// about H*W = 230k cycles without back-pressure; with REP_X = 4, REP_Y = 3 the
+// emission dominates (960 vs 640) and it is about 3*W*H/2 = 346k.  Measured:
+// 234 820 and 350 340 cycles.
 //
-// Resources: the line buffers at 2 x 80 x 64 bits are 1 RAM10; the output
-// register and the 4-pixel gather register.  No multiply.
+// Resources: the line buffers at 2 x (W/4) x 64 bits (2 x 160 x 64 = 2 RAM10
+// for W = 640); the output register and the 4-pixel gather register.  No
+// multiply.
 module st_post
     import vid_pkg::*;
 #(
-    parameter int W     = 320,      // source pixels per line
-    parameter int H     = 240,      // source lines
-    parameter int REP_X = 4,        // output pixels per source pixel
-    parameter int REP_Y = 3         // output lines per source line
+    parameter int W     = 640,      // source pixels per line
+    parameter int H     = 360,      // source lines
+    parameter int REP_X = 2,        // output pixels per source pixel, 2 or 4
+    parameter int REP_Y = 2         // output lines per source line, 2 or 3
 ) (
     input  logic         clk,
     input  logic         rst_n,
@@ -61,21 +69,28 @@ module st_post
     output logic         err         // input framing mismatch, sticky
 );
     localparam int PW4  = W / 4;                  // buffer words per line
-    localparam int SPB  = BEAT_PIX / REP_X;       // source pixels per output beat, 2
-    localparam int OBP  = W * REP_X / BEAT_PIX;   // output beats per line, 160
+    localparam int SPB  = BEAT_PIX / REP_X;       // source pixels per beat, 4 or 2
+    localparam int OBP  = W * REP_X / BEAT_PIX;   // output beats per line
     localparam int WB   = $clog2(PW4);            // buffer word address
     localparam int OW   = $clog2(OBP);            // beat within the output line
     localparam int SW   = $clog2(W);              // pixel within the source line
     localparam int HW   = $clog2(H + 1);          // source line, 0..H
     localparam int NACC = H * REP_Y * OBP;        // output beats in a frame
+    localparam int AW   = $clog2(NACC + 1);       // beat counter width
+    localparam int LB   = $clog2(4 / SPB);        // beats per buffer word: 0 or 1
+    localparam int BPW  = 4 / SPB;                // buffer words per 4 pixels
 
     initial begin
         if (W % 4 != 0)
             $error("st_post: W must be a multiple of 4");
-        if (REP_X != 4 || SPB != 2)
-            $error("st_post: one output beat must be two source pixels x 4");
+        if (REP_X != 2 && REP_X != 4)
+            $error("st_post: REP_X must be 2 or 4");
         if (REP_Y < 2 || REP_Y > 3)
             $error("st_post: REP_Y must be 2 or 3");
+        if (W * REP_X % BEAT_PIX != 0)
+            $error("st_post: a line must be a whole number of output beats");
+        if (SPB * REP_X != BEAT_PIX)
+            $error("st_post: one output beat must be 8 pixels of source");
     end
 
     // ---------------------------------------------------------- line buffer
@@ -83,7 +98,8 @@ module st_post
     logic [HW-1:0] e_sy;                // source line being emitted
     logic [OW-1:0] e_beat;              // beat within the output line
     wire           rd_bank = e_sy[0];
-    wire [WB-1:0]  rd_addr = WB'(e_beat >> 1);
+    wire [WB-1:0]  rd_addr = WB'(e_beat >> LB);
+    wire [0:0]     e_off   = (BPW == 2) ? e_beat[0] : 1'b0;  // beat in the word
     logic [63:0]   rd_word;
 
     // ------------------------------------------------------------- control
@@ -100,15 +116,15 @@ module st_post
     logic [63:0]   wr_word;
 
     logic [1:0]    e_rep;               // copy of the source line, 0..REP_Y-1
-    logic [16:0]   n_iss;               // output beats issued this frame
-    logic [16:0]   n_acc;               // output beats accepted this frame
+    logic [AW-1:0] n_iss;               // output beats issued this frame
+    logic [AW-1:0] n_acc;               // output beats accepted this frame
 
     assign busy = running;
 
     // ------------------------------------------------------- emitter address
     wire stall  = out_valid && !out_ready;
     wire src_ok = (fill_line > e_sy);   // that source line is in
-    wire issue  = (state == ST_RUN) && !stall && src_ok && (n_iss < 17'(NACC));
+    wire issue  = (state == ST_RUN) && !stall && src_ok && (n_iss < AW'(NACC));
     wire last_xfer = out_valid && out_ready;
     wire e_eol  = (e_beat == OW'(OBP - 1));
 
@@ -180,14 +196,15 @@ module st_post
     // Emission pipeline: stage 1 carries the tags of the beat being issued
     // (the line-buffer address is combinational), stage 2 holds its word and
     // drives the output register.
-    logic        s1_v, s1_half, s1_sof, s1_eol;
-    logic        s2_v, s2_half, s2_sof, s2_eol;
+    logic        s1_v, s1_off, s1_sof, s1_eol;
+    logic        s2_v, s2_off, s2_sof, s2_eol;
     logic [63:0] s2_word;
 
-    // 2 source pixels of the word's half -> 8 output pixels, each 4 times.
+    // SPB source pixels of the word's slice -> 8 output pixels, each REP_X
+    // times.  s2_off is the pixel offset of the beat within the word.
     always_comb
         for (int q = 0; q < BEAT_PIX; q++)
-            out_data[16*q +: 16] = s2_word[16*(SPB*int'(s2_half) + q / REP_X) +: 16];
+            out_data[16*q +: 16] = s2_word[16*(SPB*int'(s2_off) + q / REP_X) +: 16];
 
     assign out_valid = s2_v;
     assign out_sof   = s2_sof;
@@ -203,11 +220,11 @@ module st_post
             n_iss    <= '0;
             n_acc    <= '0;
             s1_v     <= 1'b0;
-            s1_half  <= 1'b0;
+            s1_off   <= 1'b0;
             s1_sof   <= 1'b0;
             s1_eol   <= 1'b0;
             s2_v     <= 1'b0;
-            s2_half  <= 1'b0;
+            s2_off   <= 1'b0;
             s2_sof   <= 1'b0;
             s2_eol   <= 1'b0;
             s2_word  <= '0;
@@ -223,15 +240,15 @@ module st_post
             end
 
             if (last_xfer)
-                n_acc <= n_acc + 17'(1);
+                n_acc <= n_acc + AW'(1);
 
             if (!stall) begin
                 s1_v    <= issue;
-                s1_half <= e_beat[0];
+                s1_off  <= e_off;
                 s1_sof  <= issue && (e_sy == '0) && (e_rep == '0) && (e_beat == '0);
                 s1_eol  <= issue && e_eol;
                 if (issue) begin
-                    n_iss <= n_iss + 17'(1);
+                    n_iss <= n_iss + AW'(1);
                     if (e_eol) begin
                         e_beat <= '0;
                         if (e_rep == 2'(REP_Y - 1)) begin
@@ -245,13 +262,13 @@ module st_post
                     end
                 end
                 s2_v    <= s1_v;
-                s2_half <= s1_half;
+                s2_off  <= s1_off;
                 s2_sof  <= s1_sof;
                 s2_eol  <= s1_eol;
                 s2_word <= rd_word;
             end
 
-            if (last_xfer && (n_acc == 17'(NACC - 1))) begin
+            if (last_xfer && (n_acc == AW'(NACC - 1))) begin
                 running <= 1'b0;
                 state   <= ST_IDLE;
             end
