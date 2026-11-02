@@ -91,7 +91,7 @@
 // the requant ROM RQ_DEPTH x 4 x 64 bits (512 x 4 words per bank: 1496 words
 // in all) and the output FIFO 512 x 39 bits (2 RAM10 at 512x20).
 module st_pw #(
-    parameter int    TILE_DEPTH = 8,        // accumulator tiles in the tile FIFO
+    parameter int    TILE_DEPTH = 2,        // accumulator tiles in the tile FIFO (2: same cycles as 8)
     parameter int    OUT_DEPTH  = 512,      // output beats, two regions of half
     parameter int    PW_DEPTH   = 512,      // PW ROM lines of 512 bits
     parameter int    RQ_DEPTH   = 512,      // requant words per bank (4 banks)
