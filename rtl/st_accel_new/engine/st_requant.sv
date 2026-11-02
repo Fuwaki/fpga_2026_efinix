@@ -13,21 +13,28 @@
 //   y  = -y if x < 0
 //   y  = clamp(y, lo, hi)
 //
+// The last two shifts of that reference are one: with d = k - sh,
+// y = (q + 2**(d-1)) >> d.  The clamp is 10 bit, so only q[23:12] reaches the
+// output -- the round-up of the 24-bit step adds one to q, and that carry
+// crosses bit 12 only when q[11:0] is all ones, which the tie bit already
+// implies.  The lane therefore carries q[23:12], the shift and the clamp, not
+// the 48-bit product or the 24-bit significand.  d <= 12 leaves y >= 2048 and
+// d >= 27 leaves y = 0; both saturate and are folded into the shift clamp.
+//
 // Fixed latency LAT = 6 cycles, II = 1, no back-pressure: a beat accepted on
 // an in_valid cycle leaves LAT cycles later.  The stages are
 //
-//   1  input register (the multiplier's operand registers)
-//   2  24 x 24 product, exact -- one DSP block
-//   3  leading-one detect, shift amount
-//   4  round to 24 significant bits, ties to even
-//   5  shift back to the 2**k scale of the f32 product
-//   6  add the half, shift right by k, sign, clamp to [lo, hi], output register
+//   1  24 x 24 product, exact -- one DSP block whose operand and output
+//      registers hold it, so the product costs no fabric flip-flop
+//   2  leading one, round to 24 significant bits, ties to even, shift amount
+//   3  shift back to the output scale, round half away from zero, sign, clamp
+//   4, 5, 6  the beat: the finished code and its tag
 //
 // |x| is smaller than 2**(XW-1) <= 2**24 (an accumulator, or an add output
 // below 2**10); size XW to the source, the multiplier is (XW-1) x 24 bits.
-// mant is normalised (bit 23 set), so the unclamped result is under
-// 2**33; the saturation at stage 5 keeps the compare at 12 bits -- lo and hi
-// are 10 bit, so anything at or above 2048 clamps identically.
+// mant is normalised (bit 23 set), so the unclamped result is under 2**33;
+// lo and hi are 10 bit, so the clamp at stage 3 compares at 12 bits and
+// anything at or above 2047 clamps identically.
 module st_requant #(
     parameter int XW = 25,          // in_x: |in_x| < 2**(XW-1), at most 25
     parameter int TW = 1            // in_tag width, carried with the beat
@@ -53,18 +60,21 @@ module st_requant #(
 
     localparam int AW = XW - 1; // |x|: a narrower lane maps to fewer DSP blocks
     localparam int PW = 48;     // |x| * mant
-    localparam int QW = 25;     // 24-bit significand plus the round-up carry
-    localparam int VW = 49;     // significand shifted back: < 2**48 + carry
-    localparam int MW = 34;     // quotient before the 12-bit saturation
+    localparam int NW = 25;     // q[23:12] with the tie and round bits below
+    localparam int QW = 13;     // q[23:12] plus the carry out of q[11:0]
+    localparam int SW = 4;      // the trailing shift k - sh - 12, 0..15
 
     // ---------------------------------------------------- stage 1: operands
+    // p is the DSP block's registered product; the two operand registers and
+    // the output register sit inside it (none of them has a reset).
+    logic [PW-1:0]     p_s1;
     logic              neg_s1;
-    logic [AW-1:0]     ax_s1;
-    logic [23:0]       mant_s1;
-    logic [5:0]        k_s1;
+    logic [4:0]        k_s1;    // in_k - 16: the 16..47 range in five bits
     logic signed [9:0] lo_s1, hi_s1;
     logic [TW-1:0]     tag_s1;
     logic              vld_s1;
+
+    wire [AW-1:0] ax = in_x[XW-1] ? AW'(-in_x) : AW'(in_x);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -72,24 +82,51 @@ module st_requant #(
         end else begin
             vld_s1 <= in_valid;
             if (in_valid) begin
-                neg_s1  <= in_x[XW-1];
-                ax_s1   <= in_x[XW-1] ? AW'(-in_x) : AW'(in_x);
-                mant_s1 <= in_mant;
-                k_s1    <= in_k;
-                lo_s1   <= in_lo;
-                hi_s1   <= in_hi;
-                tag_s1  <= in_tag;
+                p_s1   <= PW'(ax) * PW'(in_mant);
+                neg_s1 <= in_x[XW-1];
+                k_s1   <= 5'(in_k - 6'd16);
+                lo_s1  <= in_lo;
+                hi_s1  <= in_hi;
+                tag_s1 <= in_tag;
             end
         end
     end
 
-    // ------------------------------------------------- stage 2: the product
-    logic [PW-1:0]     p_s2;
+    // ------------------------------ stage 2: leading one, round to 24 bits
+    logic [QW-1:0]     wq_s2;
+    logic [SW-1:0]     shf_s2;
     logic              neg_s2;
-    logic [5:0]        k_s2;
     logic signed [9:0] lo_s2, hi_s2;
     logic [TW-1:0]     tag_s2;
     logic              vld_s2;
+
+    // sh = max(lead - 23, 0): the bits the 24-bit significand gives up.  p is
+    // zero only for x == 0, where sh = 0 keeps everything at zero.
+    logic [5:0] lead;
+    always_comb begin
+        lead = 6'd0;
+        for (int i = 0; i < PW; i++)            // highest set bit wins
+            if (p_s1[i]) lead = 6'(i);
+    end
+    wire [4:0] sh = (lead > 6'd23) ? 5'(lead - 6'd23) : 5'd0;
+
+    // win = {p, 1'b0} >> sh: bit j is p[sh-1+j], so win[0] is the round bit,
+    // win[12:1] is q[11:0] and win[24:13] is q[23:12] (bit 24 is zero: the
+    // leading one of p sits at 23 + sh by construction).
+    wire [NW-1:0] win = NW'({p_s1, 1'b0} >> sh);
+
+    // Round to nearest even: up needs the round bit and, on an exact tie, an
+    // odd q[0] = win[1].  Only a carry out of q[11:0] is visible at stage 3,
+    // and that carry already implies the tie bit (all twelve bits set), so
+    // the p bits below the round bit never affect the result.
+    wire          carry = win[0] & (&win[12:1]);
+    wire [QW-1:0] wq    = QW'({1'b0, win[NW-1:13]}) + QW'(carry);
+
+    // Stage 3 shifts q[23:12], so its amount is d - 12 with d = k - sh and k
+    // = k_s1 + 16.  An amount of 0 (d <= 12, y >= 2048) or 15 (d >= 27, y =
+    // 0) covers the two saturated ends.
+    wire signed [6:0] e   = $signed({2'b0, k_s1}) + 7'sd4 - $signed({2'b0, sh});
+    wire [SW-1:0]     shf = (e <= 7'sd0) ? 4'd0 : (e >= 7'sd15) ? 4'd15 : 4'(e);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -97,34 +134,34 @@ module st_requant #(
         end else begin
             vld_s2 <= vld_s1;
             if (vld_s1) begin
-                p_s2   <= PW'(ax_s1) * PW'(mant_s1);
-                neg_s2 <= neg_s1;
-                k_s2   <= k_s1;
-                lo_s2  <= lo_s1;
-                hi_s2  <= hi_s1;
-                tag_s2 <= tag_s1;
+                wq_s2   <= wq;
+                shf_s2  <= shf;
+                neg_s2  <= neg_s1;
+                lo_s2   <= lo_s1;
+                hi_s2   <= hi_s1;
+                tag_s2  <= tag_s1;
             end
         end
     end
 
-    // ---------------------------------------- stage 3: leading one, shift
-    // sh = max(lead - 23, 0): the bits the 24-bit significand gives up.  p is
-    // zero only for x == 0, where sh = 0 keeps everything at zero.
-    logic [PW-1:0]     p_s3;
-    logic [4:0]        sh_s3;
-    logic              neg_s3;
-    logic [5:0]        k_s3;
-    logic signed [9:0] lo_s3, hi_s3;
-    logic [TW-1:0]     tag_s3;
-    logic              vld_s3;
+    // ---- stage 3: shift back, round half away from zero, sign, clamp, out
+    // {wq, 1'b0} >> shf is q >> (shf - 1): bit 0 is the round bit and the
+    // rest is q >> shf, so rounding half away from zero is one increment.
+    // q[11:0] never moves the result (see the header), so only its all ones
+    // case -- the carry already folded in at stage 2 -- was kept.
+    wire [QW:0]   wsh = (QW+1)'({wq_s2, 1'b0} >> shf_s2);
+    wire [QW:0]   yv  = {1'b0, wsh[QW:1]} + (QW+1)'(wsh[0]);
+    wire          sat = |yv[QW:11];         // >= 2048: past every clamp hi
+    wire [10:0]   mag = sat ? 11'd2047 : yv[10:0];
 
-    logic [5:0] lead;
-    always_comb begin
-        lead = 6'd0;
-        for (int i = 0; i < PW; i++)            // highest set bit wins
-            if (p_s2[i]) lead = 6'(i);
-    end
-    wire [4:0] sh_now = (lead > 6'd23) ? 5'(lead - 6'd23) : 5'd0;
+    logic              vld_s3;
+    logic signed [9:0] y_s3;
+    logic [TW-1:0]     tag_s3;
+
+    wire signed [11:0] mags = $signed({1'b0, mag});
+    wire signed [11:0] val  = neg_s2 ? -mags : mags;
+    wire signed [11:0] lo12 = {{2{lo_s2[9]}}, lo_s2};
+    wire signed [11:0] hi12 = {{2{hi_s2[9]}}, hi_s2};
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -132,31 +169,16 @@ module st_requant #(
         end else begin
             vld_s3 <= vld_s2;
             if (vld_s2) begin
-                p_s3   <= p_s2;
-                sh_s3  <= sh_now;
-                neg_s3 <= neg_s2;
-                k_s3   <= k_s2;
-                lo_s3  <= lo_s2;
-                hi_s3  <= hi_s2;
+                y_s3   <= (val < lo12) ? lo_s2 : (val > hi12) ? hi_s2 : 10'(val);
                 tag_s3 <= tag_s2;
             end
         end
     end
 
-    // ------------------------------ stage 4: round to 24 bits, ties to even
-    logic [QW-1:0]     q_s4;
-    logic [4:0]        sh_s4;
-    logic              neg_s4;
-    logic [5:0]        k_s4;
-    logic signed [9:0] lo_s4, hi_s4;
-    logic [TW-1:0]     tag_s4;
+    // --------------------------------------------------- stages 4..6: beat
     logic              vld_s4;
-
-    wire [QW-1:0] q_keep  = QW'(p_s3 >> sh_s3);                  // < 2**24
-    wire [PW-1:0] sh_mask = (48'd1 << sh_s3) - 48'd1;
-    wire [PW-1:0] rem     = p_s3 & sh_mask;
-    wire [PW-1:0] half    = 48'd1 << (sh_s3 - 5'd1);             // sh > 0 only
-    wire          tie_up  = (rem > half) || ((rem == half) && q_keep[0]);
+    logic signed [9:0] y_s4;
+    logic [TW-1:0]     tag_s4;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -164,24 +186,15 @@ module st_requant #(
         end else begin
             vld_s4 <= vld_s3;
             if (vld_s3) begin
-                q_s4   <= q_keep + QW'(sh_s3 != 5'd0 && tie_up);
-                sh_s4  <= sh_s3;
-                neg_s4 <= neg_s3;
-                k_s4   <= k_s3;
-                lo_s4  <= lo_s3;
-                hi_s4  <= hi_s3;
+                y_s4   <= y_s3;
                 tag_s4 <= tag_s3;
             end
         end
     end
 
-    // --------------------------- stage 5: f32 product, shifted back to 2**k
-    logic [VW-1:0]     v_s5;
-    logic              neg_s5;
-    logic [5:0]        k_s5;
-    logic signed [9:0] lo_s5, hi_s5;
-    logic [TW-1:0]     tag_s5;
     logic              vld_s5;
+    logic signed [9:0] y_s5;
+    logic [TW-1:0]     tag_s5;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -189,29 +202,15 @@ module st_requant #(
         end else begin
             vld_s5 <= vld_s4;
             if (vld_s4) begin
-                v_s5   <= VW'(q_s4) << sh_s4;
-                neg_s5 <= neg_s4;
-                k_s5   <= k_s4;
-                lo_s5  <= lo_s4;
-                hi_s5  <= hi_s4;
+                y_s5   <= y_s4;
                 tag_s5 <= tag_s4;
             end
         end
     end
 
-    // --------------------- stage 6: half-away rounding, sign, clamp, output
     logic              vld_s6;
     logic signed [9:0] y_s6;
     logic [TW-1:0]     tag_s6;
-
-    wire [VW-1:0] sum  = v_s5 + (49'd1 << (k_s5 - 6'd1));   // k >= 16
-    wire [MW-1:0] magw = MW'(sum >> k_s5);
-    wire          sat  = |magw[MW-1:11];
-    wire [11:0]   mag  = sat ? 12'd2047 : {1'b0, magw[10:0]};
-    wire signed [11:0] mags = $signed(mag);
-    wire signed [11:0] val  = neg_s5 ? -mags : mags;
-    wire signed [11:0] lo12 = {{2{lo_s5[9]}}, lo_s5};
-    wire signed [11:0] hi12 = {{2{hi_s5[9]}}, hi_s5};
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -219,7 +218,7 @@ module st_requant #(
         end else begin
             vld_s6 <= vld_s5;
             if (vld_s5) begin
-                y_s6   <= (val < lo12) ? lo_s5 : (val > hi12) ? hi_s5 : 10'(val);
+                y_s6   <= y_s5;
                 tag_s6 <= tag_s5;
             end
         end
