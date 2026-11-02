@@ -207,6 +207,7 @@ module st_film #(
     // cycles, well inside the 50k budget of the pass.  No scratch RAM: A, Gb
     // and Bb are consumed in the step that produces them.
     logic               mac_load, mac_done;
+    wire                mac_bias;     // preload the accumulator, no product
     logic signed [35:0] ld_a;
     logic signed [17:0] ld_b;
     logic signed [55:0] ld_init;
@@ -234,7 +235,9 @@ module st_film #(
             mac_acc  <= '0;
         end else begin
             mac_done <= (mac_ph == 2'd2);
-            if (mac_load) begin
+            if (mac_bias) begin
+                mac_acc <= ld_init;       // a row's bias starts its sum
+            end else if (mac_load) begin
                 mac_ph   <= 2'd1;
                 mac_lo   <= ld_a[17:0];
                 mac_hi   <= ld_a[35:18];
@@ -271,7 +274,6 @@ module st_film #(
     logic        [1:0]  kind;         // 0 reduce, 1 gamma, 2 beta
     logic        [3:0]  nwords;
     logic        [8:0]  row_base;
-    logic signed [55:0] acc_hold;     // the bias term of the row's sum
 
     logic signed [31:0] br;
     logic        [16:0] mz, mg, mb;
@@ -318,8 +320,7 @@ module st_film #(
             S_ROWLOOP: begin
                 ld_a    = a_row;
                 ld_b    = {{10{wbyte[7]}}, wbyte};
-                ld_init = ((state == S_ROW0) && (wc == 4'd0)) ? acc_hold
-                                                             : mac_acc;
+                ld_init = mac_acc;        // the row's running sum
             end
             S_ZQ0:     begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mz};
                              ld_init = RND_Z; end
@@ -327,9 +328,14 @@ module st_film #(
                              ld_init = RND_G; end
             S_OFF0:    begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mb};
                              ld_init = RND_B; end
+            // S_BG0 / S_BB0 start the row at its bias, bg_c * 2**F.
+            S_BG0,
+            S_BB0:     ld_init = {{16{rom_dout[31]}}, rom_dout[31:0], 8'b0};
             default:   ;
         endcase
     end
+
+    assign mac_bias = (state == S_BG0) || (state == S_BB0);
 
     assign mac_load = (state == S_BR1) || (state == S_ROW0) ||
                       ((state == S_ROWLOOP) && mac_done && (bi != 3'd4)) ||
@@ -404,7 +410,6 @@ module st_film #(
             kind     <= '0;
             nwords   <= '0;
             row_base <= '0;
-            acc_hold <= '0;
             br       <= '0;
             mz       <= '0;
             mg       <= '0;
@@ -431,10 +436,9 @@ module st_film #(
                     row_base <= 9'(A_WR + 32'(8 * o));
                     state    <= S_MZW;
                 end
-                S_MZW: if (mac_done) begin
-                    acc_hold <= mac_acc;              // br_o * KB
-                    state    <= S_ROW0;
-                end
+                // mac_acc already holds br_o * KB, the reduce row's bias, so
+                // the row's first product chains straight out of it.
+                S_MZW: if (mac_done) state <= S_ROW0;
                 S_ROW0: state <= S_ROWLOOP;
                 S_ROWLOOP: if (mac_done) begin
                     if (bi != 3'd4) begin
@@ -461,7 +465,6 @@ module st_film #(
                     end
                 end
                 S_BG0: begin
-                    acc_hold <= {{16{rom_dout[31]}}, rom_dout[31:0], 8'b0};
                     kind     <= 2'd1;
                     nwords   <= 4'd2;
                     wc       <= '0;
@@ -477,7 +480,6 @@ module st_film #(
                 S_MM1: state <= S_MMW;
                 S_MMW: if (mac_done) state <= S_BB0;
                 S_BB0: begin
-                    acc_hold <= {{16{rom_dout[31]}}, rom_dout[31:0], 8'b0};
                     kind     <= 2'd2;
                     nwords   <= 4'd2;
                     wc       <= '0;
