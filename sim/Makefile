@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -60,7 +60,11 @@ ST_ENG := $(ROOT)/rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_requant.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_unpack.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pack.sv \
-          $(ROOT)/rtl/st_accel_new/engine/st_add.sv
+          $(ROOT)/rtl/st_accel_new/engine/st_add.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_dw.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_dw_rom.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_rq_rom.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_line_ram.sv
 
 # ST accelerator as the processing engine (external AXI master + ring ports).
 EXTRA_tb_st_accel := $(ST)
@@ -83,6 +87,27 @@ EXTRA_tb_st_dma_rep := $(ST)
 tb_st_dma_rep:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
+
+# DW stage of the block engine against tools/st_dw_vectors.py: the synthetic
+# cases carry their own small ROM images, the real ones use the generated hex.
+# Each case runs twice -- with random input and output gaps, then clean -- and
+# the clean number is the stage's cycles per input beat.
+ST_DW_CASES := tiny tiny_s2 tiny_w2 dw_enc0 dw_res1 dw_head im2col bypass
+ST_DW_VEC   := $(OBJ)/tb_st_dw/cases
+EXTRA_tb_st_dw := $(ST_ENG)
+
+tb_st_dw:
+	@mkdir -p $(ST_DW_VEC)
+	@for c in $(ST_DW_CASES); do \
+	  $(ROOT)/tools/st_dw_vectors.py --case $$c --out $(ST_DW_VEC)/$$c \
+	    || exit 1; done
+	$(call build,$@,$@,$@,)
+	@for c in $(ST_DW_CASES); do \
+	  (cd $(ROOT) && $(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +CASE_DIR=$(ST_DW_VEC)/$$c +CLEAN=0) || exit 1; \
+	  (cd $(ROOT) && $(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +CASE_DIR=$(ST_DW_VEC)/$$c +CLEAN=1) | grep ' (clean)' || exit 1; \
+	done
 
 # st_unpack / st_pack / st_add against tools/st_io_vectors.py (golden
 # activations; DDR beats from st_golden.ddr_image).  One build, one run per case.
