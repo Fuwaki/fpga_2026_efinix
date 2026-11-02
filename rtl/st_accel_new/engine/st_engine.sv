@@ -149,6 +149,7 @@ module st_engine
     logic        no_v, no_r, no_l, no_e, no_s;  logic [39:0] no_d;
     logic        di_v, di_r, di_l, di_e, di_s;  logic [39:0] di_d;
     logic        dw_v, dw_r, dw_l, dw_e, dw_s;  logic [39:0] dw_d;
+    logic [127:0] dw_wide;                      // the im2col 16-byte beat
     logic        pw_v, pw_r, pw_l, pw_e, pw_s;  logic [39:0] pw_d;
     logic        pki_v, pki_l, pki_e, pki_s;    logic [39:0] pki_d;
     logic        pk_v, pk_r, pk_s, pk_e;        logic [127:0] pk_d;

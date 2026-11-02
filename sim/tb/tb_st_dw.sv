@@ -1,11 +1,13 @@
 // tb_st_dw.sv -- one st_dw configuration against tools/st_dw_vectors.py.
 //
 // The case directory ($CASE_DIR) holds cfg.txt (name value lines), in.hex and
-// out.hex, one beat per line as "data last eol sof" (data 10 hex digits).
-// The driver streams in.hex with random valid gaps, the sink takes out.hex's
-// rate with random ready gaps (30% low), and the checker compares every
-// output beat and its three flags, in order, against out.hex: a dropped,
-// duplicated or reordered beat fails.
+// out.hex, one beat per line as "data last eol sof".  An input beat's data is
+// 10 hex digits (four 10-bit lanes); an output beat's is 32 hex digits, the
+// 128-bit out_wide word, of which DW and BYPASS fill the low 40 bits and
+// IM2COL all 128.  The driver streams in.hex with random valid gaps, the sink
+// takes out.hex's rate with random ready gaps (30% low), and the checker
+// compares every output beat and its three flags, in order, against out.hex:
+// a dropped, duplicated or reordered beat fails.
 //
 // DW cases with a synthetic network also carry dw.hex and rq.hex, which are
 // loaded over the ROM instances' images; the real cases use the committed
@@ -43,10 +45,11 @@ module tb_st_dw;
     logic [39:0] in_data = 0;
     logic        in_last = 0, in_eol = 0, in_sof = 0;
 
-    logic        out_valid;
-    logic        out_ready = 0;
-    logic [39:0] out_data;
-    logic        out_last, out_eol, out_sof;
+    logic         out_valid;
+    logic         out_ready = 0;
+    logic  [39:0] out_data;
+    logic [127:0] out_wide;
+    logic         out_last, out_eol, out_sof;
 
     st_dw dut (
         .clk (clk), .rst_n (rst_n),
@@ -57,13 +60,14 @@ module tb_st_dw;
         .in_valid (in_valid), .in_ready (in_ready), .in_data (in_data),
         .in_last (in_last), .in_eol (in_eol), .in_sof (in_sof),
         .out_valid (out_valid), .out_ready (out_ready), .out_data (out_data),
+        .out_wide (out_wide),
         .out_last (out_last), .out_eol (out_eol), .out_sof (out_sof)
     );
 
     // ------------------------------------------------------------- vectors
     logic [39:0] vin_data [MAXB];
     logic        vin_last [MAXB], vin_eol [MAXB], vin_sof [MAXB];
-    logic [39:0] vout_data [MAXB];
+    logic [127:0] vout_data [MAXB];
     logic        vout_last [MAXB], vout_eol [MAXB], vout_sof [MAXB];
     int  nin  = 0;
     int  nout = 0;
@@ -73,9 +77,11 @@ module tb_st_dw;
     bit    clean = 0;
     longint max_cycles = 0;
 
+    // both files are read into one 128-bit word: an input beat's 40-bit data
+    // only fills the low bits, which is what the driver presents
     function automatic int load_hex(input string path, input bit is_out);
         int fd, k;
-        logic [39:0] d;
+        logic [127:0] d;
         logic la, e, s;
         k = 0;
         fd = $fopen(path, "r");
@@ -87,7 +93,7 @@ module tb_st_dw;
                 vout_eol[k]  = e;
                 vout_sof[k]  = s;
             end else begin
-                vin_data[k] = d;
+                vin_data[k] = d[39:0];
                 vin_last[k] = la;
                 vin_eol[k]  = e;
                 vin_sof[k]  = s;
@@ -163,6 +169,8 @@ module tb_st_dw;
                  nin, nout, clean ? ", clean" : "");
         if (cfg_mode == 2 && nin != nout)
             $fatal(1, "tb_st_dw: bypass must not change the beat count");
+        if (cfg_mode == 1 && nout != 2 * nin)
+            $fatal(1, "tb_st_dw: im2col must emit two beats per input beat");
     end
 
     // -------------------------------------------------------------- driver
@@ -234,19 +242,35 @@ module tb_st_dw;
             if (oidx >= nout) begin
                 errs++;
                 if (errs <= 10)
-                    $display("MISMATCH: unexpected output beat %0d (data %010x flags %s)",
-                             oidx, out_data, flags(out_last, out_eol, out_sof));
+                    $display("MISMATCH: unexpected output beat %0d (data %032x flags %s)",
+                             oidx, out_wide, flags(out_last, out_eol, out_sof));
             end else begin
-                if (out_data !== vout_data[oidx] ||
+                if (out_wide !== vout_data[oidx] ||
                     out_last !== vout_last[oidx] ||
                     out_eol  !== vout_eol[oidx] ||
                     out_sof  !== vout_sof[oidx]) begin
                     errs++;
                     if (errs <= 10)
-                        $display("MISMATCH beat %0d: data %010x flags %s, want %010x flags %s",
-                                 oidx, out_data, flags(out_last, out_eol, out_sof),
+                        $display("MISMATCH beat %0d: data %032x flags %s, want %032x flags %s",
+                                 oidx, out_wide, flags(out_last, out_eol, out_sof),
                                  vout_data[oidx], flags(vout_last[oidx], vout_eol[oidx],
                                                         vout_sof[oidx]));
+                end
+                // IM2COL is the one mode that does not carry the beat on
+                // out_data (it is zero there); the other two mirror the low
+                // 40 bits of out_wide
+                if (cfg_mode == 2'd1) begin
+                    if (out_data !== 40'd0) begin
+                        errs++;
+                        if (errs <= 10)
+                            $display("MISMATCH beat %0d: im2col out_data %010x is not 0",
+                                     oidx, out_data);
+                    end
+                end else if (out_data !== out_wide[39:0]) begin
+                    errs++;
+                    if (errs <= 10)
+                        $display("MISMATCH beat %0d: out_data %010x does not mirror out_wide",
+                                 oidx, out_data);
                 end
                 oidx <= oidx + 1;
             end

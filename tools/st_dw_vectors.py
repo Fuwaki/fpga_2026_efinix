@@ -7,34 +7,32 @@ One case per invocation, written into --out:
              stride dw_base rq_base lo hi
   in.hex     one input beat per line: "data last eol sof", data 10 hex
              digits (lane j = bits [10j+9:10j]), flags 0 or 1
-  out.hex    the expected output beats, the same format
+  out.hex    the expected output beats, the same flags but a 32-hex-digit
+             data field: the 128-bit output word.  DW and BYPASS cases carry
+             the 40-bit group beat in its low bits, IM2COL the 16 bytes
   dw.hex     depthwise weight ROM words (synthetic cases only)
   rq.hex     requant ROM words (synthetic cases only)
 
 The expected output is the golden model's, never a second implementation:
 
   * DW cases use st_golden.Net.conv on the layer and the same integer
-    requantisation, with the layer's own clamp;
-  * the synthetic DW cases build a Net whose weights, bias and requant
-    parameters are random but go through that same conv;
-  * the im2col case is the stem's 27-element vector, built from
-    np.pad(..., mode="reflect") in the PW ROM lane order
-    (n = ic*9 + ky*3 + kx);
+    requantisation, with the layer's own clamp.  The weights, bias and
+    requant parameters are random but go through that same conv;
+  * the im2col case is the stem's wide vector: byte k of beat b is element
+    n = 16b + k of v[n] = xp[ic, y+ky, x+kx], n = ic*9 + ky*3 + kx, the low
+    8 bits of the int8 element, zero from n = 27; xp is the input padded
+    np.pad(..., mode="reflect");
   * the bypass case is the input itself.
 
-The real cases read the pass dumps of a full st_golden.Net.run, so the
-input is the tensor the pass would have read from DDR.  Without
-/tmp/stgold/in2/c0.png the image is a deterministic synthetic 320x240
-picture (gradients and hard edges); the testbench compares with the golden
-model either way, so the vectors stay exact.
+The cases cover the shapes the guided net asks for: 80 channels (G = 20) at
+W = 160, 16 and 24 channels at W = 320, 8 channels at W = 640, both strides,
+and the 640x8 stem.
 
-Usage: st_dw_vectors.py --case NAME --out DIR [--dump DIR]
+Usage: st_dw_vectors.py --case NAME --out DIR
 """
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
 from pathlib import Path
 
@@ -43,16 +41,13 @@ import numpy as np
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
-from st_golden import Net, f32_parts  # noqa: E402
+from st_golden import Net  # noqa: E402
 from st_gen_params import dw_word, hex_lines, rq_word  # noqa: E402
 
-MANIFEST = ROOT / "config/manifest/ink_dw_w8a8"
-GEN = ROOT / "rtl/st_accel_new/gen/tiny_dw"
-IMAGE = Path("/tmp/stgold/in2/c0.png")
-IMG_W, IMG_H = 320, 240
 QMAX = 127
 
-KIND_DW, KIND_IM2COL = "dw", "im2col"
+# the widest input grid the line store holds, one 40-bit group word per group
+LINE_WORDS = 3200
 
 
 # ------------------------------------------------------------------ beats
@@ -61,6 +56,14 @@ def pack(vals) -> int:
     w = 0
     for j, v in enumerate(vals):
         w |= (int(v) & 0x3FF) << (10 * j)
+    return w
+
+
+def pack_wide(elems) -> int:
+    """Sixteen int8 elements -> one 128-bit output word, element 0 lowest."""
+    w = 0
+    for k, v in enumerate(elems):
+        w |= (int(v) & 0xFF) << (8 * k)
     return w
 
 
@@ -80,8 +83,8 @@ def tensor_beats(t: np.ndarray):
     return out
 
 
-def hex_beats(beats) -> str:
-    return "".join(f"{d:010x} {la:d} {e:d} {s:d}\n" for d, la, e, s in beats)
+def hex_beats(beats, digits=10) -> str:
+    return "".join(f"{d:0{digits}x} {la:d} {e:d} {s:d}\n" for d, la, e, s in beats)
 
 
 # --------------------------------------------------------------- synthetic
@@ -112,10 +115,10 @@ def rq_words(bias, mant, k):
     return [rq_word(int(bias[c]), int(mant[c]), int(k[c])) for c in range(len(bias))]
 
 
-def synthetic_case(cout, w, h, stride, seed):
-    """A random int9 input and a random depthwise layer over it."""
+def synthetic_case(cout, w, h, stride, seed, xr=256):
+    """A random int9 input (|x| < xr) and a random depthwise layer over it."""
     rng = np.random.default_rng(seed)
-    x = rng.integers(-256, 256, (cout, h, w))
+    x = rng.integers(-xr, xr + 1, (cout, h, w))
     wts = rng.integers(-127, 128, cout * 9)
     bias, mant, k = random_rq(rng, cout)
     layer = {
@@ -140,99 +143,42 @@ def synth_roms(cout, w2d, bias, mant, k):
     return hex_lines(dww), hex_lines(rqw)
 
 
-# ------------------------------------------------------------------- real
-def load_image():
-    from PIL import Image
-    if IMAGE.exists():
-        return np.asarray(Image.open(IMAGE).convert("RGB"))
-    y, x = np.mgrid[0:IMG_H, 0:IMG_W]
-    r = (x * 255 // (IMG_W - 1)).astype(np.uint8)
-    g = (y * 255 // (IMG_H - 1)).astype(np.uint8)
-    b = ((x // 40 + y // 40) % 2 * 255).astype(np.uint8)
-    rgb = np.stack([r, g, b], axis=-1)
-    rgb[100:140, 20:300] = 0                 # hard edges
-    rgb[160:200, 60:260] = np.array([255, 255, 255], np.uint8)
-    return rgb
-
-
-def dumps(dumpdir: Path):
-    """The full network's pass dumps, computed once and cached."""
-    if not (dumpdir / "up1b_out.npy").exists():
-        dumpdir.mkdir(parents=True, exist_ok=True)
-        Net(str(MANIFEST), use_float=False).run(load_image(), str(dumpdir))
-    return dumpdir
-
-
-PASS_OF_LAYER = {
-    "enc.0.dw": "enc0", "res.1.s1.dw": "res1a", "head.dw": "up1b",
-    "stem": "stem", "head.pw": "up1b",
-}
-
-
-def real_case(layer_name, dumpdir: Path, mode):
-    net = Net(str(MANIFEST), use_float=False)
-    l = net.L[layer_name]
-    # the generated table carries the ROM bases and the clamp code (st_net.json
-    # is the same table st_net_pkg.sv encodes)
-    g = layer_cfg_from_json(layer_name)
-    pname = PASS_OF_LAYER[layer_name]
-    x = np.load(dumpdir / f"{pname}_in.npy").astype(np.int64)
-    cfg = {
-        "mode": mode,
-        "w": x.shape[2], "h": x.shape[1], "g": -(-x.shape[0] // 4),
-        "stride": l["stride"][0] if mode == 0 else 1,
-        "dw_base": g["dw_base"], "rq_base": g["rq_base"],
-        "lo": g["lo"], "hi": g["hi"],
-    }
-    if mode == 0:
-        y = net.conv(l, x)
-    elif mode == 1:
-        assert x.shape[0] == 3 and cfg["g"] == 1
-        y = None                      # built straight from the padded input
-    else:
-        y = x
-    return x, y, cfg
-
-
-def im2col_expected(x: np.ndarray):
-    """The stem's 27-element vector per output pixel: v[n] = xp[ic, y+ky, x+kx]."""
-    c, h, w = x.shape
-    assert c == 3
+# ------------------------------------------------------------ im2col, bypass
+def im2col_case(w, h, seed):
+    """The stem: a 3-channel input and the wide 27-element vector per pixel."""
+    rng = np.random.default_rng(seed)
+    x = rng.integers(-127, 128, (3, h, w))
     xp = np.pad(x, ((0, 0), (1, 1), (1, 1)), mode="reflect")
     out = []
-    g = 1
     for y in range(h):
         for xx in range(w):
-            v = [xp[ic, y + ky, xx + kx] for ic in range(c)
-                 for ky in range(3) for kx in range(3)] + [0]
-            for b in range(7):
-                lanes = v[4 * b: 4 * b + 4]
-                last = b == 6
-                out.append((pack(lanes), int(last), int(last and xx == w - 1),
+            v = [xp[ic, y + ky, xx + kx] for ic in range(3)
+                 for ky in range(3) for kx in range(3)] + [0] * 5
+            for b in range(2):
+                out.append((pack_wide(v[16 * b: 16 * b + 16]), int(b == 1),
+                            int(b == 1 and xx == w - 1),
                             int(y == 0 and xx == 0 and b == 0)))
-            assert g == 1
-    return out
+    return x, out
 
 
-def layer_cfg_from_json(layer_name):
-    """dw_base / rq_base / clamp from the generated st_net.json."""
-    net = json.loads((GEN / "st_net.json").read_text())
-    for l in net["layers"]:
-        if l["name"] == layer_name:
-            return l
-    raise SystemExit(f"st_dw_vectors: {layer_name} not in st_net.json")
+def bypass_case(cout, w, h, seed):
+    rng = np.random.default_rng(seed)
+    x = rng.integers(-128, 128, (cout, h, w))
+    return x, tensor_beats(x)
 
 
 # -------------------------------------------------------------------- main
 CASES = {
-    "tiny":     dict(kind="synth", cout=8, w=6,  h=5, stride=1, seed=1),
-    "tiny_s2":  dict(kind="synth", cout=8, w=6,  h=4, stride=2, seed=2),
-    "tiny_w2":  dict(kind="synth", cout=4, w=2,  h=3, stride=1, seed=3),
-    "dw_enc0":  dict(kind="real",  layer="enc.0.dw",     mode=0),
-    "dw_res1":  dict(kind="real",  layer="res.1.s1.dw",  mode=0),
-    "dw_head":  dict(kind="real",  layer="head.dw",      mode=0),
-    "im2col":   dict(kind="real",  layer="stem",         mode=1),
-    "bypass":   dict(kind="real",  layer="head.pw",      mode=2),
+    "tiny":        dict(kind="synth",  cout=8,  w=6,   h=5,  stride=1, seed=1),
+    "tiny_s2":     dict(kind="synth",  cout=8,  w=6,   h=4,  stride=2, seed=2),
+    "tiny_w2":     dict(kind="synth",  cout=4,  w=2,   h=3,  stride=1, seed=3),
+    "syn_g20":     dict(kind="synth",  cout=80, w=160, h=12, stride=1, seed=4),
+    "syn_g20_s2":  dict(kind="synth",  cout=80, w=160, h=12, stride=2, seed=5),
+    "syn_g4_s2":   dict(kind="synth",  cout=16, w=320, h=10, stride=2, seed=6),
+    "syn_g6":      dict(kind="synth",  cout=24, w=320, h=8,  stride=1, seed=7, xr=254),
+    "syn_g2_w640": dict(kind="synth",  cout=8,  w=640, h=6,  stride=1, seed=8),
+    "im2col":      dict(kind="im2col", w=640, h=8, seed=9),
+    "bypass":      dict(kind="bypass", cout=40, w=320, h=4, seed=10),
 }
 
 
@@ -241,37 +187,44 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True, choices=sorted(CASES))
     ap.add_argument("--out", type=Path, required=True, help="output directory")
-    ap.add_argument("--dump", type=Path, default=ROOT / "sim/obj/st_dw_dump",
-                    help="pass dump directory of the golden run")
     args = ap.parse_args()
 
     spec = CASES[args.case]
     args.out.mkdir(parents=True, exist_ok=True)
     rom_hex = None
+    wide = True                      # every out.hex word is 128 bit
 
     if spec["kind"] == "synth":
         x, y, w2d, bias, mant, k, (lo, hi) = synthetic_case(
-            spec["cout"], spec["w"], spec["h"], spec["stride"], spec["seed"])
+            spec["cout"], spec["w"], spec["h"], spec["stride"], spec["seed"],
+            spec.get("xr", 256))
         cfg = {"mode": 0, "w": spec["w"], "h": spec["h"],
                "g": -(-spec["cout"] // 4), "stride": spec["stride"],
                "dw_base": 0, "rq_base": 0, "lo": lo, "hi": hi}
         rom_hex = synth_roms(spec["cout"], w2d, bias, mant, k)
         outs = tensor_beats(y)
+    elif spec["kind"] == "im2col":
+        x, outs = im2col_case(spec["w"], spec["h"], spec["seed"])
+        cfg = {"mode": 1, "w": spec["w"], "h": spec["h"], "g": 1, "stride": 1,
+               "dw_base": 0, "rq_base": 0, "lo": 0, "hi": QMAX}
     else:
-        dd = dumps(args.dump)
-        x, y, cfg = real_case(spec["layer"], dd, spec["mode"])
-        outs = tensor_beats(y) if y is not None else im2col_expected(x)
+        x, outs = bypass_case(spec["cout"], spec["w"], spec["h"], spec["seed"])
+        cfg = {"mode": 2, "w": spec["w"], "h": spec["h"],
+               "g": -(-spec["cout"] // 4), "stride": 1,
+               "dw_base": 0, "rq_base": 0, "lo": 0, "hi": QMAX}
 
     ins = tensor_beats(x)
     cw, ch, cg, cst = cfg["w"], cfg["h"], cfg["g"], cfg["stride"]
-    if cw * cg > 2560:
-        raise SystemExit(f"st_dw_vectors: {args.case}: w*g = {cw * cg} > 2560")
+    if cw * cg > LINE_WORDS:
+        raise SystemExit(f"st_dw_vectors: {args.case}: w*g = {cw * cg} > {LINE_WORDS}")
+    if cfg["g"] > 20:
+        raise SystemExit(f"st_dw_vectors: {args.case}: G = {cg} > 20")
     if cst == 2 and (cw % 2 or ch % 2):
         raise SystemExit(f"st_dw_vectors: {args.case}: stride 2 needs even w/h")
 
     (args.out / "cfg.txt").write_text("".join(f"{k} {v}\n" for k, v in cfg.items()))
     (args.out / "in.hex").write_text(hex_beats(ins))
-    (args.out / "out.hex").write_text(hex_beats(outs))
+    (args.out / "out.hex").write_text(hex_beats(outs, 32 if wide else 10))
     if rom_hex is not None:
         (args.out / "dw.hex").write_text(rom_hex[0])
         (args.out / "rq.hex").write_text(rom_hex[1])

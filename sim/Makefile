@@ -95,11 +95,13 @@ tb_st_dma_rep:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 
-# DW stage of the block engine against tools/st_dw_vectors.py: the synthetic
-# cases carry their own small ROM images, the real ones use the generated hex.
+# DW stage of the block engine against tools/st_dw_vectors.py: every case is
+# synthetic and carries its own small ROM images, one shape per net layer
+# (80 channels at 160 wide, 16 and 24 at 320, 8 at 640, the 640x8 stem).
 # Each case runs twice -- with random input and output gaps, then clean -- and
 # the clean number is the stage's cycles per input beat.
-ST_DW_CASES := tiny tiny_s2 tiny_w2 dw_enc0 dw_res1 dw_head im2col bypass
+ST_DW_CASES := tiny tiny_s2 tiny_w2 syn_g20 syn_g20_s2 syn_g4_s2 syn_g6 \
+               syn_g2_w640 im2col bypass
 ST_DW_VEC   := $(OBJ)/tb_st_dw/cases
 EXTRA_tb_st_dw := $(ST_ENG)
 
