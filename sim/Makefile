@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -74,6 +74,12 @@ tb_st_requant:
 	$(call build,$@,$@,$@,)
 	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	  +VEC=$(OBJ)/$@/vectors.hex
+
+# tile_dma_rd line repeat (the vertical half of the 2x upsample).
+EXTRA_tb_st_dma_rep := $(ST)
+tb_st_dma_rep:
+	$(call build,$@,$@,$@,)
+	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 
 tb_fifo tb_ring tb_dma tb_vidsub tb_disp tb_osd:
 	$(call build,$@,$@,$@,)

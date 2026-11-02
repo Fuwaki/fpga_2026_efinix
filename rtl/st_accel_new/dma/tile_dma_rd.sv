@@ -1,7 +1,9 @@
 // tile_dma_rd.sv -- read a rectangle of DDR as a stream of AXI beats.
 //
 // On a start pulse: read `lines` lines of `beats_per_line` beats, line y at
-// base_addr + y * line_stride.  The parameters are sampled at start.  Output
+// base_addr + (y >> line_shift) * line_stride.  line_shift = 1 reads every
+// source line twice (the vertical half of a 2x nearest upsample).  The
+// parameters are sampled at start.  Output
 // beats carry sof on the first beat and eol on the last beat of every line.
 // A start while busy is ignored.
 //
@@ -23,6 +25,7 @@ module tile_dma_rd
     input  logic [15:0]         beats_per_line,
     input  logic [15:0]         lines,
     input  logic [AXI_AW-1:0]   line_stride,
+    input  logic                line_shift,  // 1: each source line twice
 
     output logic                busy,    // until the last beat is in the FIFO
     output logic                err,     // a non-OKAY response in this transfer
@@ -60,6 +63,7 @@ module tile_dma_rd
     // ------------------------------------------------------------ control
     logic [AXI_AW-1:0] lbase, stride;   // lbase: start of line y_q
     logic [15:0]       nb, nl;
+    logic              shift;
 
     // Request side.
     logic [15:0]       y_q, xb_q;
@@ -92,6 +96,7 @@ module tile_dma_rd
             stride    <= '0;
             nb        <= '0;
             nl        <= '0;
+            shift     <= 1'b0;
             y_q       <= '0;
             xb_q      <= '0;
             y_r       <= '0;
@@ -128,6 +133,7 @@ module tile_dma_rd
                     stride <= line_stride;
                     nb     <= beats_per_line;
                     nl     <= lines;
+                    shift  <= line_shift;
                     y_q    <= '0;
                     xb_q   <= '0;
                     y_r    <= '0;
@@ -144,7 +150,8 @@ module tile_dma_rd
                     if (xb_q + q_n == nb) begin
                         xb_q  <= '0;
                         y_q   <= y_q + 1'b1;
-                        lbase <= lbase + stride;
+                        if (!shift || y_q[0])
+                            lbase <= lbase + stride;
                     end else begin
                         xb_q <= xb_q + q_n;
                     end

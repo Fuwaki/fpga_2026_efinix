@@ -122,7 +122,7 @@ module st_accel_wrapper
   tile_dma_rd #(.FIFO_BEATS(512), .RD_BURST(128)) u_rd (
     .m(mrd), .o(s_rd),
     .start(go), .base_addr(rd_base), .beats_per_line(BPL), .lines(LINES),
-    .line_stride(AXI_AW'(LINE_STRIDE)),
+    .line_stride(AXI_AW'(LINE_STRIDE)), .line_shift(1'b0),
     .busy(rd_busy), .err(rd_err), .st_done(), .st_err());
 
   tile_dma_wr #(.FIFO_BEATS(512), .WR_BURST(128)) u_wr (
