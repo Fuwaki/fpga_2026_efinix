@@ -10,7 +10,7 @@
 //
 // A group is 4 or 8 bytes and never straddles a beat, so groups are cut
 // straight from the beat register: elem 1 gives 4 groups per beat, elem 2
-// int16 elements keep their low 10 bits (the add outputs are
+// gives 2.  int16 elements keep their low 10 bits (the add outputs are
 // within +-254).  The beats of the current pixel are also kept in a pixel
 // buffer (10 x 128 bits, one per PB/16 beat of the widest pixel: 80 int16
 // channels); with cfg_hrep every pixel is emitted a second time from it --
