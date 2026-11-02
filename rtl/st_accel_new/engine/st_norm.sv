@@ -7,8 +7,8 @@
 // pixel is G = ceil(C/4) group beats, group 0 first, pixels in raster order;
 // lanes beyond C are zero.  One beat per cycle is sustained in both modes
 // with full back-pressure: a beat is held until it is accepted, and no beat
-// is lost, duplicated or reordered.  A pixel's sof and eol are ORed over its
-// input beats and placed on its first and last output beat, as in st_pw.
+// is lost, duplicated or reordered.  The stage keeps the beat count of a
+// pixel, so every beat's last/eol/sof travels with that beat, unchanged.
 //
 // Configuration is sampled on a one-cycle start pulse while idle; busy stays
 // high until the last output beat has been accepted:
@@ -115,6 +115,7 @@ module st_norm #(
     localparam int BW        = 32;          // words per coefficient bank
     localparam int CW        = 48;          // {3'b0, B/off[26:0], G/mul[17:0]}
     localparam int PB_AW     = 7;           // 4 slots x 32 beats
+    localparam int PW        = 43;          // pixel buffer word: flags + data
     localparam int LUT_DEPTH = 768;
     localparam int LN_E      = 1;           // D = N*Q - S^2 + LN_E
     localparam int SH_LN     = 22;          // affine shift, LN
@@ -202,7 +203,6 @@ module st_norm #(
     logic [1:0]  p_col;                 // pixel being collected, mod 4
     logic [1:0]  p_emit;                // pixel being emitted, mod 4
     logic [GBITS-1:0] beat_cnt;         // group beat of the pixel, 0..G-1
-    logic        col_sof, col_eol;
 
     logic signed [16:0] acc_s;          // running sum of the pixel in collect
     logic [23:0]        acc_q;          // running sum of squares
@@ -214,8 +214,8 @@ module st_norm #(
     // the three in flight behind it (p_emit .. p_emit+2) never share a slot,
     // so a write can never race the read of the same address and the collect
     // side needs no pointer guard.
-    logic [39:0]      pix_ram [4*BW];
-    logic [39:0]      pb_q;
+    logic [PW-1:0]    pix_ram [4*BW];
+    logic [PW-1:0]    pb_q;
     logic             pb_we;
     logic [PB_AW-1:0] pb_raddr;
 
@@ -223,7 +223,8 @@ module st_norm #(
         for (int i = 0; i < 4 * BW; i++) pix_ram[i] = '0;
 
     always_ff @(posedge clk) begin
-        if (pb_we)    pix_ram[{p_col[1:0], beat_cnt}] <= in_data;
+        if (pb_we)    pix_ram[{p_col[1:0], beat_cnt}] <= {in_sof, in_eol,
+                                                          in_last, in_data};
         if (em_issue) pb_q <= pix_ram[pb_raddr];
     end
 
@@ -258,7 +259,6 @@ module st_norm #(
     logic signed [16:0] par_s [4];
     logic signed [16:0] par_r [4];
     logic [4:0]         par_e [4];
-    logic               par_sof [4], par_eol [4];
     logic               par_rdy [4];        // parameters of that slot are valid
 
     wire [1:0] par_i     = p_emit[1:0];
@@ -278,9 +278,6 @@ module st_norm #(
     wire        em_issue  = busy && ln_mode && credit
                          && (em_act || par_ready);
     wire        em_last_b = (em_beat == 5'(g_r - 5'd1));
-    wire [2:0]  em_flags  = {par_sof[par_i] && (em_beat == 5'd0),
-                             par_eol[par_i] && em_last_b,
-                             em_last_b};
 
     assign pb_we    = in_accept && ln_mode;
     assign pb_raddr = {par_i[1:0], em_beat};
@@ -314,8 +311,6 @@ module st_norm #(
             pix_out_left <= 18'd0;
             p_col        <= 2'd0;
             beat_cnt     <= 5'd0;
-            col_sof      <= 1'b0;
-            col_eol      <= 1'b0;
             acc_s        <= 17'sd0;
             acc_q        <= 24'd0;
             for (int k = 0; k < 2; k++) begin
@@ -327,8 +322,6 @@ module st_norm #(
             pix_out_left <= cfg_npix;
             p_col        <= 2'd0;
             beat_cnt     <= 5'd0;
-            col_sof      <= 1'b0;
-            col_eol      <= 1'b0;
             acc_s        <= 17'sd0;
             acc_q        <= 24'd0;
             for (int k = 0; k < 2; k++) begin
@@ -344,15 +337,11 @@ module st_norm #(
                                                 : acc_s + 17'(beat_sum);
                     acc_q <= (beat_cnt == 5'd0) ? 24'(beat_sq)
                                                 : acc_q + 24'(beat_sq);
-                    col_sof <= col_sof | in_sof;
-                    col_eol <= col_eol | in_eol;
                     if (in_last) begin
                         tot_s[p_col[0]] <= (beat_cnt == 5'd0)
                                          ? 17'(beat_sum) : acc_s + 17'(beat_sum);
                         tot_q[p_col[0]] <= (beat_cnt == 5'd0)
                                          ? 24'(beat_sq) : acc_q + 24'(beat_sq);
-                        col_sof <= 1'b0;
-                        col_eol <= 1'b0;
                     end
                 end
                 beat_cnt <= in_last ? 5'd0 : beat_cnt + 5'd1;
@@ -369,17 +358,17 @@ module st_norm #(
     // T = the cycle the pixel's last beat is accepted.
     //   T+1  S^2 on a DSP, N*Q = (G*Q) << 2 by shift-add, S captured
     //   T+2  D, e by a leading-one detector, m by a barrel shift, LUT address
-    //   T+3  R from the ROM; the pixel's parameters go to its slot
+    //   T+3  R on the LUT's output register
+    //   T+4  the pixel's parameters go to its slot
     // The totals are captured in the collect block at T, so they are stable
     // in cm1 even when the next pixel's beat 0 arrives at T+1.
-    logic               cm1_v, cm2_v, cm3_v;
+    logic               cm1_v, cm2_v, cm3_v, cm4_v;
     logic signed [33:0] s2_q;
     logic [30:0]        nq_q;
     logic signed [16:0] s_cap;
     logic [4:0]         e_cap;
     logic [1:0]         px_par;
     logic               cm_par;         // parity of the pixel in cm1_v
-    logic               px_sof_r, px_eol_r;
 
     function automatic logic [5:0] bitlen34(input logic [33:0] v);
         bitlen34 = 6'd0;
@@ -409,6 +398,7 @@ module st_norm #(
             cm1_v    <= 1'b0;
             cm2_v    <= 1'b0;
             cm3_v    <= 1'b0;
+            cm4_v    <= 1'b0;
             s2_q     <= '0;
             nq_q     <= '0;
             s_cap    <= '0;
@@ -416,29 +406,25 @@ module st_norm #(
             lut_addr <= '0;
             px_par   <= 2'd0;
             cm_par   <= 1'b0;
-            px_sof_r <= 1'b0;
-            px_eol_r <= 1'b0;
             for (int k = 0; k < 4; k++) begin
                 par_s[k]   <= '0;
                 par_r[k]   <= '0;
                 par_e[k]   <= '0;
-                par_sof[k] <= 1'b0;
-                par_eol[k] <= 1'b0;
                 par_rdy[k] <= 1'b0;
             end
         end else if (start) begin
             cm1_v <= 1'b0;
             cm2_v <= 1'b0;
             cm3_v <= 1'b0;
+            cm4_v <= 1'b0;
         end else begin
             cm1_v <= ln_mode && in_accept && in_last;
             cm2_v <= cm1_v;
             cm3_v <= cm2_v;
+            cm4_v <= cm3_v;
             if (ln_mode && in_accept && in_last) begin
                 px_par   <= p_col[1:0];
                 cm_par   <= p_col[0];
-                px_sof_r <= col_sof | in_sof;
-                px_eol_r <= col_eol | in_eol;
             end
             if (cm1_v) begin
                 s2_q  <= tot_s[cm_par] * tot_s[cm_par];
@@ -449,25 +435,23 @@ module st_norm #(
                 lut_addr <= idx_w;
                 e_cap    <= e_w;
             end
-            if (cm3_v) begin
+            if (cm4_v) begin
                 par_s[px_par]   <= s_cap;
                 par_r[px_par]   <= 17'(lut_q);
                 par_e[px_par]   <= e_cap;
-                par_sof[px_par] <= px_sof_r;
-                par_eol[px_par] <= px_eol_r;
                 par_rdy[px_par] <= 1'b1;
             end
         end
     end
 
     // ================================================== emit / FILM pipeline
-    // s1  pixel buffer read data (LN) / the input beat (FILM)
-    // s2  u = N*x - S (LN)
+    // s1  the pixel buffer's read data (LN); the input beat registers in f1
+    // s2  u = N*x - S (LN), the beat's flags
     // s3  p1 = u*R (LN)
     // s4  affine operands: t and the coefficient word
     // s5  affine product; the FIFO write is in this cycle
     logic             s1_v, s2_v, s3_v, s4_v, s5_v;
-    logic [2:0]       s1_f, s2_f, s3_f, s4_f, s5_f;
+    logic [2:0]       s2_f, s3_f, s4_f, s5_f;
     logic [GBITS-1:0] s1_g, s2_g, s3_g;
     logic signed [16:0] s1_s, s1_r, s2_r;
     logic [4:0]       s1_e, s2_e, s3_e, s4_sh, s5_sh;
@@ -506,7 +490,6 @@ module st_norm #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s1_v <= 1'b0;
-            s1_f <= '0;
             s1_g <= '0;
             s1_s <= '0;
             s1_r <= '0;
@@ -516,7 +499,6 @@ module st_norm #(
         end else begin
             s1_v <= em_issue;
             if (em_issue) begin
-                s1_f <= em_flags;
                 s1_g <= em_beat;
                 s1_s <= par_s[par_i];
                 s1_r <= par_r[par_i];
@@ -526,18 +508,20 @@ module st_norm #(
     end
 
     // ---- s1 -> s2: u = N*x - S per lane
-    // mul_nodsp is unsigned: x enters as its 10-bit pattern x_u = x + 1024, so
-    // G*x = G*x_u - (G << 10) and N*x = (G*x) << 2.
+    // mul_nodsp is unsigned, so the multiplier takes |x| (9 bits, |x| <= 254)
+    // and the product is negated for a negative lane: N*x = 4*(G*|x|).
     logic signed [17:0] u_w [4];
     for (genvar j = 0; j < 4; j++) begin : g_u
-        wire [14:0] gp;
-        wire signed [17:0] nx, n1024, sx;
-        mul_nodsp #(.AW(5), .BW(10)) u_mul (
-            .a(g_r), .b(pb_q[10*j +: 10]), .p(gp));
-        assign nx    = $signed({1'b0, gp, 2'b00});
-        assign n1024 = $signed({1'b0, g_r, 12'b0});
-        assign sx    = $signed({{1{s1_s[16]}}, s1_s});
-        assign u_w[j] = nx - n1024 - sx;
+        wire signed [9:0] xl;
+        wire [8:0]        xm;
+        wire [13:0]       gp;
+        wire signed [17:0] nx, px4;
+        assign xl = $signed(pb_q[10*j +: 10]);
+        assign xm = xl[9] ? 9'(-xl) : 9'(xl);
+        mul_nodsp #(.AW(5), .BW(9)) u_mul (.a(g_r), .b(xm), .p(gp));
+        assign px4 = $signed({2'b00, gp, 2'b00});     // 4*G*|x|, 18 bit
+        assign nx  = xl[9] ? -px4 : px4;
+        assign u_w[j] = nx - 18'(s1_s);
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -556,7 +540,7 @@ module st_norm #(
                 s2_r <= s1_r;
                 s2_e <= s1_e;
                 s2_g <= s1_g;
-                s2_f <= s1_f;
+                s2_f <= pb_q[PW-1:40];      // the beat's own flags
                 for (int j = 0; j < 4; j++) s2_u[j] <= u_w[j];
             end
         end
@@ -599,10 +583,11 @@ module st_norm #(
     wire        s4_src_v = ln_mode ? s3_v : f1_v;
     wire [2:0]  s4_src_f = ln_mode ? s3_f : f1_f;
 
-    // The ROM output is registered, so the address presented now is the one
-    // whose data the affine takes in the next cycle: the group of the beat in
-    // s4 (LN: one stage behind s2_g, FILM: the beat in f1).
-    assign coef_addr = ln_mode ? s3_g : f1_g;
+    // The ROM output is registered, so the address presented in a cycle is
+    // read out in the next one.  The affine operands of a beat are taken one
+    // cycle after its s2 (LN) / f1 (FILM) stage, so the address is s2_g in LN
+    // and the incoming beat's group in FILM.
+    assign coef_addr = ln_mode ? s2_g : beat_cnt;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -727,7 +712,7 @@ module st_norm #(
                    && !par_rdy[par_i]
                    && (pix_in_left == 18'd0) && (pix_out_left == 18'd0)
                    && !s1_v && !s2_v && !s3_v && !s4_v && !s5_v
-                   && !cm1_v && !cm2_v && !cm3_v
+                   && !cm1_v && !cm2_v && !cm3_v && !cm4_v
                    && (pend == 5'd0) && of_empty;
 
     always_ff @(posedge clk or negedge rst_n) begin
