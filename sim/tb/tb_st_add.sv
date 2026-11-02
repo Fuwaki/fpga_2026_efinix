@@ -36,7 +36,7 @@ module tb_st_add;
         .out_valid(ov), .out_ready(o_ready), .out_data(od),
         .out_last(ol), .out_eol(oe), .out_sof(os));
 
-    int ti = 0, ai = 0, oi = 0, errs = 0;
+    int ti = 0, ai = 0, oi = 0, errs = 0, cyc = 0, cyc0 = 0;
 
     always @(posedge clk) begin
         if (rst_n) begin
@@ -55,6 +55,7 @@ module tb_st_add;
                 a_valid <= 1'b1;
             end
         end
+        if (rst_n) cyc++;
         o_ready <= $urandom_range(99) < 75;
     end
 
@@ -78,11 +79,12 @@ module tb_st_add;
         load({dir, "/out.hex"}, vo);
         repeat (5) @(posedge clk);
         rst_n = 1;
+        cyc0 = cyc;
         wait (oi == vo.size());
         repeat (50) @(posedge clk);
         if (errs != 0 || oi != vo.size())
             $fatal(1, "tb_st_add %s FAIL %0d errors, %0d of %0d outputs", dir, errs, oi, vo.size());
-        $display("tb_st_add %s PASS %0d outputs", dir, oi);
+        $display("tb_st_add %s PASS %0d outputs, %0d cycles", dir, oi, cyc - cyc0);
         $finish;
     end
 endmodule

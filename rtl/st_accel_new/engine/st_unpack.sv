@@ -10,11 +10,18 @@
 //
 // A group is 4 or 8 bytes and never straddles a beat, so groups are cut
 // straight from the beat register: elem 1 gives 4 groups per beat, elem 2
-// gives 2.  int16 elements keep their low 10 bits (the add outputs are
+// int16 elements keep their low 10 bits (the add outputs are
 // within +-254).  The beats of the current pixel are also kept in a pixel
-// buffer (8 x 128 bits); with cfg_hrep every pixel is emitted a second time
-// from it -- the horizontal half of the 2x nearest upsample.  The vertical
-// half is tile_dma_rd's line_shift, so input and output line counts match.
+// buffer (10 x 128 bits, one per PB/16 beat of the widest pixel: 80 int16
+// channels); with cfg_hrep every pixel is emitted a second time from it --
+// the horizontal half of the 2x nearest upsample.  The vertical half is
+// tile_dma_rd's line_shift, so input and output line counts match.
+//
+// Geometry: C <= 80 so G = ceil(C/4) <= 20 (a 5-bit group counter), PB <= 160
+// so at most 10 beats per pixel (a 4-bit beat counter), W <= 640, H <= 360.
+// The pixel buffer is read asynchronously in the emission cycle, so it is a
+// register file (10 x 128 = 1280 flops, +256 over the 8-beat version) with a
+// 10:1 128-bit mux, not a RAM10 array.
 //
 // Throughput: one group per cycle; a beat is taken in the cycle its
 // predecessor's last group leaves.  Cycles per pixel: G (x2 with hrep), at
@@ -27,9 +34,9 @@ module st_unpack (
     input  logic          rst_n,
 
     input  logic          start,
-    input  logic [6:0]    cfg_c,       // channels, 1..64
+    input  logic [6:0]    cfg_c,       // channels, 1..80
     input  logic          cfg_elem2,   // 1: int16 elements, 0: int8
-    input  logic [7:0]    cfg_pb,      // pixel bytes, 16..128, multiple of 16
+    input  logic [7:0]    cfg_pb,      // pixel bytes, 16..160, multiple of 16
     input  logic [9:0]    cfg_w,       // source pixels per line
     input  logic [9:0]    cfg_h,       // lines
     input  logic          cfg_hrep,    // emit every pixel twice
@@ -58,22 +65,24 @@ module st_unpack (
     logic         run;                 // groups still to emit
     logic         have;                // beat register holds a beat
     logic [127:0] beat;
-    logic [127:0] pbuf [8];            // beats of the current pixel
-    logic [2:0]   bi;                  // next beat index within the pixel
-    logic [3:0]   g;                   // next group of the pixel
+    logic [127:0] pbuf [10];           // beats of the current pixel
+    logic [3:0]   bi;                  // next beat index within the pixel
+    logic [4:0]   g;                   // next group of the pixel, 0..G-1
     logic         rep;                 // emitting the hrep copy from pbuf
     logic [9:0]   x, y;
     logic         first;               // next group is the frame's first
 
     // Group g of the pixel lives in beat g/4 (g/2 for int16), sub-group
-    // g%4 (g%2).
+    // g%4 (g%2).  G <= 20 so the int16 beat index is g/2 <= 9 (4 bits) and
+    // the int8 one is g/4 <= 4.
     wire  [1:0]   sub     = elem2 ? {1'b0, g[0]} : g[1:0];
-    wire  [2:0]   gbeat   = elem2 ? g[3:1] : {1'b0, g[3:2]};
+    wire  [3:0]   gbeat   = elem2 ? g[4:1] : {1'b0, g[4:2]};
     wire          sub_end = elem2 ? g[0] : (g[1:0] == 2'd3);
-    wire          pix_end = ({1'b0, g} == gl);
+    wire          pix_end = (g == gl);
     wire  [127:0] src     = rep ? pbuf[gbeat] : beat;
 
     logic [39:0]  grp;
+    wire  [7:0]   ch = {1'b0, c};       // channel index bound, 8-bit to match 4g+j
     always_comb begin
         for (int j = 0; j < 4; j++) begin
             logic [9:0] v;
@@ -81,7 +90,7 @@ module st_unpack (
                 v = src[64*sub + 16*j +: 10];                        // halfword sub*4 + j
             else
                 v = {{2{src[32*sub + 8*j + 7]}}, src[32*sub + 8*j +: 8]};
-            grp[10*j +: 10] = ({1'b0, g, 2'(j)} < c) ? v : 10'd0;
+            grp[10*j +: 10] = ({1'b0, g, 2'(j)} < ch) ? v : 10'd0;
         end
     end
 
@@ -149,7 +158,7 @@ module st_unpack (
                         end
                     end
                 end else begin
-                    g <= g + 4'd1;
+                    g <= g + 5'd1;
                 end
                 if (frame_end)
                     run <= 1'b0;
@@ -161,19 +170,19 @@ module st_unpack (
                 have <= 1'b1;
                 beat <= in_data;
                 // The beat index restarts with a pixel that begins this cycle.
-                pbuf[(consume && pix_end) ? 3'd0 : bi] <= in_data;
-                bi   <= ((consume && pix_end) ? 3'd0 : bi) + 3'd1;
+                pbuf[(consume && pix_end) ? 4'd0 : bi] <= in_data;
+                bi   <= ((consume && pix_end) ? 4'd0 : bi) + 4'd1;
             end
         end
     end
 
 `ifndef SYNTHESIS
     // The DMA's line boundary must fall on a pixel boundary of this geometry.
-    logic [2:0] pbl;
-    always_ff @(posedge clk) if (!busy && start) pbl <= 3'((cfg_pb >> 4) - 8'd1);
+    logic [3:0] pbl;
+    always_ff @(posedge clk) if (!busy && start) pbl <= 4'((cfg_pb >> 4) - 8'd1);
     always @(posedge clk)
         if (rst_n && take) begin
-            automatic logic [2:0] idx = (consume && pix_end) ? 3'd0 : bi;
+            automatic logic [3:0] idx = (consume && pix_end) ? 4'd0 : bi;
             if (in_eol && idx != pbl)
                 $error("st_unpack: DMA eol on beat %0d of a %0d-beat pixel", idx, pbl + 1);
         end

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Test vectors for st_unpack, st_pack and st_add (sim/tb/tb_st_io.sv,
-sim/tb/tb_st_add.sv).
+sim/tb/tb_st_add.sv) on the guided net at 640x360 (docs/st-guided-adr.md).
 
-Tensors are real activations: st_golden.Net.run on an image (default
-/tmp/stgold/in2/c0.png, else a deterministic synthetic 320x240 image),
-cached under --cache.  Each case writes into --out/NAME:
+The activations are the real ones: st_guided.Guided -- the normative golden
+model -- runs the whole network once on a 640x360 input, and net.ddr holds
+every point exactly as its producer pass writes it to DDR.  Each case writes
+into --out/NAME:
 
   args        plusargs for the testbench (geometry, factor)
   in.hex      unpack: DDR beats    "<32 hex> sof eol"
@@ -12,16 +13,35 @@ cached under --cache.  Each case writes into --out/NAME:
   t.hex a.hex add: trunk and aux group beats
   out.hex     expected output, same formats
 
-DDR beats are st_golden.ddr_image, so the layout is the one the golden
-model and the generator agree on.  Only the first lines of each tensor are
-used, to keep simulation short.
+DDR beats are net.ddr_image(t, p): HWC, a pixel is roundup16(C * elem)
+bytes, int16 for the points an add writes (the wide points), padding zero.
+Whole tensors are used, so the stream stays the size the engine sees.
 
-Usage: st_io_vectors.py --out DIR [--image PNG] [--cache DIR] [--lines N]
+Cases:
+
+  unpack_p10        p10  80 ch int16 (PB 160)  160x90
+  unpack_p17        p17  40 ch int16 (PB  80)  320x180
+  unpack_p13_hrep   p13  24 ch int8  (PB  32)  160x90, hrep (2x2 output)
+  unpack_p1         p1    3 ch int8  (PB  16)  320x180
+  pack_p2           p2   16 ch int8            320x180
+  pack_p16          p16  40 ch int8  (PB  48)  320x180
+  pack_p10          p10  80 ch int16
+  pack_p17          p17  40 ch int16
+
+  add_res   trunk = res0.s2.pw on ddr[9],  aux = ddr[6],  exp = ddr[10]
+  add_h2    trunk = dec_h2.pw on dec_h2.dw on 2x ddr[13],
+            aux = ddr[16], exp = ddr[17]
+  add_head  trunk = 2x ddr[19], aux = ddr[20],
+            exp = add_requant(ddr[20], 20, 19) + trunk
+
+st_add is y = t + clamp(f32_mul_round(a, mant * 2**-k), -127, 127); the
+factor is scale[src] / scale[dst] as st_golden.Net.add_requant derives it.
+
+Usage: st_io_vectors.py --out DIR [--image PNG] [--manifest DIR]
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -29,30 +49,12 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_golden import Net, WIDE_POINTS, ddr_image, f32_parts  # noqa: E402
+from st_golden import f32_parts  # noqa: E402
+from st_guided import Guided  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "config/manifest/ink_dw_w8a8"
-
-
-def image(path: Path) -> np.ndarray:
-    if path.exists():
-        return np.asarray(Image.open(path).convert("RGB"))
-    yy, xx = np.mgrid[0:240, 0:320]
-    rgb = np.stack([xx * 255 // 319, yy * 255 // 239, ((xx // 40 + yy // 30) % 2) * 200 + 20], -1)
-    return rgb.astype(np.uint8)
-
-
-def golden(img: Path, cache: Path) -> Path:
-    """Run the golden model once; the pass dumps land in cache."""
-    stamp = cache / "stamp.json"
-    key = {"image": str(img), "exists": img.exists()}
-    if stamp.exists() and json.loads(stamp.read_text()) == key:
-        return cache
-    cache.mkdir(parents=True, exist_ok=True)
-    Net(str(MANIFEST), False).run(image(img), str(cache))
-    stamp.write_text(json.dumps(key))
-    return cache
+ST_WORK = Path("/data/competition/2026fpga/st_work")
+MANIFEST = ST_WORK / "p90_ln_w8a8"
+IMAGE = ST_WORK / "g360/in/cat.png"
 
 
 # ------------------------------------------------------------------ formats
@@ -75,11 +77,11 @@ def groups(t: np.ndarray) -> list[str]:
     return rows
 
 
-def beats(t: np.ndarray, pt: int, line_rep: int = 1) -> list[str]:
-    """CHW tensor -> its DDR beats (st_golden.ddr_image), each image line
+def beats(net: Guided, t: np.ndarray, pt: int, line_rep: int = 1) -> list[str]:
+    """CHW tensor -> its DDR beats (net.ddr_image), each image line
     repeated line_rep times as tile_dma_rd's line_shift delivers it."""
     c, h, w = t.shape
-    raw = np.frombuffer(ddr_image(t, pt), np.uint8).reshape(h, -1, 16)
+    raw = np.frombuffer(net.ddr_image(t, pt), np.uint8).reshape(h, -1, 16)
     rows = []
     first = True
     for y in range(h):
@@ -92,8 +94,8 @@ def beats(t: np.ndarray, pt: int, line_rep: int = 1) -> list[str]:
     return rows
 
 
-def pb(c: int, pt: int) -> int:
-    e = 2 if pt in WIDE_POINTS else 1
+def pb(c: int, pt: int, net: Guided) -> int:
+    e = 2 if pt in net.wide else 1
     return -(-c * e // 16) * 16
 
 
@@ -105,57 +107,67 @@ def write(d: Path, args: str, **files: list[str]) -> None:
 
 
 # -------------------------------------------------------------------- cases
+def add_case(net: Guided, d: Path, name: str, t: np.ndarray, aux: np.ndarray,
+             exp: np.ndarray, src: int, dst: int) -> None:
+    """t + requant(aux) must be the golden add, never a re-derivation of it."""
+    assert t.shape == aux.shape == exp.shape, (name, t.shape, aux.shape, exp.shape)
+    assert (net.add_requant(aux, src, dst) + t == exp).all(), name
+    f = np.float32(net.scales[src]) / np.float32(net.scales[dst])
+    mant, e = f32_parts(f)
+    write(d / name, f"+MANT={mant:x} +K={24 - e}",
+          t=groups(t), a=groups(aux), out=groups(exp))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--image", type=Path, default=Path("/tmp/stgold/in2/c0.png"))
-    ap.add_argument("--cache", type=Path, default=ROOT / "sim/obj/st_golden_c0")
-    ap.add_argument("--lines", type=int, default=16)
+    ap.add_argument("--image", type=Path, default=IMAGE)
+    ap.add_argument("--manifest", type=Path, default=MANIFEST)
     a = ap.parse_args()
 
-    d = golden(a.image, a.cache)
-    ld = lambda n: np.load(d / f"{n}.npy").astype(np.int64)  # noqa: E731
-    net = Net(str(MANIFEST), False)
-    n = a.lines
-    m = json.loads((MANIFEST / "manifest.json").read_text())
-    sc = m["point_scales"]
+    net = Guided(str(a.manifest))
+    net.run(np.asarray(Image.open(a.image).convert("RGB")))
+    D = net.ddr
 
-    # unpack: (case, tensor, point, hrep)
-    p21 = ld("res3b_out")
-    for name, t, pt, hrep in (("unpack_p1", ld("stem_out")[:, :n], 1, 0),
-                              ("unpack_p9", ld("res0b_out")[:, :n], 9, 0),
-                              ("unpack_p0", ld("stem_in")[:, :n], 0, 0),
-                              ("unpack_p21_hrep", p21[:, :n // 2], 21, 1)):
+    # ------------------------------------------------------------- unpack
+    for name, pt, hrep in (("unpack_p10", 10, 0),
+                           ("unpack_p17", 17, 0),
+                           ("unpack_p13_hrep", 13, 1),
+                           ("unpack_p1", 1, 0)):
+        t = D[pt]
         c, h, w = t.shape
         exp = t.repeat(2, axis=1).repeat(2, axis=2) if hrep else t
         write(a.out / name,
-              f"+MODE=0 +C={c} +ELEM2={int(pt in WIDE_POINTS)} +PB={pb(c, pt)} "
+              f"+MODE=0 +C={c} +ELEM2={int(pt in net.wide)} +PB={pb(c, pt, net)} "
               f"+W={w} +H={exp.shape[1]} +HREP={hrep}",
-              **{"in": beats(t, pt, 2 if hrep else 1), "out": groups(exp)})
+              **{"in": beats(net, t, pt, 2 if hrep else 1), "out": groups(exp)})
 
-    for name, t, pt in (("pack_p3", ld("enc0_out")[:, :n], 3),
-                        ("pack_p9", ld("res0b_out")[:, :n], 9),
-                        ("pack_p27", ld("up1a_out")[:, :n], 27)):
+    # --------------------------------------------------------------- pack
+    for name, pt in (("pack_p2", 2), ("pack_p16", 16),
+                     ("pack_p10", 10), ("pack_p17", 17)):
+        t = D[pt]
         c, h, w = t.shape
         write(a.out / name,
-              f"+MODE=1 +C={c} +ELEM2={int(pt in WIDE_POINTS)} +PB={pb(c, pt)} "
+              f"+MODE=1 +C={c} +ELEM2={int(pt in net.wide)} +PB={pb(c, pt, net)} "
               f"+W={w} +H={h} +HREP=0",
-              **{"in": groups(t), "out": beats(t, pt)})
+              **{"in": groups(t), "out": beats(net, t, pt)})
 
-    # add: trunk, aux, expected, factor (src -> dst)
+    # ---------------------------------------------------------------- add
     L = net.L
-    tr = net.conv(L["res.0.s2.pw"], net.conv(L["res.0.s2.dw"], ld("res0b_in")))
-    p21u = p21.repeat(2, axis=1).repeat(2, axis=2)
-    for name, t, aux, exp, src, dst in (
-            ("add_res0", tr[:, :n], ld("enc1_out")[:, :n], ld("res0b_out")[:, :n], 5, 9),
-            ("add_skip", p21u[:, :n], ld("enc0_out")[:, :n], ld("up0_in")[:, :n], 3, 21)):
-        f = np.float32(sc[src]) / np.float32(sc[dst])
-        mant, e = f32_parts(f)
-        # the vectors must be the golden add, not a re-derivation of it
-        assert (net.add_requant(aux, src, dst) + t == exp).all(), name
-        write(a.out / name, f"+MANT={mant:x} +K={24 - e}",
-              t=groups(t), a=groups(aux), out=groups(exp))
+    # pass 7: res0.s2.pw on ddr[9] (the s2 DW output); the add folds ddr[6] in.
+    tr = net.conv(L["res0.s2.pw"], D[9])
+    add_case(net, a.out, "add_res", tr, D[6], D[10], 6, 10)
+
+    # pass 9: dec_h2.dw/pw on the 2x ddr[13], then the skip from ddr[16].
+    up13 = D[13].repeat(2, axis=1).repeat(2, axis=2)
+    tr = net.conv(L["dec_h2.pw"], net.conv(L["dec_h2.dw"], up13))
+    add_case(net, a.out, "add_h2", tr, D[16], D[17], 16, 17)
+
+    # pass 11: the head's add, guide branch ddr[20] onto 2x ddr[19].
+    tr = D[19].repeat(2, axis=1).repeat(2, axis=2)
+    exp = net.add_requant(D[20], 20, 19) + tr
+    add_case(net, a.out, "add_head", tr, D[20], exp, 20, 19)
 
     print(f"{a.out}: st_io vectors written", file=sys.stderr)
     return 0
