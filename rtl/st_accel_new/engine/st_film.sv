@@ -135,31 +135,33 @@ module st_film #(
     localparam signed [55:0] C0_EXT = 56'(C0);
 
     // ------------------------------------------------------------ GAP sums
-    // Channel 4*b + j of beat b is always at gap[j] when the beat arrives:
-    // a beat adds its four lanes into the tail and rotates the array by four,
-    // so the next beat's group comes to the head.  Ten beats are a whole
-    // turn.  The MLP turns the same array by four every fourth product, so it
-    // reads the head too (see the header).  |S| <= 57600 * 254 < 2**24.
-    // The array is one packed vector so that the rotation is a slice and a
-    // concatenation, not 36 separate assignments: Efinity maps the first form
-    // as a shift register and the second as a 40-way decoder (measured).
-    logic [NC-1:0][24:0] gapv;
-    wire  [24:0]         gap [NC];    // the same words, for the read mux
-    wire                 gap_rot;     // the MLP consumed four sums
-
-    for (genvar i = 0; i < NC; i++) begin : g_gapv
-        assign gap[i] = gapv[i];
-    end
+    // Forty 25-bit accumulators as ten groups of four lanes, in a shift
+    // register that turns by one group per tapped beat: lane j of beat b is
+    // channel 4b + j, so the beat adds its lanes into the head group and the
+    // array turns, which brings the next beat's group to the head.  Ten beats
+    // are a whole turn, so the array is in channel order at every pixel
+    // boundary.  |S| <= 57600 * 254 < 2**24.
+    //
+    // The MLP reads the same head.  A reduce row sums over channels 0..39 and
+    // the sum is exact integer arithmetic, so the order is free: the row
+    // takes the head group's four lanes as products 4g..4g+3 and then turns
+    // the array by one, which is the tap's own rotation.  Forty products are
+    // ten turns, so the array is back in channel order after every row.
+    // Neither side has an address mux: the rotation is pure rewiring and the
+    // only selection left is the 4:1 lane mux of the head group.  (A flat
+    // 40-word array with an indexed read and write measured 3x the logic.)
+    logic [GB-1:0][3:0][24:0] gapv;
+    wire                      gap_rot;   // the MLP consumed a group
 
     assign tap_ready = 1'b1;
 
-    // gap_clear makes the next pixel's beat write each sum instead of adding
-    // to it.  Ten beats turn the whole array, so after one pixel every word
+    // gap_clear makes the next pixel's beats write each sum instead of adding
+    // to it.  Ten beats turn the whole array, so after one pixel every group
     // holds the new pass's sum and nothing of the last pass is left -- the
     // sums are zero at the start of the pass, in the one cycle the port
     // promises, and the array keeps no clear path at all.  A wide
     // synchronous clear would cost 800 FF by taking the array out of the
-    // SRLs (measured); the whole array maps to 100 SRLs and 200 FF this way.
+    // SRLs (measured); the shift path costs none.
     logic fresh;                      // the next pixel's beats overwrite
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -167,14 +169,15 @@ module st_film #(
             gapv  <= '0;
             fresh <= 1'b1;
         end else if (tap_valid || gap_rot) begin
-            if (gap_clear) fresh <= 1'b1;
+            if (gap_clear)                  fresh <= 1'b1;
             else if (tap_valid && tap_last) fresh <= 1'b0;
-            gapv <= {gapv[3:0], gapv[NC-1:4]};
+            gapv <= {gapv[0], gapv[GB-1:1]};
             for (int j = 0; j < 4; j++)
-                gapv[NC - 4 + j] <= fresh
+                gapv[GB - 1][j] <= fresh
                     ? 25'(signed'(tap_data[10*j +: 10]))
-                    : gapv[j] + (tap_valid ? 25'(signed'(tap_data[10*j +: 10]))
-                                           : 25'sd0);
+                    : gapv[0][j] + (tap_valid
+                                    ? 25'(signed'(tap_data[10*j +: 10]))
+                                    : 25'sd0);
         end
     end
 
@@ -277,7 +280,7 @@ module st_film #(
 
     logic signed [31:0] br;
     logic        [16:0] mz, mg, mb;
-    logic        [23:0] zq [NO];      // hidden units
+    logic        [16:0] zq [NO];      // hidden units, < 2**17 (see below)
 
     // ---------------------------------------------------- product operands
     // bi counts finished products of the current word, so S_ROWLOOP loads
@@ -292,8 +295,8 @@ module st_film #(
 
     // Product k of a reduce row is channel k, and the head holds channels
     // 4*(k/4) .. 4*(k/4)+3, so the read is a 4:1 mux of the lane.
-    wire [5:0]         pj      = {4'd0, 2'(k_raw)};
-    wire signed [24:0] gap_sel = gap[pj];
+    wire [1:0]         pj      = 2'(k_raw);
+    wire signed [24:0] gap_sel = gapv[0][pj];
     wire signed [25:0] sg_sel  = ($signed(gap_sel) + 26'sd32) >>> GS;
     wire signed [35:0] a_row   = (kind == 2'd0) ? {{10{sg_sel[25]}}, sg_sel}
                                                 : {12'b0, zq[hidx]};
@@ -341,10 +344,10 @@ module st_film #(
                       ((state == S_ROWLOOP) && mac_done && (bi != 3'd4)) ||
                       (state == S_ZQ0) || (state == S_MM1) || (state == S_OFF0);
 
-    // A reduce-row product consumes one of the four head sums; after every
-    // fourth the array turns by four, which is the tap's own rotation.
+    // A reduce-row product consumes one lane of the head group; after every
+    // fourth the array turns by one group, which is the tap's own rotation.
     wire row_load = mac_load && ((state == S_ROW0) || (state == S_ROWLOOP));
-    assign gap_rot = row_load && (kind == 2'd0) && (pj == 6'd3);
+    assign gap_rot = row_load && (kind == 2'd0) && (pj == 2'd3);
 
 
     // ------------------------------------------------------------ results
@@ -354,10 +357,12 @@ module st_film #(
     wire signed [55:0] acc_g = mac_acc >>> SG;    // Gb_c * Mg_c
     wire signed [55:0] acc_b = mac_acc >>> SB;    // Bb_c * Mb_c
 
-    // zq = max(0, rshift_round(A*Mz, SZ)): |A*Mz| < 2**50, so the shift
-    // leaves 24 bits; the saturation is defensive.
-    wire [23:0] zq_new = acc_z[55] ? 24'd0
-                       : (|acc_z[55:24]) ? 24'hFF_FFFF : acc_z[23:0];
+    // zq = max(0, rshift_round(A*Mz, SZ)).  A = br*KB + Wr.Sg with
+    // |Sg| <= 228600, so |A| < 2**28 and |A*Mz| < 2**45; the shift by SZ
+    // leaves 2**19, and zq is a ReLU output, so 17 bits hold it with room.
+    // The saturation keeps a mis-sized parameter from wrapping the row sums.
+    wire [16:0] zq_new = acc_z[55] ? 17'd0
+                       : (|acc_z[55:17]) ? 17'h1_FFFF : acc_z[16:0];
 
     wire signed [55:0] mul_sum = C0_EXT + acc_g;
     wire signed [17:0] mul_new = (mul_sum > 56'sd131071)  ? 18'sd131071

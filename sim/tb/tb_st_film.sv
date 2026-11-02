@@ -153,11 +153,11 @@ module tb_st_film;
 
     task automatic check_gap;
         for (int c = 0; c < NC; c++)
-            if (dut.gap[c] !== want[c]) begin
+            if (dut.gapv[c/4][c%4] !== want[c]) begin
                 gap_errs++;
                 if (gap_errs <= 10)
                     $display("MISMATCH GAP sum %0d: %0d want %0d", c,
-                             dut.gap[c], want[c]);
+                             dut.gapv[c/4][c%4], want[c]);
             end
     endtask
 
