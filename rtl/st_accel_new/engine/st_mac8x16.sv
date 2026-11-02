@@ -24,6 +24,7 @@ module st_mac8x16 (
     input  logic                in_valid,
     input  logic [15:0][7:0]    in_x,       // input lanes, byte i = x[i]
     input  logic [1023:0]       in_w,       // byte o*16 + i = W[o][i]
+    input  logic                in_wld,     // load in_w; the weights hold otherwise
     input  logic                in_first,   // clear the accumulators
     input  logic                in_last,    // last input tile of the output tile
 
@@ -56,9 +57,10 @@ module st_mac8x16 (
     always_ff @(posedge clk) begin
         for (int i = 0; i < 16; i++)
             x_s1[i] <= $signed(in_x[i]);
-        for (int o = 0; o < 8; o++)
-            for (int i = 0; i < 16; i++)
-                w_s1[o][i] <= $signed(in_w[8*(16*o + i) +: 8]);
+        if (in_wld)
+            for (int o = 0; o < 8; o++)
+                for (int i = 0; i < 16; i++)
+                    w_s1[o][i] <= $signed(in_w[8*(16*o + i) +: 8]);
     end
 
     // ---------------------------------------------------- stage 2: products

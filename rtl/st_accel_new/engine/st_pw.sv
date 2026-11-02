@@ -29,17 +29,18 @@
 // cycle, with no bubble between pairs, output tiles or passes, because the ROM
 // runs one word ahead:
 //
-//   pipe_go     one ROM read per fire, plus a three-read prologue;
+//   pipe_go     one ROM read per fire, plus a two-read prologue;
 //   read k      line k mod 2*NO*NI, so the counter's wrap is the next pair's
 //               first word -- the last pair of a pass already reads word 0;
 //   rd1         one read behind pw_dout, so pw_dout (a high half) and rd1 (the
 //               low half before it) are one whole word;
-//   w_cur       {pw_dout, rd1} on every cycle pw_dout is a high half, held
-//               otherwise: the word of the pair on the array.
+//   in_wld      the array's weight registers load {pw_dout, rd1} on a fire
+//               where pw_dout is a high half and hold it otherwise: the word
+//               of the pair on the array.
 //
-// The read stream leads the fire stream by exactly three reads, so fire m is
-// accompanied by read m+3 and the word a pair needs is complete two cycles
-// before its first fire and stays in w_cur for its second one.
+// The read stream leads the fire stream by exactly two reads, so fire m is
+// accompanied by read m+2: a pair's word is on {pw_dout, rd1} at its first
+// fire, which loads it, and stays in the array for its second one.
 //
 // Two pixels alternate on the array, so the array's own accumulator cannot be
 // used: it runs with in_first = in_last = 1 (a plain 8x16 dot product, which
@@ -58,7 +59,7 @@
 //   issue       one pair at a time: 2*NO*NI array cycles, weight word
 //               pw_base + ot*NI + it, the pair's two banks selected by pixel
 //               parity;
-//   MAC         st_pw_rom (registered) -> rd1 -> w_cur -> st_mac8x16
+//   MAC         st_pw_rom (registered) -> rd1 -> st_mac8x16 (weights on in_wld)
 //               (LAT 4) -> two accumulator sets -> tile FIFO (TILE_DEPTH
 //               entries: the 8 accumulators of an output tile and the tile's
 //               7-bit tag);
@@ -86,7 +87,7 @@
 //
 // Resources.  The vector banks are flip-flop banks, 4 x 80 bytes = 2560 flops
 // (one 80-byte bank per pixel of the two pairs in flight); the weight register
-// is 1536 flops (w_cur, rd1).  The PW ROM is PW_DEPTH lines of 512 bits
+// is rd1, 512 flops, plus the array's own operand registers.  The PW ROM is PW_DEPTH lines of 512 bits
 // (512 x 512 = 26 RAM10 at 512x20; the guided net's 204 words are 408 lines),
 // the requant ROM RQ_DEPTH x 4 x 64 bits (512 x 4 words per bank: 1496 words
 // in all) and the output FIFO 512 x 39 bits (2 RAM10 at 512x20).
@@ -358,9 +359,9 @@ module st_pw #(
     // the array then runs without a bubble between pairs.
     wire chain = fire && op_end;
     // The pair may start once the prologue has read both halves of word 0, so
-    // the first fire lands on a cycle w_cur holds it: with warm = 3 the reads
-    // of lines 0 and 1 complete on the cycle warm is 1, and a take there fires
-    // one cycle later.
+    // the first fire lands on a cycle {pw_dout, rd1} holds it: with warm = 2
+    // the read of line 1 is issued on the cycle warm is 1, and a take there
+    // fires one cycle later.
     wire take  = busy && (warm <= 2'd1) && pair_ok && out_room
               && (!op_act || chain);
 
@@ -439,19 +440,18 @@ module st_pw #(
     // stall the array: read k of the stream is line k mod 2*NO*NI, and fire m
     // is accompanied by read m+2, so the counter's wrap is the next pair's
     // first word.  rd1 is one read behind pw_dout, and d_odd says whether
-    // pw_dout is a high half; a high half plus rd1 is a whole word, which w_cur
-    // holds for the pair's two beats.  A gap in the fire stream freezes the
-    // read side (the ROM's clock enable holds its output) and w_cur simply
-    // reloads the same word, so the two stay in step whatever the gaps.
+    // pw_dout is a high half; a high half plus rd1 is a whole word, which the
+    // pair's first beat loads into the array and its second beat reuses.  A
+    // gap in the fire stream freezes the read side (the ROM's clock enable
+    // holds its output), so the two stay in step whatever the gaps.
     //
-    // The pass opens with three reads (lines 0..2, two and a half words ahead),
-    // so word 0 is in w_cur before the first fire; warm counts them down and
-    // gates the first take.
+    // The pass opens with two reads (lines 0 and 1, word 0), so word 0 is on
+    // {pw_dout, rd1} at the first fire; warm counts them down and gates the
+    // first take.
     logic [6:0]   pw_line;          // ROM line presented this cycle
     logic [1:0]   warm;             // prologue reads left
     logic         d_odd;            // pw_dout is a high half
     logic [511:0] rd1, pw_dout;
-    logic [1023:0] w_cur;           // the next fire's weight word
 
     wire [10:0] pw_addr = pw2_r + 11'(pw_line);
     wire        pipe_go = fire || (warm != 2'd0);
@@ -462,22 +462,16 @@ module st_pw #(
             warm    <= 2'd0;
             d_odd   <= 1'b0;
             rd1     <= '0;
-            w_cur   <= '0;
         end else if (start) begin
             pw_line <= 7'd0;
-            warm    <= 2'd3;
+            warm    <= 2'd2;
             d_odd   <= 1'b0;
             rd1     <= '0;
-            w_cur   <= '0;
         end else if (pipe_go) begin
             pw_line <= (pw_line == (nw2_r - 7'd1)) ? 7'd0 : pw_line + 7'd1;
             rd1     <= pw_dout;
             d_odd   <= pw_line[0];
             if (warm != 2'd0) warm <= warm - 2'd1;
-            // d_odd is the parity of the line whose data is on pw_dout now, so
-            // pw_dout and rd1 are one whole word; the load is inside the
-            // enable, so a gap in the fire stream freezes it too.
-            if (d_odd) w_cur <= {pw_dout, rd1};
         end
     end
 
@@ -499,7 +493,10 @@ module st_pw #(
         .rst_n   (rst_n),
         .in_valid(fire),
         .in_x    (x_tile),
-        .in_w    (w_cur),
+        .in_w    ({pw_dout, rd1}),
+        // d_odd is the parity of the line whose data is on pw_dout now, so
+        // pw_dout and rd1 are one whole word: the pair's first beat
+        .in_wld  (fire && d_odd),
         .in_first(1'b1),
         .in_last (1'b1),
         .done    (mac_done),
