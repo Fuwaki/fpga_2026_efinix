@@ -625,6 +625,7 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
 
     // ── st_accel_wrapper: takes each new ISP frame, writes the PROC ring ────
     wire accel_busy;
+    wire [31:0] st_pr_cycles;   // engine cycles of the last frame (telemetry later)
     st_accel_wrapper u_st_accel_wrapper (
         .clk            (core_clk),
         .rst_n          (vid_rst_n),
@@ -653,7 +654,8 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
         .st_frames  (st_pr_frames),
         .st_miss    (st_pr_miss),
         .st_errors  (st_pr_errors),
-        .st_skipped (st_pr_skipped)
+        .st_skipped (st_pr_skipped),
+        .st_cycles  (st_pr_cycles)
     );
 
     assign w_st_frame_cnt = 32'(st_pr_frames);

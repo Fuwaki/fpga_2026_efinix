@@ -1,24 +1,18 @@
 // tb_st_accel.sv -- the ST accelerator as the processing engine:
 // vid_patgen -> ISP ring -> st_accel_wrapper (ext master, PROC_EXT = 1)
-// -> scratch -> PROC ring, all through axi_arb and the DDR model.
+// -> st_engine's 15 passes through DDR -> PROC ring, all through axi_arb and
+// the DDR model.
 //
-// On every PROC commit the slot is read back from the DDR model and compared
-// with the expected picture: the Y of rgb2yc for the source pattern frame,
-// shown as gray RGB565.  Passes after NGOOD exact frames.
+// The pixels themselves are checked byte-exact by tb_st_engine against the
+// golden model; this test checks the ring level.  On every PROC commit the
+// right half of the slot (x 640..1279) is read back: lines 0..119 and
+// 600..719 must be black, every content line must be doubled (line 2k+1 =
+// line 2k) and so must every pixel pair, and the content must not be
+// constant.  Passes after NGOOD good frames with no aborts.
 module tb_st_accel #(
     parameter int NGOOD = 2
 );
     import vid_pkg::*;
-
-    function automatic logic [15:0] want_px(input int x, input int y, input int f);
-        rgb888_t    q;
-        logic [15:0] yy;
-        logic [7:0]  y8;
-        q  = unpack565(pack565(pat_pixel(12'(x), 12'(y), 16'(f))));
-        yy = 16'(77 * q.r + 150 * q.g + 29 * q.b);
-        y8 = yy[15:8];
-        return {y8[7:3], y8[7:2], y8[7:3]};
-    endfunction
 
     logic clk = 0, pclk = 0, rst_n = 0;
     always #5     clk  = ~clk;
@@ -39,6 +33,7 @@ module tb_st_accel #(
     ring_p_op_e             dst_op;
     frame_token_t           src_token;
     logic [SEQ_W-1:0]       dst_src_seq, frames, miss, errors, skipped;
+    logic [31:0]            cycles;
     logic [RING_SLOT_W-1:0] dst_slot;
     vid_status_t            st;
 
@@ -56,7 +51,8 @@ module tb_st_accel #(
         .src_req(src_req), .src_op(src_op), .src_ack(src_ack), .src_ok(src_ok), .src_token(src_token),
         .dst_req(dst_req), .dst_op(dst_op), .dst_src_seq(dst_src_seq),
         .dst_ack(dst_ack), .dst_ok(dst_ok), .dst_slot(dst_slot),
-        .busy(), .st_frames(frames), .st_miss(miss), .st_errors(errors), .st_skipped(skipped));
+        .busy(), .st_frames(frames), .st_miss(miss), .st_errors(errors), .st_skipped(skipped),
+        .st_cycles(cycles));
 
     vid_subsystem #(.ENABLE_SELFTEST(0), .PAT_FRAME_CYCLES(1_500_000), .PAT_LINE_CYCLES(2_000),
                     .PROC_EN(1), .PROC_EXT(1)) dut (
@@ -86,30 +82,58 @@ module tb_st_accel #(
         .pix_clk(pclk), .pix_r(), .pix_g(), .pix_b(), .pix_de(), .pix_hs(), .pix_vs(),
         .status(st));
 
-    // Check each committed PROC slot against the expected picture.
+    // Check each committed PROC slot's right half.
+    localparam int X0 = 640, Y0 = 120, Y1 = 600;
     int good = 0, checked = 0;
     always @(posedge clk) begin
         if (rst_n && dst_req && dst_ack && dst_op == RING_P_COMMIT) begin
             int bad = 0, f;
+            logic [15:0] first_px, px [CAM_W - X0];
+            bit varies;
             logic [AXI_AW-1:0] base;
-            f    = int'(dst_src_seq);
-            base = slot_base(RING_PROC_BASE, u_st.slot);
-            for (int y = 0; y < CAM_H; y++)
-                for (int b = 0; b < CAM_W / BEAT_PIX; b++) begin
+            f        = int'(dst_src_seq);
+            base     = slot_base(RING_PROC_BASE, u_st.slot);
+            varies   = 0;
+            first_px = 'x;
+            for (int y = 0; y < CAM_H; y++) begin
+                for (int b = X0 / BEAT_PIX; b < CAM_W / BEAT_PIX; b++) begin
                     logic [AXI_DW-1:0] got;
                     got = u_mem.peek(longint'(line_addr(base, 12'(y))) + longint'(b * BEAT_BYTES));
                     for (int p = 0; p < BEAT_PIX; p++)
-                        if (got[p*16 +: 16] != want_px(b * BEAT_PIX + p, y, f)) begin
-                            if (bad < 4)
-                                $display("  frame %0d (%0d,%0d): got %h want %h", f, b * BEAT_PIX + p, y,
-                                         got[p*16 +: 16], want_px(b * BEAT_PIX + p, y, f));
-                            bad++;
-                        end
+                        px[b * BEAT_PIX + p - X0] = got[p*16 +: 16];
                 end
+                for (int x = 0; x < CAM_W - X0; x++) begin
+                    logic [15:0] want;
+                    bit ok;
+                    if (y < Y0 || y >= Y1) ok = (px[x] == 16'h0000);
+                    else begin
+                        ok = (x % 2 == 0) || (px[x] == px[x - 1]);
+                        if (y % 2 == 1) begin
+                            logic [AXI_DW-1:0] up;
+                            up = u_mem.peek(longint'(line_addr(base, 12'(y - 1))) +
+                                            longint'((X0 + x) / BEAT_PIX * BEAT_BYTES));
+                            ok = ok && (up[((X0 + x) % BEAT_PIX)*16 +: 16] == px[x]);
+                        end
+                        if (^px[x] === 1'bx) ok = 0;
+                        if (y == Y0 && x == 0) first_px = px[x];
+                        else if (px[x] != first_px) varies = 1;
+                    end
+                    if (!ok) begin
+                        if (bad < 4)
+                            $display("  frame %0d (%0d,%0d): %h breaks the black band / 2x structure",
+                                     f, X0 + x, y, px[x]);
+                        bad++;
+                    end
+                end
+            end
+            if (!varies) begin
+                $display("  frame %0d: constant content %h", f, first_px);
+                bad++;
+            end
             checked++;
             if (bad == 0) good++;
-            $display("PROC commit %0d: source frame %0d slot %0d, %0d bad pixels (t=%0t)",
-                     checked, f, u_st.slot, bad, $time);
+            $display("PROC commit %0d: source frame %0d slot %0d, %0d bad pixels, engine %0d cycles (t=%0t)",
+                     checked, f, u_st.slot, bad, cycles, $time);
         end
     end
 
@@ -118,7 +142,7 @@ module tb_st_accel #(
         fork
             wait (good >= NGOOD);
             wait (checked > good);
-            begin #200ms; end
+            begin #400ms; end
         join_any
         $display("tb_st_accel: commits %0d miss %0d errors %0d skipped %0d, ISP frames %0d",
                  frames, miss, errors, skipped, st.pw_frames);

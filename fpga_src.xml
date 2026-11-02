@@ -38,15 +38,21 @@
         <efx:design_file name="rtl/true_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="rtl/user_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="ip/riscv_soc0/riscv_soc0.v" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/st_accel_pkg.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/mac_array.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/line_buffer.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/requant.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/dw_conv3x3.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/pw_conv1x1.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/core/tile_engine.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/proc/rgb2yc.sv" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/gen/layer_desc_rom.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_requant.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_unpack.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_pack.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_add.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_dw.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_dw_rom.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_rq_rom.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_line_ram.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_mac8x16.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_pw_rom.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_pw.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_pre.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_post.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_engine.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/dma/tile_dma_rd.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/dma/tile_dma_wr.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/st_accel_wrapper.sv" version="default" library="default" />

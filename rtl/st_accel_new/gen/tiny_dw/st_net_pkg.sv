@@ -73,6 +73,11 @@ package st_net_pkg;
     logic [7:0]        pb;        // pixel bytes, roundup16(c * elem)
   } st_region_t;
 
+  typedef struct packed {
+    logic [23:0]       mant;      // factor = mant * 2**(-k)
+    logic [5:0]        k;
+  } st_add_factor_t;
+
   function automatic st_layer_t st_layer(input int i);
     case (i)
       0: st_layer = '{kind: 2'd2, cin: 7'd27, cout: 7'd32, stride: 2'd1, 
@@ -268,6 +273,19 @@ package st_net_pkg;
       27: st_region = '{base: 32'h08915000, w: 10'd320, h: 10'd240, c: 7'd16, 
                      elem: 2'd1, pb: 8'd16};
       default: st_region = '{base: 32'h0000_0000, w: 10'd0, h: 10'd0, c: 7'd0, elem: 2'd1, pb: 8'd0};
+    endcase
+  endfunction
+
+  // Add factor of rq word i (a pass's add_rq): the same mant and k as the
+  // ROM word, so the add needs no ROM port.
+  function automatic st_add_factor_t st_add_factor(input int i);
+    case (i)
+      1491: st_add_factor = '{mant: 24'hf6f5b9, k: 6'd24};
+      1492: st_add_factor = '{mant: 24'hdddd90, k: 6'd24};
+      1493: st_add_factor = '{mant: 24'hcffafd, k: 6'd24};
+      1494: st_add_factor = '{mant: 24'h999a3e, k: 6'd24};
+      1495: st_add_factor = '{mant: 24'hc78b6a, k: 6'd24};
+      default: st_add_factor = '{mant: 24'h0, k: 6'd0};
     endcase
   endfunction
 
