@@ -506,36 +506,33 @@ module st_pw #(
 
     // ------------------------------------------------ pair accumulators
     // One set per pixel of the pair, cleared on the output tile's first input
-    // tile.  |sum| < 80*127*127 < 2**21, so 24 bits hold it.
-    logic signed [23:0] acc0 [8], acc1 [8];
-    logic signed [23:0] acc_px [8], sum [8];
+    // tile.  |sum| < 80*127*127 < 2**21, so 24 bits hold it.  Plain vectors,
+    // not arrays: Efinity reads an unpacked array of a few wide words as a
+    // memory and tries to place it in a RAM10.
+    logic [191:0] acc0, acc1;
+    logic [191:0] acc_px;
+    logic [191:0] acc_sum;
     logic        [191:0] tf_din;
 
     always_comb begin
-        for (int o = 0; o < 8; o++) begin
-            acc_px[o] = dv_px[3] ? acc1[o] : acc0[o];
-            sum[o]    = dv_first[3] ? mac_acc[o] : acc_px[o] + mac_acc[o];
-            tf_din[24*o +: 24] = sum[o];
-        end
+        acc_px = dv_px[3] ? acc1 : acc0;
+        for (int o = 0; o < 8; o++)
+            acc_sum[24*o +: 24] = dv_first[3] ? mac_acc[o]
+                                              : 24'(acc_px[24*o +: 24])
+                                                + 24'(mac_acc[o]);
+        tf_din = acc_sum;
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            for (int o = 0; o < 8; o++) begin
-                acc0[o] <= 24'sd0;
-                acc1[o] <= 24'sd0;
-            end
+            acc0 <= '0;
+            acc1 <= '0;
         end else if (start) begin
-            for (int o = 0; o < 8; o++) begin
-                acc0[o] <= 24'sd0;
-                acc1[o] <= 24'sd0;
-            end
+            acc0 <= '0;
+            acc1 <= '0;
         end else if (mac_done) begin
-            if (!dv_px[3]) begin
-                for (int o = 0; o < 8; o++) acc0[o] <= sum[o];
-            end else begin
-                for (int o = 0; o < 8; o++) acc1[o] <= sum[o];
-            end
+            if (!dv_px[3]) acc0 <= acc_sum;
+            else           acc1 <= acc_sum;
         end
     end
 
