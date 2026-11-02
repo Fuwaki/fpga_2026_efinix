@@ -5,7 +5,7 @@
 //
 // The pixels themselves are checked byte-exact by tb_st_engine against the
 // golden model; this test checks the ring level.  On every PROC commit the
-// whole slot is read back: every 4x3 block must be one pixel (st_post's
+// whole slot is read back: every 2x2 block must be one pixel (st_post's
 // replication) and the content must not be constant.  Passes after NGOOD good frames with no aborts.
 module tb_st_accel #(
     parameter int NGOOD = 2
@@ -80,7 +80,7 @@ module tb_st_accel #(
         .pix_clk(pclk), .pix_r(), .pix_g(), .pix_b(), .pix_de(), .pix_hs(), .pix_vs(),
         .status(st));
 
-    // Check each committed PROC slot: every 4x3 block of the 1280x720 slot is
+    // Check each committed PROC slot: every 2x2 block of the 1280x720 slot is
     // one source pixel.
     int good = 0, checked = 0;
     always @(posedge clk) begin
@@ -100,16 +100,16 @@ module tb_st_accel #(
                     for (int p = 0; p < BEAT_PIX; p++)
                         px[b * BEAT_PIX + p] = got[p*16 +: 16];
                 end
-                if (y % 3 == 0) top = px;      // the block's first line
+                if (y % 2 == 0) top = px;      // the block's first line
                 for (int x = 0; x < CAM_W; x++) begin
                     bit ok;
-                    ok = (px[x] == top[x]) && (x % 4 == 0 || px[x] == px[x - 1]);
+                    ok = (px[x] == top[x]) && (x % 2 == 0 || px[x] == px[x - 1]);
                     if (^px[x] === 1'bx) ok = 0;
                     if (y == 0 && x == 0) first_px = px[x];
                     else if (px[x] != first_px) varies = 1;
                     if (!ok) begin
                         if (bad < 4)
-                            $display("  frame %0d (%0d,%0d): %h breaks the 4x3 structure",
+                            $display("  frame %0d (%0d,%0d): %h breaks the 2x2 structure",
                                      f, x, y, px[x]);
                         bad++;
                     end
