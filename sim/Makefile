@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
+TESTS := tb_st_accel tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid tb_disp \
          tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -44,11 +44,20 @@ lint:
 define build
 	@mkdir -p $(OBJ)/$(1)
 	verilator $(VFLAGS) --top-module $(3) $(4) -Mdir $(OBJ)/$(1) \
-	  $(RTL) $(SVA) $(MODELS) $(ROOT)/sim/tb/$(2).sv > $(OBJ)/$(1)/build.log 2>&1 \
+	  $(RTL) $(EXTRA_$(1)) $(SVA) $(MODELS) $(ROOT)/sim/tb/$(2).sv > $(OBJ)/$(1)/build.log 2>&1 \
 	  || { tail -30 $(OBJ)/$(1)/build.log; exit 1; }
 	@if grep -E '^%Warning-[A-Z]+: $(ROOT)/rtl/vid/' $(OBJ)/$(1)/build.log | grep -v '/sva/'; then \
 	  echo "FAIL $(1): warnings in rtl/vid (see $(OBJ)/$(1)/build.log)"; exit 1; fi
 endef
+
+ST := $(ROOT)/rtl/st_accel_new/dma/tile_dma_rd.sv $(ROOT)/rtl/st_accel_new/dma/tile_dma_wr.sv \
+      $(ROOT)/rtl/st_accel_new/proc/rgb2yc.sv $(ROOT)/rtl/st_accel_new/st_accel_wrapper.sv
+
+# ST accelerator as the processing engine (external AXI master + ring ports).
+EXTRA_tb_st_accel := $(ST)
+tb_st_accel:
+	$(call build,$@,$@,$@,)
+	$(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2
 
 tb_fifo tb_ring tb_dma tb_vidsub tb_disp tb_osd:
 	$(call build,$@,$@,$@,)

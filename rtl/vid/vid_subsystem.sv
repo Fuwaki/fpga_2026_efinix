@@ -38,6 +38,9 @@ module vid_subsystem
     parameter isp_cfg_t ISP_CFG   = ISP_CFG_DEFAULT,
     parameter string GAMMA_CURVE  = "./rtl/gamma_conrrection/SRGB_ENC.mem",
     parameter bit PROC_EN         = 0,
+    // 1 = the external master (ext_*) replaces proc_engine: it consumes the
+    // ISP ring and produces the PROC ring through ext_src_* / ext_dst_*.
+    parameter bit PROC_EXT        = 0,
     parameter proc_mode_e PROC_MODE = PROC_INVERT,
     parameter comp_cfg_t COMP_CFG = COMP_CFG_DEFAULT,
     // Display pattern timing; simulation shortens the frame period.
@@ -87,6 +90,24 @@ module vid_subsystem
     output logic                  ext_rlast,
     output logic                  ext_rvalid,
     input  logic                  ext_rready,
+
+    // External processing engine (PROC_EXT = 1): ISP ring consumer, PROC
+    // ring producer (ring_if.sv contract) and its counters.
+    input  logic                  ext_src_req     = 1'b0,
+    input  ring_c_op_e            ext_src_op      = RING_C_ACQ,
+    output logic                  ext_src_ack,
+    output logic                  ext_src_ok,
+    output frame_token_t          ext_src_token,
+    input  logic                  ext_dst_req     = 1'b0,
+    input  ring_p_op_e            ext_dst_op      = RING_P_ACQ,
+    input  logic [SEQ_W-1:0]      ext_dst_src_seq = '0,
+    output logic                  ext_dst_ack,
+    output logic                  ext_dst_ok,
+    output logic [RING_SLOT_W-1:0] ext_dst_slot,
+    input  logic [SEQ_W-1:0]      ext_pr_frames   = '0,
+    input  logic [SEQ_W-1:0]      ext_pr_miss     = '0,
+    input  logic [SEQ_W-1:0]      ext_pr_errors   = '0,
+    input  logic [SEQ_W-1:0]      ext_pr_skipped  = '0,
 
     // ------------------------------------------------ DDR controller (master)
     output logic [AXI_IW-1:0]     ddr_awid,
@@ -380,12 +401,58 @@ module vid_subsystem
                 .clk(clk), .rst_n(rst_n), .p(pp), .c(pc), .status(pring_st));
             assign status.proc_ring_err = pring_st.proto_err;
 
-            proc_engine #(.MODE(PROC_MODE)) u_proc (
-                .mr(mr[R_PROC]), .mw(mw[W_PROC]), .src(rc[1]), .dst(pp),
-                .src_base(RING_ISP_BASE), .dst_base(RING_PROC_BASE),
-                .st_frames(status.pr_frames), .st_miss(status.pr_miss),
-                .st_errors(status.pr_errors), .st_skipped(status.pr_skipped));
+            if (PROC_EXT) begin : g_ext
+                // The external master is the processing engine: it consumes
+                // the ISP ring and produces the PROC ring through ext_src/dst.
+                assign rc[1].req     = ext_src_req;
+                assign rc[1].op      = ext_src_op;
+                assign rc[1].policy  = ACQ_NEW_ONLY;
+                assign ext_src_ack   = rc[1].ack;
+                assign ext_src_ok    = rc[1].ok;
+                assign ext_src_token = rc[1].token;
+                assign pp.req        = ext_dst_req;
+                assign pp.op         = ext_dst_op;
+                assign pp.src_seq    = ext_dst_src_seq;
+                assign ext_dst_ack   = pp.ack;
+                assign ext_dst_ok    = pp.ok;
+                assign ext_dst_slot  = pp.slot;
+                assign status.pr_frames  = ext_pr_frames;
+                assign status.pr_miss    = ext_pr_miss;
+                assign status.pr_errors  = ext_pr_errors;
+                assign status.pr_skipped = ext_pr_skipped;
+                assign mr[R_PROC].arvalid = 1'b0;
+                assign mr[R_PROC].arid    = '0;
+                assign mr[R_PROC].araddr  = '0;
+                assign mr[R_PROC].arlen   = '0;
+                assign mr[R_PROC].rready  = 1'b1;
+                assign mw[W_PROC].awvalid = 1'b0;
+                assign mw[W_PROC].awid    = '0;
+                assign mw[W_PROC].awaddr  = '0;
+                assign mw[W_PROC].awlen   = '0;
+                assign mw[W_PROC].wvalid  = 1'b0;
+                assign mw[W_PROC].wdata   = '0;
+                assign mw[W_PROC].wlast   = 1'b0;
+                assign mw[W_PROC].bready  = 1'b1;
+            end else begin : g_eng
+                proc_engine #(.MODE(PROC_MODE)) u_proc (
+                    .mr(mr[R_PROC]), .mw(mw[W_PROC]), .src(rc[1]), .dst(pp),
+                    .src_base(RING_ISP_BASE), .dst_base(RING_PROC_BASE),
+                    .st_frames(status.pr_frames), .st_miss(status.pr_miss),
+                    .st_errors(status.pr_errors), .st_skipped(status.pr_skipped));
+                assign ext_src_ack   = 1'b0;
+                assign ext_src_ok    = 1'b0;
+                assign ext_src_token = '0;
+                assign ext_dst_ack   = 1'b0;
+                assign ext_dst_ok    = 1'b0;
+                assign ext_dst_slot  = '0;
+            end
         end else begin : g_no_proc
+            assign ext_src_ack   = 1'b0;
+            assign ext_src_ok    = 1'b0;
+            assign ext_src_token = '0;
+            assign ext_dst_ack   = 1'b0;
+            assign ext_dst_ok    = 1'b0;
+            assign ext_dst_slot  = '0;
             rd_idle u_idle (.m(mr[R_PROC]), .ring(rc[1]));
             assign mw[W_PROC].awvalid = 1'b0;
             assign mw[W_PROC].awid    = '0;
