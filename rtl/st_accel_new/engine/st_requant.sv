@@ -23,12 +23,13 @@
 //   5  shift back to the 2**k scale of the f32 product
 //   6  add the half, shift right by k, sign, clamp to [lo, hi], output register
 //
-// |x| is smaller than 2**24 (an accumulator, or an add output below 2**10)
-// and mant is normalised (bit 23 set), so the unclamped result is under
+// |x| is smaller than 2**(XW-1) <= 2**24 (an accumulator, or an add output
+// below 2**10); size XW to the source, the multiplier is (XW-1) x 24 bits.
+// mant is normalised (bit 23 set), so the unclamped result is under
 // 2**33; the saturation at stage 5 keeps the compare at 12 bits -- lo and hi
 // are 10 bit, so anything at or above 2048 clamps identically.
 module st_requant #(
-    parameter int XW = 25,          // in_x: |in_x| < 2**24
+    parameter int XW = 25,          // in_x: |in_x| < 2**(XW-1), at most 25
     parameter int TW = 1            // in_tag width, carried with the beat
 ) (
     input  logic                 clk,
@@ -50,7 +51,7 @@ module st_requant #(
     // exactly LAT posedges later.
     localparam int LAT = 6;
 
-    localparam int AW = 24;     // |x|
+    localparam int AW = XW - 1; // |x|: a narrower lane maps to fewer DSP blocks
     localparam int PW = 48;     // |x| * mant
     localparam int QW = 25;     // 24-bit significand plus the round-up carry
     localparam int VW = 49;     // significand shifted back: < 2**48 + carry
@@ -229,7 +230,7 @@ module st_requant #(
     assign out_tag   = tag_s6;
 
     initial begin
-        if (XW < 25) $error("st_requant: XW must be at least 25 (|x| < 2**24)");
+        if (XW < 2 || XW > 25) $error("st_requant: XW must be 2..25 (|x| < 2**24)");
         if (TW < 1)  $error("st_requant: TW must be at least 1");
     end
 
