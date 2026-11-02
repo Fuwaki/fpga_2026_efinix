@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -64,7 +64,10 @@ ST_ENG := $(ROOT)/rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_dw.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_dw_rom.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_rq_rom.sv \
-          $(ROOT)/rtl/st_accel_new/engine/st_line_ram.sv
+          $(ROOT)/rtl/st_accel_new/engine/st_line_ram.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_mac8x16.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_pw_rom.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_pw.sv
 
 # ST accelerator as the processing engine (external AXI master + ring ports).
 EXTRA_tb_st_accel := $(ST)
@@ -107,6 +110,21 @@ tb_st_dw:
 	    +CASE_DIR=$(ST_DW_VEC)/$$c +CLEAN=0) || exit 1; \
 	  (cd $(ROOT) && $(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	    +CASE_DIR=$(ST_DW_VEC)/$$c +CLEAN=1) | grep ' (clean)' || exit 1; \
+	done
+
+# The PW stage against tools/st_pw_vectors.py: one run per case, each with
+# random input gaps (and a few 300-cycle stalls) and 30% output stalls, then
+# again with no stalls for the cycles-per-pixel figure.
+PW_CASES := enc0 res up0 up1a head stem
+PW_DIR   := $(OBJ)/tb_st_pw
+EXTRA_tb_st_pw := $(ST_ENG)
+tb_st_pw:
+	@mkdir -p $(PW_DIR)
+	$(call build,$@,$@,$@,)
+	@for c in $(PW_CASES); do \
+	  cd $(ROOT) && tools/st_pw_vectors.py --case $$c --out $(PW_DIR)/$$c || exit 1; \
+	  cd $(ROOT) && $(PW_DIR)/Vtb_st_pw +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +CASE_DIR=$(PW_DIR)/$$c || exit 1; \
 	done
 
 # st_unpack / st_pack / st_add against tools/st_io_vectors.py (golden
