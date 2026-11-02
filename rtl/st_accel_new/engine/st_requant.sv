@@ -24,16 +24,19 @@
 // Fixed latency LAT = 6 cycles, II = 1, no back-pressure: a beat accepted on
 // an in_valid cycle leaves LAT cycles later.  The stages are
 //
-//   1  24 x 24 product, exact -- one DSP block whose operand and output
-//      registers hold it, so the product costs no fabric flip-flop
-//   2  leading one, round to 24 significant bits, ties to even, shift amount
-//   3  shift back to the output scale, round half away from zero, sign, clamp
-//   4, 5, 6  the beat: the finished code and its tag
+//   1  operands: |x| and mant, the DSP block's input registers
+//   2  24 x 24 product, exact -- the DSP block's output register
+//   3  leading one, round to 24 significant bits, ties to even, shift amount
+//   4  shift back to the output scale, round half away from zero, sign, clamp
+//   5, 6  the beat: the finished code and its tag
+//
+// The operand stage keeps the caller's input logic (an accumulator add, a
+// tile select) off the multiplier path.
 //
 // |x| is smaller than 2**(XW-1) <= 2**24 (an accumulator, or an add output
 // below 2**10); size XW to the source, the multiplier is (XW-1) x 24 bits.
 // mant is normalised (bit 23 set), so the unclamped result is under 2**33;
-// lo and hi are 10 bit, so the clamp at stage 3 compares at 12 bits and
+// lo and hi are 10 bit, so the clamp at stage 4 compares at 12 bits and
 // anything at or above 2047 clamps identically.
 module st_requant #(
     parameter int XW = 25,          // in_x: |in_x| < 2**(XW-1), at most 25
@@ -65,34 +68,61 @@ module st_requant #(
     localparam int SW = 4;      // the trailing shift k - sh - 12, 0..15
 
     // ---------------------------------------------------- stage 1: operands
-    // p is the DSP block's registered product; the two operand registers and
-    // the output register sit inside it (none of them has a reset).
-    logic [PW-1:0]     p_s1;
-    logic              neg_s1;
-    logic [4:0]        k_s1;    // in_k - 16: the 16..47 range in five bits
-    logic signed [9:0] lo_s1, hi_s1;
-    logic [TW-1:0]     tag_s1;
-    logic              vld_s1;
+    // Registers are named after the stage before them (s0 = stage 1).  The
+    // operand and product registers have no reset, so they sit in the
+    // DSP block.
+    logic [AW-1:0]     ax_s0;
+    logic [23:0]       mant_s0;
+    logic              neg_s0;
+    logic [4:0]        k_s0;    // in_k - 16: the 16..47 range in five bits
+    logic signed [9:0] lo_s0, hi_s0;
+    logic [TW-1:0]     tag_s0;
+    logic              vld_s0;
 
     wire [AW-1:0] ax = in_x[XW-1] ? AW'(-in_x) : AW'(in_x);
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            vld_s1 <= 1'b0;
-        end else begin
-            vld_s1 <= in_valid;
-            if (in_valid) begin
-                p_s1   <= PW'(ax) * PW'(in_mant);
-                neg_s1 <= in_x[XW-1];
-                k_s1   <= 5'(in_k - 6'd16);
-                lo_s1  <= in_lo;
-                hi_s1  <= in_hi;
-                tag_s1 <= in_tag;
-            end
+        if (!rst_n) vld_s0 <= 1'b0;
+        else        vld_s0 <= in_valid;
+    end
+
+    always_ff @(posedge clk) begin
+        if (in_valid) begin
+            ax_s0   <= ax;
+            mant_s0 <= in_mant;
+            neg_s0  <= in_x[XW-1];
+            k_s0    <= 5'(in_k - 6'd16);
+            lo_s0   <= in_lo;
+            hi_s0   <= in_hi;
+            tag_s0  <= in_tag;
         end
     end
 
-    // ------------------------------ stage 2: leading one, round to 24 bits
+    // ----------------------------------------------------- stage 2: product
+    logic [PW-1:0]     p_s1;
+    logic              neg_s1;
+    logic [4:0]        k_s1;
+    logic signed [9:0] lo_s1, hi_s1;
+    logic [TW-1:0]     tag_s1;
+    logic              vld_s1;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) vld_s1 <= 1'b0;
+        else        vld_s1 <= vld_s0;
+    end
+
+    always_ff @(posedge clk) begin
+        if (vld_s0) begin
+            p_s1   <= PW'(ax_s0) * PW'(mant_s0);
+            neg_s1 <= neg_s0;
+            k_s1   <= k_s0;
+            lo_s1  <= lo_s0;
+            hi_s1  <= hi_s0;
+            tag_s1 <= tag_s0;
+        end
+    end
+
+    // ------------------------------ stage 3: leading one, round to 24 bits
     logic [QW-1:0]     wq_s2;
     logic [SW-1:0]     shf_s2;
     logic              neg_s2;
@@ -111,18 +141,18 @@ module st_requant #(
     wire [4:0] sh = (lead > 6'd23) ? 5'(lead - 6'd23) : 5'd0;
 
     // win = {p, 1'b0} >> sh: bit j is p[sh-1+j], so win[0] is the round bit,
-    // win[12:1] is q[11:0] and win[24:13] is q[23:12] (bit 24 is zero: the
-    // leading one of p sits at 23 + sh by construction).
+    // win[12:1] is q[11:0] and win[24:13] is q[23:12] (the leading one of p
+    // sits at 23 + sh by construction, so nothing above win[24] is lost).
     wire [NW-1:0] win = NW'({p_s1, 1'b0} >> sh);
 
     // Round to nearest even: up needs the round bit and, on an exact tie, an
-    // odd q[0] = win[1].  Only a carry out of q[11:0] is visible at stage 3,
+    // odd q[0] = win[1].  Only a carry out of q[11:0] is visible at stage 4,
     // and that carry already implies the tie bit (all twelve bits set), so
     // the p bits below the round bit never affect the result.
     wire          carry = win[0] & (&win[12:1]);
     wire [QW-1:0] wq    = QW'({1'b0, win[NW-1:13]}) + QW'(carry);
 
-    // Stage 3 shifts q[23:12], so its amount is d - 12 with d = k - sh and k
+    // Stage 4 shifts q[23:12], so its amount is d - 12 with d = k - sh and k
     // = k_s1 + 16.  An amount of 0 (d <= 12, y >= 2048) or 15 (d >= 27, y =
     // 0) covers the two saturated ends.
     wire signed [6:0] e   = $signed({2'b0, k_s1}) + 7'sd4 - $signed({2'b0, sh});
@@ -144,11 +174,11 @@ module st_requant #(
         end
     end
 
-    // ---- stage 3: shift back, round half away from zero, sign, clamp, out
+    // ---- stage 4: shift back, round half away from zero, sign, clamp
     // {wq, 1'b0} >> shf is q >> (shf - 1): bit 0 is the round bit and the
     // rest is q >> shf, so rounding half away from zero is one increment.
     // q[11:0] never moves the result (see the header), so only its all ones
-    // case -- the carry already folded in at stage 2 -- was kept.
+    // case -- the carry already folded in at stage 3 -- was kept.
     wire [QW:0]   wsh = (QW+1)'({wq_s2, 1'b0} >> shf_s2);
     wire [QW:0]   yv  = {1'b0, wsh[QW:1]} + (QW+1)'(wsh[0]);
     wire          sat = |yv[QW:11];         // >= 2048: past every clamp hi
@@ -175,7 +205,7 @@ module st_requant #(
         end
     end
 
-    // --------------------------------------------------- stages 4..6: beat
+    // --------------------------------------------------- stages 5, 6: beat
     logic              vld_s4;
     logic signed [9:0] y_s4;
     logic [TW-1:0]     tag_s4;
@@ -208,25 +238,9 @@ module st_requant #(
         end
     end
 
-    logic              vld_s6;
-    logic signed [9:0] y_s6;
-    logic [TW-1:0]     tag_s6;
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            vld_s6 <= 1'b0;
-        end else begin
-            vld_s6 <= vld_s5;
-            if (vld_s5) begin
-                y_s6   <= y_s5;
-                tag_s6 <= tag_s5;
-            end
-        end
-    end
-
-    assign out_valid = vld_s6;
-    assign out_y     = y_s6;
-    assign out_tag   = tag_s6;
+    assign out_valid = vld_s5;
+    assign out_y     = y_s5;
+    assign out_tag   = tag_s5;
 
     initial begin
         if (XW < 2 || XW > 25) $error("st_requant: XW must be 2..25 (|x| < 2**24)");
