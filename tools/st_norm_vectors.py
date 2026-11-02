@@ -171,8 +171,8 @@ def case_ln_syn(out: Path) -> None:
 def case_ln_min(out: Path) -> None:
     """LN at the stage's minimum geometry: G = 8, N = 32.
 
-    The coefficients are the real ones of channels 0..31 (words 0..7 of each
-    st_ln_b<b>.hex), and E = max(1, round(eps*N^2/in^2)) is still 1 at N = 32,
+    The coefficients are the real ones of channels 0..31 (words 0..7 of
+    st_ln.hex), and E = max(1, round(eps*N^2/in^2)) is still 1 at N = 32,
     which the model asserts here rather than the generator (which only sees
     the network's N = 80).
     """
