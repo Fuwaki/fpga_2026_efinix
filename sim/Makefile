@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_st_prepost tb_st_engine tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_st_prepost tb_st_engine tb_st_film tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -70,6 +70,7 @@ ST_ENG := $(ROOT)/rtl/st_accel_new/gen/guided/st_net_pkg.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pw.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pre.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_post.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_film.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_engine.sv
 
 # ST accelerator as the processing engine (external AXI master + ring ports).
@@ -145,6 +146,22 @@ tb_st_prepost:
 	$(call build,$@_post,$@,tb_st_prepost,-GCASE_POST=1)
 	cd $(ROOT) && $(OBJ)/$@_post/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	  +VEC=$(OBJ)/$@
+
+# The FiLM GAP tap and MLP sequencer against tools/st_film_vectors.py: the
+# real FiLM pass input (net.ddr[17] of g360/in/cat.png), all codes at +254
+# and -254, and a random plane.  Each case is a whole 320x180 plane (576000
+# tap beats) plus the 40 coefficient writes.
+FILM_CASES := real max min rand
+FILM_DIR   := $(OBJ)/tb_st_film
+EXTRA_tb_st_film := $(ST_ENG)
+tb_st_film:
+	@mkdir -p $(FILM_DIR)
+	$(call build,$@,$@,$@,)
+	@for c in $(FILM_CASES); do \
+	  cd $(ROOT) && tools/st_film_vectors.py --case $$c --out $(FILM_DIR)/$$c || exit 1; \
+	  cd $(ROOT) && $(FILM_DIR)/Vtb_st_film +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +DIR=$(FILM_DIR)/$$c || exit 1; \
+	done
 
 # The whole block engine on one frame against tools/st_engine_vectors.py:
 # every DDR region and the PROC right half, byte-exact.  ENGINE_PASSES=a..b
