@@ -1,17 +1,17 @@
 // tb_st_film.sv -- st_film (GAP + FiLM MLP) against tools/st_film_vectors.py.
 //
 // +DIR holds tap.hex ("<data:10 hex> <last>" per group beat), coef.hex
-// ("<idx> <mul:5 hex> <off:6 hex>" per channel) and meta.txt
-// ("<nbeat> <npix> <cfg_g>").  The testbench:
+// ("<grp> <mul0..mul3:5 hex> <off0..off3:6 hex>" per group of four channels)
+// and meta.txt ("<nbeat> <npix> <cfg_g>").  The testbench:
 //
 //   * resets, pulses gap_clear once, then streams the whole plane into the
 //     tap with random valid gaps -- a beat is held until tap_ready accepts
 //     it, as the engine's stream rules require -- and checks that tap_ready
 //     stays high every cycle (the tap must never stall the pack stage);
 //   * checks the 40 GAP sums against the sums of the vector file;
-//   * pulses mlp_start and checks the 40 coefficient writes: exactly 40, in
-//     channel order, every idx/mul/off equal to coef.hex, and mlp_busy high
-//     from the start until the last write, then low with no further writes;
+//   * pulses mlp_start and checks the 10 group writes: exactly 10, in group
+//     order, every grp/mul[]/off[] equal to coef.hex, and mlp_busy high from
+//     the start until the last write, then low with no further writes;
 //   * prints the MLP cycle count (mlp_start edge to the busy drop) and
 //     fails unless it is under the pass budget of 50k cycles.
 //
@@ -33,9 +33,9 @@ module tb_st_film;
     logic        mlp_start = 0;
     logic        mlp_busy;
     logic        coef_we;
-    logic [6:0]  coef_idx;
-    logic [17:0] coef_mul;
-    logic [23:0] coef_off;
+    logic [3:0]  coef_grp;
+    logic [17:0] coef_mul [4];
+    logic [23:0] coef_off [4];
 
     st_film dut (
         .clk(clk), .rst_n(rst_n),
@@ -43,17 +43,18 @@ module tb_st_film;
         .tap_valid(tap_valid), .tap_ready(tap_ready),
         .tap_data(tap_data), .tap_last(tap_last),
         .mlp_start(mlp_start), .mlp_busy(mlp_busy),
-        .coef_we(coef_we), .coef_idx(coef_idx),
+        .coef_we(coef_we), .coef_grp(coef_grp),
         .coef_mul(coef_mul), .coef_off(coef_off)
     );
 
     // ------------------------------------------------------------ vectors
     logic [39:0] vdata [NBEAT];
     logic        vlast [NBEAT];
-    logic [6:0]  vcidx [NC];
-    logic [17:0] vcmul [NC];
-    logic [23:0] vcoff [NC];
-    int  nbeat = 0, npix = 0, g = 0;
+    localparam int NG = NC / 4;
+    logic [3:0]  vcgrp [NG];
+    logic [17:0] vcmul [NG][4];
+    logic [23:0] vcoff [NG][4];
+    int  nbeat = 0, npix = 0, gpx = 0;
     int  mbeat = 0, mpix = 0, mg = 0;
     int  fd;
     bit  loaded = 0;
@@ -70,7 +71,7 @@ module tb_st_film;
         if (mbeat != mpix * mg) $fatal(1, "tb_st_film: %0d beats for %0d pixels", mbeat, mpix);
         nbeat = mbeat;
         npix  = mpix;
-        g     = mg;
+        gpx   = mg;
         fd = $fopen({dir, "/tap.hex"}, "r");
         if (fd == 0) $fatal(1, "tb_st_film: cannot open %s/tap.hex", dir);
         mbeat = 0;
@@ -80,12 +81,15 @@ module tb_st_film;
         if (mbeat != NBEAT) $fatal(1, "tb_st_film: %0d tap beats, expected %0d", mbeat, NBEAT);
         fd = $fopen({dir, "/coef.hex"}, "r");
         if (fd == 0) $fatal(1, "tb_st_film: cannot open %s/coef.hex", dir);
-        for (int c = 0; c < NC; c++)
-            if ($fscanf(fd, "%d %h %h\n", vcidx[c], vcmul[c], vcoff[c]) != 3)
-                $fatal(1, "tb_st_film: coef.hex ends at channel %0d", c);
+        for (int g = 0; g < NG; g++)
+            if ($fscanf(fd, "%d %h %h %h %h %h %h %h %h\n", vcgrp[g],
+                        vcmul[g][0], vcmul[g][1], vcmul[g][2], vcmul[g][3],
+                        vcoff[g][0], vcoff[g][1], vcoff[g][2], vcoff[g][3]) != 9)
+                $fatal(1, "tb_st_film: coef.hex ends at group %0d", g);
         $fclose(fd);
-        for (int c = 0; c < NC; c++)
-            if (vcidx[c] != c) $fatal(1, "tb_st_film: coef %0d has idx %0d", c, vcidx[c]);
+        for (int g = 0; g < NG; g++)
+            if (vcgrp[g] != 4'(g))
+                $fatal(1, "tb_st_film: coef %0d has grp %0d", g, vcgrp[g]);
         $display("tb_st_film: %0d beats, %0d pixels from %s", nbeat, npix, dir);
         loaded = 1;
     end
@@ -141,7 +145,7 @@ module tb_st_film;
     initial begin
         for (int c = 0; c < NC; c++) want[c] = '0;
         for (int i = 0; i < nbeat; i++) begin
-            automatic int b = i % g;
+            automatic int b = i % gpx;
             for (int j = 0; j < 4; j++)
                 want[4*b + j] += 25'(signed'(vdata[i][10*j +: 10]));
         end
@@ -149,10 +153,11 @@ module tb_st_film;
 
     task automatic check_gap;
         for (int c = 0; c < NC; c++)
-            if (dut.gap[c] !== want[c]) begin
+            if (dut.gapv[c/4][c%4] !== want[c]) begin
                 gap_errs++;
                 if (gap_errs <= 10)
-                    $display("MISMATCH GAP sum %0d: %0d want %0d", c, dut.gap[c], want[c]);
+                    $display("MISMATCH GAP sum %0d: %0d want %0d", c,
+                             dut.gapv[c/4][c%4], want[c]);
             end
     endtask
 
@@ -162,23 +167,35 @@ module tb_st_film;
     int  t_start = -1, t_end = -1;
     bit  busy_seen = 0;
 
+    task automatic check_grp(input int k);
+        if (coef_grp !== vcgrp[k]) begin
+            errs++;
+            if (errs <= 10)
+                $display("MISMATCH group %0d: grp %0d, want %0d",
+                         k, coef_grp, vcgrp[k]);
+        end
+        for (int j = 0; j < 4; j++)
+            if (coef_mul[j] !== vcmul[k][j] || coef_off[j] !== vcoff[k][j]) begin
+                errs++;
+                if (errs <= 10)
+                    $display("MISMATCH coef group %0d lane %0d: mul %0d off %0d, want mul %0d off %0d",
+                             k, j, coef_mul[j], coef_off[j],
+                             vcmul[k][j], vcoff[k][j]);
+            end
+    endtask
+
     always @(posedge clk) begin
         if (rst_n) begin
             if (mlp_start && t_start < 0) t_start = cyc;
             if (mlp_busy) busy_seen = 1;
             if (coef_we) begin
-                if (oi >= NC) begin
+                if (oi >= NG) begin
                     errs++;
                     if (errs <= 10)
-                        $display("MISMATCH: write %0d beyond the %0d channels (idx %0d)",
-                                 oi, NC, coef_idx);
-                end else if (coef_idx !== vcidx[oi] || coef_mul !== vcmul[oi]
-                             || coef_off !== vcoff[oi]) begin
-                    errs++;
-                    if (errs <= 10)
-                        $display("MISMATCH coef %0d: idx %0d mul %0d off %0d, want idx %0d mul %0d off %0d",
-                                 oi, coef_idx, coef_mul, coef_off,
-                                 vcidx[oi], vcmul[oi], vcoff[oi]);
+                        $display("MISMATCH: write %0d beyond the %0d groups (grp %0d)",
+                                 oi, NG, coef_grp);
+                end else begin
+                    check_grp(oi);
                 end
                 oi++;
             end
@@ -205,10 +222,10 @@ module tb_st_film;
         if (t_end < 0) $fatal(1, "tb_st_film: mlp_busy never dropped");
         if (tap_stalls != 0) $fatal(1, "tb_st_film: tap_ready fell %0d times", tap_stalls);
         if (mcyc > BUDGET) $fatal(1, "tb_st_film: MLP took %0d cycles, budget %0d", mcyc, BUDGET);
-        if (gap_errs != 0 || errs != 0 || oi != NC)
+        if (gap_errs != 0 || errs != 0 || oi != NG)
             $fatal(1, "tb_st_film FAIL %0d GAP and %0d coef errors, %0d of %0d writes",
-                   gap_errs, errs, oi, NC);
-        $display("tb_st_film PASS %0d pixels, %0d coef writes, MLP %0d cycles (%0d gaps, %0d tap cycles)",
+                   gap_errs, errs, oi, NG);
+        $display("tb_st_film PASS %0d pixels, %0d group writes, MLP %0d cycles (%0d gaps, %0d tap cycles)",
                  npix, oi, mcyc, gaps, cyc);
         $finish;
     end

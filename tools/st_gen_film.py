@@ -4,24 +4,23 @@
 Writes into --out:
 
   st_film.hex   512 words of 40 bits, one 10-digit hex word per line, MSB
-                first: the scalars, biases and multipliers of
-                st_guided.film_consts and the three weight matrices of the
-                layer, arranged as the RTL header documents:
+                first: the biases and multipliers of st_guided.film_consts
+                and the three weight matrices of the layer, arranged as the
+                RTL header documents:
 
-                  word   0             [5:0] SB, [11:6] SG, [17:12] SZ
-                  word   1             [18:0] C0, signed
-                  word   2             [17:0] KB, signed
-                  word   3 + o         [31:0] br_o, signed        (o < 10)
-                  word  13 + o         [16:0] Mz_o, < 2**17       (o < 10)
-                  word  23 + c         [31:0] bg_c, signed        (c < 40)
-                  word  63 + c         [31:0] bb_c, signed        (c < 40)
-                  word 103 + c         [16:0] Mg_c, [33:17] Mb_c  (c < 40)
-                  word 143 + 8o + w    byte 5w + i = Wr[o][5w + i]
-                  word 223 + 2c + w    byte 5w + i = Wg[c][5w + i]
-                  word 303 + 2c + w    byte 5w + i = Wb[c][5w + i]
+                  word   0 + o         [31:0] br_o, signed        (o < 10)
+                  word  10 + o         [16:0] Mz_o, < 2**17       (o < 10)
+                  word  20 + c         [31:0] bg_c, signed        (c < 40)
+                  word  60 + c         [31:0] bb_c, signed        (c < 40)
+                  word 100 + c         [16:0] Mg_c, [33:17] Mb_c  (c < 40)
+                  word 140 + 8o + w    byte 5w + i = Wr[o][5w + i]
+                  word 220 + 2c + w    byte 5w + i = Wg[c][5w + i]
+                  word 300 + 2c + w    byte 5w + i = Wb[c][5w + i]
 
                 Weights are int8 two's complement, one row per whole number of
                 words, so a row is a run of words with consecutive bytes.
+                SZ, SG, SB, C0 and KB are module parameters of st_film, not ROM
+                words: --params prints the localparams st_net_pkg wants.
 
   st_film.json  the same constants in decimal, for the Python testbenches and
                 for a quick check against st_guided.film_consts.
@@ -49,11 +48,10 @@ NC, NO = 40, 10                 # channels and hidden units of the FiLM MLP
 WORD_BITS = 40
 DEPTH = 512
 
-A_SC, A_C0, A_KB = 0, 1, 2
-A_BR, A_MZ = 3, 13
-A_BG, A_BB, A_MM = 23, 63, 103
-A_WR, A_WG, A_WB = 143, 223, 303
-USED = A_WB + 2 * NC             # 383 words
+A_BR, A_MZ = 0, 10
+A_BG, A_BB, A_MM = 20, 60, 100
+A_WR, A_WG, A_WB = 140, 220, 300
+USED = A_WB + 2 * NC             # 380 words
 
 
 def _check(name, v, lo, hi):
@@ -73,10 +71,6 @@ def build(spec, plane):
     assert wb.shape == (NC, NO) and bb.shape == (NC,), f"beta {wb.shape} {bb.shape}"
 
     words = [0] * DEPTH
-    words[A_SC] = (_check("sb", c["sb"], 1, 63) | _check("sg", c["sg"], 1, 63) << 6
-                   | _check("sz", c["sz"], 1, 63) << 12)
-    words[A_C0] = _check("c0", c["c0"], -(1 << 18), (1 << 18) - 1) & ((1 << 19) - 1)
-    words[A_KB] = _check("kb", c["kb"], -(1 << 17), (1 << 17) - 1) & ((1 << 18) - 1)
     for o in range(NO):
         words[A_BR + o] = _check(f"br{o}", bg[o], -(1 << 31), (1 << 31) - 1) & 0xFFFF_FFFF
         words[A_MZ + o] = _check(f"mz{o}", c["mz"][o], 0, (1 << 17) - 1)
@@ -104,8 +98,11 @@ def build(spec, plane):
         put(A_WB + 2 * ch, wb[ch], 2)
 
     consts = dict(
-        sz=int(c["sz"]), sg=int(c["sg"]), sb=int(c["sb"]),
-        c0=int(c["c0"]), kb=int(c["kb"]), plane=int(plane), nc=NC, no=NO,
+        sz=_check("sz", c["sz"], 1, 55), sg=_check("sg", c["sg"], 1, 55),
+        sb=_check("sb", c["sb"], 1, 55),
+        c0=_check("c0", c["c0"], -(1 << 18), (1 << 18) - 1),
+        kb=_check("kb", c["kb"], -(1 << 17), (1 << 17) - 1),
+        plane=int(plane), nc=NC, no=NO,
         mz=[int(v) for v in c["mz"]], mg=[int(v) for v in c["mg"]],
         mb=[int(v) for v in c["mb"]],
         br=[int(v) for v in bg], bg=[int(v) for v in gg], bb=[int(v) for v in bb],
@@ -123,10 +120,8 @@ def decode(words):
     def s(v, bits):
         return v - (1 << bits) if v >> (bits - 1) else v
 
-    sc = words[A_SC]
-    out = dict(sz=(sc >> 12) & 63, sg=(sc >> 6) & 63, sb=sc & 63,
-               c0=s(words[A_C0], 19), kb=s(words[A_KB], 18),
-               mz=[words[A_MZ + o] for o in range(NO)],
+    out = dict(
+        mz=[words[A_MZ + o] for o in range(NO)],
                mg=[words[A_MM + ch] & 0x1FFFF for ch in range(NC)],
                mb=[(words[A_MM + ch] >> 17) & 0x1FFFF for ch in range(NC)],
                br=[s(words[A_BR + o], 32) for o in range(NO)],
@@ -141,13 +136,37 @@ def decode(words):
     return out
 
 
+def check_range(consts):
+    """Bound the sequencer's widest intermediate from the layer's own values.
+
+    st_film keeps A in 36-bit signed and zq in 24 bits.  The GAP sums are
+    bounded by the plane and the int9 codes; |Sg| <= (plane*254 + 32) >> 6.
+    """
+    sg_max = (consts["plane"] * 254 + 32) >> 6
+    a_max = abs(consts["kb"]) * max(abs(v) for v in consts["br"]) \
+        + 40 * 127 * sg_max
+    assert a_max < (1 << 35), f"|A| {a_max} does not fit st_film's 36 bits"
+    zq_max = (a_max * max(consts["mz"])) >> consts["sz"]
+    assert zq_max < (1 << 24), f"zq {zq_max} does not fit st_film's 24 bits"
+    return a_max, zq_max
+
+
 def check(words, consts):
     d = decode(words)
-    for k in ("sz", "sg", "sb", "c0", "kb"):
-        assert d[k] == consts[k], f"decode {k}: {d[k]} != {consts[k]}"
     for k in ("mz", "mg", "mb", "br", "bg", "bb", "wr", "wg", "wb"):
         assert d[k] == consts[k], f"decode {k} differs"
     assert max(len(words), USED) <= DEPTH
+
+
+def params_text(consts):
+    """The st_net_pkg localparams st_film's parameters are fed from."""
+    return "\n".join([
+        f"  localparam int ST_FILM_SZ = {consts['sz']};   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ",
+        f"  localparam int ST_FILM_SG = {consts['sg']};   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG",
+        f"  localparam int ST_FILM_SB = {consts['sb']};   // off = (Bb*Mb + 2**(SB-1)) >>> SB",
+        f"  localparam int ST_FILM_C0 = {consts['c0']};   // affine offset, 19-bit signed",
+        f"  localparam int ST_FILM_KB = {consts['kb']};   // reduce bias scale, br_o * KB",
+    ])
 
 
 def main():
@@ -155,15 +174,24 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--plane", type=int, default=57600)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default=None,
+                    help="output directory (not needed with --params)")
     ap.add_argument("--layer", default=None, help="film layer name (default: the first)")
+    ap.add_argument("--params", action="store_true",
+                    help="print the st_net_pkg localparams and write nothing")
     a = ap.parse_args()
+    if not a.params and a.out is None:
+        ap.error("--out is required unless --params is given")
 
     m = json.loads((Path(a.manifest) / "manifest.json").read_text())
     films = m["film_layers"]
     spec = films[0] if a.layer is None else next(f for f in films if f["name"] == a.layer)
     words, consts = build(spec, a.plane)
     check(words, consts)
+    a_max, zq_max = check_range(consts)
+    if a.params:
+        print(params_text(consts))
+        return
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -174,6 +202,8 @@ def main():
     print(f"st_gen_film: {out}/st_film.hex, {USED} of {DEPTH} words, layer {spec['name']} "
           f"(sz {consts['sz']} sg {consts['sg']} sb {consts['sb']} c0 {consts['c0']} "
           f"kb {consts['kb']})")
+    print(f"st_gen_film: |A| <= {a_max} < 2**36, zq <= {zq_max} < 2**24")
+    print(params_text(consts))
 
 
 if __name__ == "__main__":
