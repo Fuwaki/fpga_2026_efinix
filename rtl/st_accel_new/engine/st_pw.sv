@@ -22,15 +22,18 @@
 //               pixel p+1 is collected while pixel p is on the array;
 //   issue       one op at a time, one array cycle per (ot, it) with weight word
 //               pw_base + ot*ceil(cin/16) + it;
-//   MAC         st_pw_rom (registered, read one cycle behind the issue) ->
-//               st_mac8x16 (LAT 4) -> tile FIFO (TILE_DEPTH entries: the 8
-//               accumulators of an output tile and their 8 requant words);
+//   MAC         st_pw_rom (registered) -> st_mac8x16 (LAT 4) -> tile FIFO
+//               (TILE_DEPTH entries: the 8 accumulators of an output tile and
+//               the tile's 8-bit tag);
 //   requant     4 lanes, the two halves of an output tile back to back, LAT 6;
 //               one half tile is 4 channels, exactly one group beat, so the
 //               drain packs beats directly and layer-1 results land in the
-//               layer-2 vector bank;
-//   output      OUT_DEPTH-beat FIFO, credit-checked at issue, so no
-//               fixed-latency pipeline is ever back-pressured.
+//               layer-2 vector bank.  The 512 bits of requant words of a tile
+//               are not stored: they are a function of the tile's output tile
+//               and layer, so the drain reads them from st_rq_rom, one read
+//               per half tile with the address presented one cycle ahead;
+//   output      OUT_DEPTH-beat FIFO in block RAM, credit-checked at issue, so
+//               no fixed-latency pipeline is ever back-pressured.
 //
 // The layer-2 vector bank is also two banks (pixel parity): the issue order
 // L1(p), L2(p-1) reads p-1's bank while p's results arrive in the other one.
@@ -187,8 +190,6 @@ module st_pw #(
     logic        op_bank;           // vector bank: pixel parity
     logic [6:0]  op_cin;
     logic [9:0]  op_pw;
-    logic [10:0] op_rq;
-    logic signed [9:0] op_lo, op_hi;
     logic        op_sof, op_eol;
     logic [3:0]  op_ot, op_it;
     logic [3:0]  op_no, op_ni;
@@ -204,18 +205,22 @@ module st_pw #(
 
     // Tile FIFO and drain bookkeeping.  The pointers carry one bit more than
     // the index so that full and empty differ; the level is their difference.
+    // of_level is the output FIFO's level, same scheme.
     logic [TF_AW:0]   tf_wp, tf_rp;
     logic             dr_phase;     // 0: first half of the head tile, 1: second
     wire  [TF_AW:0]   tile_occ = tf_wp - tf_rp;
     wire              tile_pop = dr_phase && (tile_occ != '0);
+    wire  [OF_AW:0]   of_level;     // output beats queued, RAM side
     wire              of_empty;
-    wire  [OF_AW:0]   of_level;
 
     wire [4:0] l1_beats = (n_lay == 2'd1) ? g_l1 : 5'd0;
     wire [4:0] l2_beats = g_l2;
 
     // Output beats that would be spoken for if the op were issued; the sum
-    // needs a bit more than the two fields so it cannot wrap.
+    // needs a bit more than the two fields so it cannot wrap.  of_level counts
+    // the words in the FIFO's RAM only, not the one on its read port, so the
+    // credit bounds the RAM side at OUT_DEPTH words and a push never meets
+    // the full flag (a push needs an outstanding reservation, pend > 0).
     wire [8:0] of_allowed = 9'(OUT_DEPTH);
     wire [8:0] out_need_l1 = 9'(of_level) + 9'(pend) + 9'(l1_beats);
     wire [8:0] out_need_l2 = 9'(of_level) + 9'(pend) + 9'(l2_beats);
@@ -270,9 +275,6 @@ module st_pw #(
             op_bank <= 1'b0;
             op_cin  <= 7'd0;
             op_pw   <= 10'd0;
-            op_rq   <= 11'd0;
-            op_lo   <= 10'sd0;
-            op_hi   <= 10'sd0;
             op_sof  <= 1'b0;
             op_eol  <= 1'b0;
             op_ot   <= 4'd0;
@@ -301,9 +303,6 @@ module st_pw #(
                 op_bank <= iss_pix[0];
                 op_cin  <= l2_go ? cin_r[1]  : cin_r[0];
                 op_pw   <= l2_go ? pw_r[1]   : pw_r[0];
-                op_rq   <= l2_go ? rq_r[1]   : rq_r[0];
-                op_lo   <= l2_go ? lo_r[1]   : lo_r[0];
-                op_hi   <= l2_go ? hi_r[1]   : hi_r[0];
                 op_sof  <= pix_sof[iss_pix];
                 op_eol  <= pix_eol[iss_pix];
                 op_ot   <= 4'd0;
@@ -329,11 +328,16 @@ module st_pw #(
     end
 
     // ============================================== array pipeline and ROMs
+    // The ROM output is registered, so its address is registered one stage
+    // later than the operand tile: a beat's weight word then leaves the ROM in
+    // the cycle the array's input register takes it, and the array's own w_s1
+    // is the only weight register behind the ROM (s0_pwaddr -> pw_dout ->
+    // w_s1).
     logic             s0_vld, s0_first, s0_last;
     logic [15:0][7:0] s0_x;
+    logic [8:0]       s0_pwaddr;
     logic             s1_vld, s1_first, s1_last;
     logic [15:0][7:0] s1_x;
-    logic [1023:0]    s1_w;
     logic [1023:0]    pw_dout;
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -345,7 +349,10 @@ module st_pw #(
             s0_vld   <= fire;
             s0_first <= fire && (op_it == 4'd0);
             s0_last  <= fire && tile_end;
-            if (fire) s0_x <= x_tile;
+            if (fire) begin
+                s0_x      <= x_tile;
+                s0_pwaddr <= pw_addr;
+            end
         end
     end
 
@@ -358,16 +365,13 @@ module st_pw #(
             s1_vld   <= s0_vld;
             s1_first <= s0_first;
             s1_last  <= s0_last;
-            if (s0_vld) begin
-                s1_x <= s0_x;
-                s1_w <= pw_dout;
-            end
+            if (s0_vld) s1_x <= s0_x;
         end
     end
 
     st_pw_rom #(.DEPTH(512), .HEX(PW_HEX)) u_pw_rom (
         .clk  (clk),
-        .addr (pw_addr),
+        .addr (s0_pwaddr),
         .dout (pw_dout)
     );
 
@@ -379,7 +383,7 @@ module st_pw #(
         .rst_n   (rst_n),
         .in_valid(s1_vld),
         .in_x    (s1_x),
-        .in_w    (s1_w),
+        .in_w    (pw_dout),
         .in_first(s1_first),
         .in_last (s1_last),
         .done    (mac_done),
@@ -387,53 +391,35 @@ module st_pw #(
     );
 
     // --------------------------------------------------------- requant ROM
-    // The requant words of a tile are wanted in the mac_done cycle, six
-    // cycles after the tile's last input beat was accepted; the ROM address
-    // is registered, so it is driven one cycle earlier (index 4 below).
-    // tag: clamp limits, output tile, vector bank, layer, sof, eol
-    logic [10:0] te_rq  [6];
-    logic [27:0] te_tag [6];
-    logic [5:0]  te_vld;
+    // The tag of a tile is wanted in the mac_done cycle, six cycles after the
+    // tile's last input beat was accepted: clamp limits, output tile, vector
+    // bank, layer, sof, eol.  The clamp limits are the layer's, so the tag
+    // carries the layer and the drain takes them from the configuration.
+    logic [7:0] te_tag [6];
+    logic [5:0] te_vld;
 
-    wire [27:0] beat_tag = {op_lo, op_hi, op_ot, op_bank, op_lyr, op_sof, op_eol};
+    wire [7:0] beat_tag = {op_ot, op_bank, op_lyr, op_sof, op_eol};
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             te_vld <= 6'd0;
-            for (int k = 0; k < 6; k++) begin
-                te_rq[k]  <= 11'd0;
-                te_tag[k] <= 28'd0;
-            end
+            for (int k = 0; k < 6; k++) te_tag[k] <= 8'd0;
         end else if (start) begin
             te_vld <= 6'd0;
         end else begin
             te_vld[0] <= fire && tile_end;
-            // the tile's first requant word: rq_base + 8*ot
-            te_rq[0]  <= 11'(op_rq + 11'({7'd0, op_ot}) * 11'd8);
             te_tag[0] <= beat_tag;
             for (int k = 1; k < 6; k++) begin
                 te_vld[k] <= te_vld[k-1];
-                te_rq[k]  <= te_rq[k-1];
                 te_tag[k] <= te_tag[k-1];
             end
         end
     end
 
-    logic [511:0] rq_dout;
-
-    // eight banks of 256 words: the eight channels of an output tile
-    logic [7:0][63:0] rq_banks;
-    st_rq_rom #(.NB(8), .DEPTH(256), .HEX(RQ_HEX)) u_rq_rom (
-        .clk  (clk),
-        .addr (8'(te_rq[4] >> 3)),
-        .dout (rq_banks)
-    );
-    assign rq_dout = rq_banks;
-
     // ---------------------------------------------------------- tile FIFO
+    // tag: output tile, vector bank, layer, sof, eol
     logic [191:0] tf_acc [TILE_DEPTH];
-    logic [511:0] tf_rq  [TILE_DEPTH];
-    logic [27:0]  tf_tag [TILE_DEPTH];
+    logic [7:0]   tf_tag [TILE_DEPTH];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -443,29 +429,58 @@ module st_pw #(
         end else if (mac_done && te_vld[5]) begin
             tf_acc[tf_wp[TF_AW-1:0]] <= {mac_acc[7], mac_acc[6], mac_acc[5], mac_acc[4],
                                          mac_acc[3], mac_acc[2], mac_acc[1], mac_acc[0]};
-            tf_rq [tf_wp[TF_AW-1:0]] <= rq_dout;
             tf_tag[tf_wp[TF_AW-1:0]] <= te_tag[5];
             tf_wp <= tf_wp + 1'(1);
         end
     end
 
-
-    wire [191:0] dr_acc = tf_acc[tf_rp[TF_AW-1:0]];
-    wire [511:0] dr_rq  = tf_rq [tf_rp[TF_AW-1:0]];
-    wire [27:0]  dr_tag = tf_tag[tf_rp[TF_AW-1:0]];
-
     // ------------------------------------------------------------- drain
     // No idle state: the head tile of the FIFO is fed to the lanes as soon as
     // it is there, first half and then second half.  A tile is popped when its
     // second half has been issued, so dr_phase is back at 0 for the next one.
+    //
+    // The requant words of a tile are the eight words at the tile's first
+    // address rq_base + 8*ot, so they are read from the ROM here instead of
+    // being carried through the FIFO.  The ROM read is registered, so the
+    // address on the port is that of the NEXT beat's tile -- the head tile
+    // again for its second half, the next one for a first half.  The pointers
+    // only move when there is a tile to feed, so the address, like the beat,
+    // repeats while the drain stalls.
+    wire [191:0] dr_acc = tf_acc[tf_rp[TF_AW-1:0]];
+    wire [7:0]   dr_tag = tf_tag[tf_rp[TF_AW-1:0]];
+
     wire         dr_half  = dr_phase;
     wire         dr_valid = (tile_occ != '0);
-    wire [255:0] rq_sel   = dr_half ? dr_rq[511:256] : dr_rq[255:0];
+    // the half of the beat the ROM must present next cycle
+    wire         nx_half  = dr_valid ? ~dr_phase : dr_phase;
     wire [95:0]  acc_sel  = dr_half ? dr_acc[191:96] : dr_acc[95:0];
 
     wire [4:0]  dr_g   = {dr_tag[7:4], dr_half};         // output beat of the op
-    wire [9:0]  dr_lo  = dr_tag[27:18];
-    wire [9:0]  dr_hi  = dr_tag[17:8];
+    wire [9:0]  dr_lo  = dr_tag[2] ? lo_r[1] : lo_r[0];
+    wire [9:0]  dr_hi  = dr_tag[2] ? hi_r[1] : hi_r[0];
+
+    wire              mac_wr = mac_done && te_vld[5];
+    wire [TF_AW-1:0]  nx_tile = tf_rp[TF_AW-1:0]
+                              + TF_AW'((dr_valid && dr_phase) ? 1'b1 : 1'b0);
+    // The tile the drain feeds next cycle may be the one being written now:
+    // its tag is not in the FIFO yet, the write tag is the same value.
+    wire [7:0]        nx_tag  = (mac_wr && (nx_tile == tf_wp[TF_AW-1:0]))
+                              ? te_tag[5] : tf_tag[nx_tile];
+    // the tile's first requant word, rq_base + 8*ot; the half is the ROM's
+    // word index within the tile, so one read covers one half tile
+    wire [10:0]       nx_word = (nx_tag[2] ? rq_r[1] : rq_r[0])
+                              + 11'({7'd0, nx_tag[7:4]}) * 11'd8
+                              + 11'(nx_half ? 11'd4 : 11'd0);
+
+    // four banks of 512 words: a read returns the four channels of one half
+    logic [3:0][63:0] rq_banks;
+    st_rq_rom #(.NB(4), .DEPTH(512), .HEX(RQ_HEX)) u_rq_rom (
+        .clk  (clk),
+        .addr (9'(nx_word >> 2)),
+        .dout (rq_banks)
+    );
+
+    wire [255:0] rq_sel = {rq_banks[3], rq_banks[2], rq_banks[1], rq_banks[0]};
 
     logic [63:0]        lane_w [4];
     logic signed [24:0] lane_x [4];
@@ -547,17 +562,37 @@ module st_pw #(
                              wb_eol && (wb_g == (wb_need - 5'd1)),
                              (wb_g == (wb_need - 5'd1)), beat};
 
-    logic [42:0]    ofifo [OUT_DEPTH];
-    logic [OF_AW:0] of_wp, of_rp;    // one bit more than the index
+    // -------------------------------------------------------- output FIFO
+    // Block RAM (fifo_sync_core), so the beats cost RAM10 blocks, not 43
+    // flip-flops each.  Its first-word fall-through read register is also the
+    // output register of the stage.
+    logic        of_we;
+    logic [42:0] of_dout;
+    logic        of_wfull;
+
+    fifo_sync_core #(.W(43), .DEPTH(OUT_DEPTH)) u_ofifo (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .wen    (of_we),
+        .wdata  (of_din),
+        .wfull  (of_wfull),
+        .rready (out_ready),
+        .rvalid (out_valid),
+        .rdata  (of_dout),
+        .level  (of_level)
+    );
+
+    assign {out_sof, out_eol, out_last, out_data} = of_dout;
+
+    // Empty: no word in the RAM and none on the read port.  The pointers of
+    // the FIFO only move when it is written and read, so this is also what the
+    // previous pass left behind -- empty, since a pass only ends drained.
+    assign of_empty = (of_level == '0) && !out_valid;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            of_wp    <= '0;
-            of_rp    <= '0;
             xl2_busy <= 2'd0;
         end else if (start) begin
-            of_wp    <= '0;
-            of_rp    <= '0;
             xl2_busy <= 2'd0;
         end else begin
             if (issue && !l2_go) xl2_busy[p_iss[0]] <= 1'b1;
@@ -565,18 +600,18 @@ module st_pw #(
                 xl2[wb_bank][32*wb_g +: 32] <= vec4;
                 if (wb_g == (wb_need - 5'd1)) xl2_busy[wb_bank] <= 1'b0;
             end
-            if (beat_push) begin
-                ofifo[of_wp[OF_AW-1:0]] <= of_din;
-                of_wp <= of_wp + 1'(1);
-            end
-            if (out_valid && out_ready) of_rp <= of_rp + 1'(1);
         end
     end
 
-    assign of_empty  = (of_wp == of_rp);
-    assign of_level  = of_wp - of_rp;
-    assign out_valid = !of_empty;
-    assign {out_sof, out_eol, out_last, out_data} = ofifo[of_rp[OF_AW-1:0]];
+    // The FIFO takes the beat in the cycle it is offered: the credit scheme
+    // reserves a slot before the beat can be produced, so it is never full.
+    assign of_we = beat_push;
+
+`ifndef SYNTHESIS
+    always @(posedge clk)
+        if (rst_n && of_we && of_wfull)
+            $error("st_pw: output FIFO overflow (credit broken)");
+`endif
 
     // output beats reserved by issued ops, released one per push
     always_ff @(posedge clk or negedge rst_n) begin
