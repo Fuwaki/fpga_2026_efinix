@@ -276,11 +276,22 @@ module st_film #(
     logic        [2:0]  bi;           // products done in the current word
     logic        [1:0]  kind;         // 0 reduce, 1 gamma, 2 beta
     logic        [3:0]  nwords;
-    logic        [8:0]  row_base;
+    logic        [8:0]  row_base;   // 300..379 used
 
     logic signed [31:0] br;
     logic        [16:0] mz, mg, mb;
-    logic        [16:0] zq [NO];      // hidden units, < 2**17 (see below)
+    // The hidden units, a shift register like the sums.  They are produced in
+    // unit order, so a write shifts in at the tail; ten writes leave the array
+    // as [u9 u8 .. u0] with u0 at the tail, which is exactly the order the
+    // gamma and beta rows consume.  A read is the tail and a rotation by one
+    // moves the next unit there -- 10 products per row and 80 rows are 80
+    // whole turns, so the array is always back in place for the next row.
+    // An indexed array with an indexed read and write costs 205 FF for 240
+    // bits (measured) because both ends become decoders; this form costs the
+    // 240 bits and nothing else.
+    logic [NO-1:0][23:0] zqv;
+    wire                 zq_rot;      // a gamma or beta product was loaded
+    wire                 zq_we;       // a unit was produced
 
     // ---------------------------------------------------- product operands
     // bi counts finished products of the current word, so S_ROWLOOP loads
@@ -288,18 +299,13 @@ module st_film #(
     // re-associated but not re-ordered (all integer, no rounding inside).
     wire [5:0] k_raw = (state == S_ROW0) ? 6'(wc) * 6'd5
                                          : 6'(wc) * 6'd5 + 6'(bi) + 6'd1;
-    wire [5:0] k_idx = (k_raw > 6'(NC - 1)) ? 6'(NC - 1) : k_raw;
-    // Only products 0..9 of a gamma or beta row are ever loaded, so the clamp
-    // never bites; it keeps the zq index inside the array.
-    wire [3:0] hidx  = (k_idx > 6'(NO - 1)) ? 4'(NO - 1) : 4'(k_idx);
-
     // Product k of a reduce row is channel k, and the head holds channels
     // 4*(k/4) .. 4*(k/4)+3, so the read is a 4:1 mux of the lane.
     wire [1:0]         pj      = 2'(k_raw);
     wire signed [24:0] gap_sel = gapv[0][pj];
     wire signed [25:0] sg_sel  = ($signed(gap_sel) + 26'sd32) >>> GS;
     wire signed [35:0] a_row   = (kind == 2'd0) ? {{10{sg_sel[25]}}, sg_sel}
-                                                : {12'b0, zq[hidx]};
+                                                : {12'b0, zqv[NO-1]};
 
     // The ROM holds the row's word for the whole word, so the byte of the
     // product being started is a slice of rom_dout; the address only moves
@@ -348,6 +354,8 @@ module st_film #(
     // fourth the array turns by one group, which is the tap's own rotation.
     wire row_load = mac_load && ((state == S_ROW0) || (state == S_ROWLOOP));
     assign gap_rot = row_load && (kind == 2'd0) && (pj == 2'd3);
+    assign zq_rot  = row_load && (kind != 2'd0);
+    assign zq_we   = (state == S_ZQW) && mac_done;
 
 
     // ------------------------------------------------------------ results
@@ -357,12 +365,12 @@ module st_film #(
     wire signed [55:0] acc_g = mac_acc >>> SG;    // Gb_c * Mg_c
     wire signed [55:0] acc_b = mac_acc >>> SB;    // Bb_c * Mb_c
 
-    // zq = max(0, rshift_round(A*Mz, SZ)).  A = br*KB + Wr.Sg with
-    // |Sg| <= 228600, so |A| < 2**28 and |A*Mz| < 2**45; the shift by SZ
-    // leaves 2**19, and zq is a ReLU output, so 17 bits hold it with room.
-    // The saturation keeps a mis-sized parameter from wrapping the row sums.
-    wire [16:0] zq_new = acc_z[55] ? 17'd0
-                       : (|acc_z[55:17]) ? 17'h1_FFFF : acc_z[16:0];
+    // zq = max(0, rshift_round(A*Mz, SZ)): a ReLU output, so 24 bits are
+    // ample and the saturation is defensive.  The width is a contract with
+    // the generator: tools/st_gen_film.py bounds |A*Mz| >>> SZ from the
+    // layer's own weights and refuses a net whose zq would not fit.
+    wire [23:0] zq_new = acc_z[55] ? 24'd0
+                       : (|acc_z[55:24]) ? 24'hFF_FFFF : acc_z[23:0];
 
     wire signed [55:0] mul_sum = C0_EXT + acc_g;
     wire signed [17:0] mul_new = (mul_sum > 56'sd131071)  ? 18'sd131071
@@ -419,7 +427,7 @@ module st_film #(
             mz       <= '0;
             mg       <= '0;
             mb       <= '0;
-            for (int i = 0; i < NO; i++) zq[i] <= '0;
+            zqv      <= '0;
         end else begin
             unique case (state)
                 S_IDLE: if (mlp_start) begin
@@ -460,7 +468,6 @@ module st_film #(
                                  : (kind == 2'd1) ? S_MM0 : S_OFF0;
                 S_ZQ0: state <= S_ZQW;
                 S_ZQW: if (mac_done) begin
-                    zq[o] <= zq_new;
                     if (o == 4'(NO - 1)) begin
                         c     <= '0;
                         state <= S_BG0;
@@ -505,6 +512,8 @@ module st_film #(
                 end
                 default: state <= S_IDLE;
             endcase
+            if (zq_we)      zqv <= {zqv[NO-2:0], zq_new};
+            else if (zq_rot) zqv <= {zqv[NO-2:0], zqv[NO-1]};
         end
     end
 

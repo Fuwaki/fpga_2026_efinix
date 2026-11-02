@@ -136,6 +136,21 @@ def decode(words):
     return out
 
 
+def check_range(consts):
+    """Bound the sequencer's widest intermediate from the layer's own values.
+
+    st_film keeps A in 36-bit signed and zq in 24 bits.  The GAP sums are
+    bounded by the plane and the int9 codes; |Sg| <= (plane*254 + 32) >> 6.
+    """
+    sg_max = (consts["plane"] * 254 + 32) >> 6
+    a_max = abs(consts["kb"]) * max(abs(v) for v in consts["br"]) \
+        + 40 * 127 * sg_max
+    assert a_max < (1 << 35), f"|A| {a_max} does not fit st_film's 36 bits"
+    zq_max = (a_max * max(consts["mz"])) >> consts["sz"]
+    assert zq_max < (1 << 24), f"zq {zq_max} does not fit st_film's 24 bits"
+    return a_max, zq_max
+
+
 def check(words, consts):
     d = decode(words)
     for k in ("mz", "mg", "mb", "br", "bg", "bb", "wr", "wg", "wb"):
@@ -170,6 +185,7 @@ def main():
     spec = films[0] if a.layer is None else next(f for f in films if f["name"] == a.layer)
     words, consts = build(spec, a.plane)
     check(words, consts)
+    a_max, zq_max = check_range(consts)
     if a.params:
         print(params_text(consts))
         return
@@ -183,6 +199,7 @@ def main():
     print(f"st_gen_film: {out}/st_film.hex, {USED} of {DEPTH} words, layer {spec['name']} "
           f"(sz {consts['sz']} sg {consts['sg']} sb {consts['sb']} c0 {consts['c0']} "
           f"kb {consts['kb']})")
+    print(f"st_gen_film: |A| <= {a_max} < 2**36, zq <= {zq_max} < 2**24")
     print(params_text(consts))
 
 
