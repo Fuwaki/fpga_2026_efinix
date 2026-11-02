@@ -38,7 +38,7 @@
         <efx:design_file name="rtl/true_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="rtl/user_dual_port_ram.v" version="default" library="default" />
         <efx:design_file name="ip/riscv_soc0/riscv_soc0.v" version="default" library="default" />
-        <efx:design_file name="rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/gen/guided/st_net_pkg.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_requant.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_unpack.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_pack.sv" version="default" library="default" />

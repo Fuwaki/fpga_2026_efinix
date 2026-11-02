@@ -3,10 +3,10 @@
 //
 // For each new frame of the ISP ring:
 //   1. acquire the frame (NEW_ONLY) and a slot of the PROC ring;
-//   2. run st_engine: the style network as 15 DDR passes, pass 0 reading the
-//      ISP slot, pass 14 writing the whole PROC slot
+//   2. run st_engine: the style network as DDR passes, the first two reading the
+//      ISP slot, the last writing the whole PROC slot
 //      (docs/st-accel-engine-adr.md);
-//   3. release the ISP frame as soon as pass 0 is done, while the network
+//   3. release the ISP frame as soon as pre_done rises, while the network
 //      passes still run;
 //   4. commit the PROC slot with the ISP frame's src_seq (abort on a DMA or
 //      framing error).
@@ -198,7 +198,7 @@ module st_accel_wrapper
           end
         end
 
-        // pass 0 done: the ISP slot is no longer read
+        // pre_done: the ISP slot is no longer read
         S_RUN: if (!wait1 && !eng_go && (eng_pre_done || !eng_busy)) begin
           src_op  <= RING_C_REL;
           src_req <= 1'b1;

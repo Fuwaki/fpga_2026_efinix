@@ -2,13 +2,13 @@
 """Full-frame vectors for sim/tb/tb_st_engine.sv.
 
 A deterministic 1280x720 camera frame (or --frame PNG) goes through
-st_golden's board path (RGB565, pre, the network, post).  Written into --out,
+st_guided's board path (RGB565, 2x2 pre, the guided network, 2x2 post).  Written into --out,
 one 128-bit beat per line as 32 hex digits (byte 0 in the low bits, the AXI
 order):
 
   frame.hex   the ISP slot, 160 beats per line, 720 lines
-  p{N}.hex    the DDR image of every point with a region (st_golden.ddr_image),
-              contiguous from the region base
+  p{N}.hex    the DDR image of every point as its producer pass writes it
+              (Guided.ddr, Guided.ddr_image), contiguous from the region base
   proc.hex    the PROC slot, 160 beats per line, 720 lines
 
 Usage: st_engine_vectors.py --out DIR [--frame PNG]
@@ -23,10 +23,9 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_golden import CAM_H, CAM_W, Net, ddr_image, post, pre, to565  # noqa: E402
+from st_guided import CAM_H, CAM_W, Guided, post, pre, to565  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "config/manifest/ink_dw_w8a8"
+MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
 
 
 def synth_frame() -> np.ndarray:
@@ -65,8 +64,8 @@ def main() -> int:
     rgb = pre(f565)
     dump = a.out / "npy"
     dump.mkdir(exist_ok=True)
-    y = Net(str(MANIFEST), False).run(rgb, str(dump))
-    proc = post(y.transpose(1, 2, 0).astype(np.uint8))
+    y = Guided(str(MANIFEST)).run(rgb, str(dump))
+    proc = post(y)
 
     (a.out / "frame.hex").write_text(hexbeats(f565.astype("<u2").tobytes()))
     (a.out / "proc.hex").write_text(hexbeats(proc.astype("<u2").tobytes()))

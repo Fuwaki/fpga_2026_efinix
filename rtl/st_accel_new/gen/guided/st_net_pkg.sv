@@ -8,6 +8,7 @@
 //   st_layer(i)   layer i in manifest order
 //   st_pass(i)    pass i (st_gen_guided.PASSES)
 //   st_region(pt) DDR region of point pt; all-zero for a non-DDR point
+//   st_region_point(i) i-th point that has a DDR region, for iteration
 //
 // Pass fields: in_w/in_h/in_c are the grid the DW stage works on (with
 // upsample the DDR source is half of it; with src_isp it is st_pre's output).
@@ -154,6 +155,23 @@ package st_net_pkg;
                    in_w: 12'd640, in_h: 12'd360, in_c: 7'd8, out_w: 12'd640, out_h: 12'd360, out_c: 7'd3,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b1, norm: 2'd0};
       default: st_pass = '0;
+    endcase
+  endfunction
+
+  function automatic logic [5:0] st_region_point(input int i);
+    case (i)
+      0: st_region_point = 6'd1;
+      1: st_region_point = 6'd2;
+      2: st_region_point = 6'd4;
+      3: st_region_point = 6'd6;
+      4: st_region_point = 6'd8;
+      5: st_region_point = 6'd10;
+      6: st_region_point = 6'd13;
+      7: st_region_point = 6'd16;
+      8: st_region_point = 6'd17;
+      9: st_region_point = 6'd19;
+      10: st_region_point = 6'd20;
+      default: st_region_point = 6'd0;
     endcase
   endfunction
 

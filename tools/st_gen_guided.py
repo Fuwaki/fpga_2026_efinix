@@ -253,6 +253,7 @@ def sv_pkg(net) -> str:
     a("//   st_layer(i)   layer i in manifest order")
     a("//   st_pass(i)    pass i (st_gen_guided.PASSES)")
     a("//   st_region(pt) DDR region of point pt; all-zero for a non-DDR point")
+    a("//   st_region_point(i) i-th point that has a DDR region, for iteration")
     a("//")
     a("// Pass fields: in_w/in_h/in_c are the grid the DW stage works on (with")
     a("// upsample the DDR source is half of it; with src_isp it is st_pre's output).")
@@ -350,6 +351,14 @@ def sv_pkg(net) -> str:
           f"isp_last: 1'b{int(p['isp_last'])}, gap: 1'b{int(p['gap'])}, post: 1'b{int(p['post'])}, "
           f"norm: 2'd{p['norm']}}};")
     a("      default: st_pass = '0;")
+    a("    endcase")
+    a("  endfunction")
+    a("")
+    a("  function automatic logic [5:0] st_region_point(input int i);")
+    a("    case (i)")
+    for k, r in enumerate(net["regions"]):
+        a(f"      {k}: st_region_point = 6'd{r['point']};")
+    a("      default: st_region_point = 6'd0;")
     a("    endcase")
     a("  endfunction")
     a("")

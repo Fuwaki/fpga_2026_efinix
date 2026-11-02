@@ -1,9 +1,9 @@
 // tb_st_engine.sv -- the block engine alone against tools/st_engine_vectors.py.
 //
 // DDR (axi_mem_model, random back-pressure) holds the camera frame in an ISP
-// slot.  The engine runs passes +FIRST..+LAST (default 0..14); afterwards
+// slot.  The engine runs passes +FIRST..+LAST (default all); afterwards
 // every DDR region the run wrote is compared byte-exact with the golden
-// p{N}.hex, and with pass 14 the whole PROC slot with proc.hex.  For a
+// p{N}.hex, and with the last (post) pass the whole PROC slot with proc.hex.  For a
 // subrange, the regions the run does not write are preloaded from the golden
 // images, so one pass can be debugged on its own; the regions it writes start
 // as the model's FILL pattern.  Reports the first mismatching beat of each
@@ -128,9 +128,9 @@ module tb_st_engine;
             end
         end
         if (la == ST_N_PASSES - 1) begin
-            automatic int b = check("proc.hex", "pass 14 PROC slot", PROC,
+            automatic int b = check("proc.hex", "post PROC slot", PROC,
                                     CAM_W * PIX_BYTES / BEAT_BYTES, LINE_STRIDE);
-            if (b != 0) $display("  pass 14 (PROC): %0d bad beats", b);
+            if (b != 0) $display("  post pass (PROC): %0d bad beats", b);
             bad += b;
         end
         if (bad != 0 || err)
