@@ -175,12 +175,15 @@ module st_pw #(
     logic [10:0] pw2_r;                      // 2 * pw_base, the first line
 
     // ------------------------------------------------------- vector banks
-    // Four banks, pixel index mod 4: four named vectors, not an array.  Efinity
-    // reads an unpacked array of wide words with a dynamic index as a memory,
-    // and a four-entry array of 640-bit banks makes its mapper crash, so the
-    // banks are flattened: the write is a four-way case of byte enables and
-    // the read a two-level mux.  The banks hold data only, no reset.
-    logic [XW-1:0] xa0, xa1, xa2, xa3;
+    // Four banks, pixel index mod 4, each 80 bytes as five words of 16 (the
+    // array's input tile, NI <= 5): bank b word w holds elements 16w..16w+15.
+    // Word granularity is what makes the write cheap -- a beat fills exactly
+    // one word in wide mode and a quarter of one in narrow mode, so no byte of
+    // a bank is ever written at a dynamic position.  Four named banks rather
+    // than an unpacked array: an array of four 640-bit banks makes Efinity's
+    // mapper crash (the two-bank version did not).  Data only, no reset.
+    localparam int NB = 5;                  // words per bank
+    logic [NB-1:0][127:0] xa0, xa1, xa2, xa3;
 
     // ===================================================== input collector
     logic [1:0]  col_pix;           // pixel being collected, index mod 4
@@ -191,24 +194,39 @@ module st_pw #(
     logic        pix_eol [4];
 
     wire [1:0] col_bank  = col_pix;
-    // The beat's bytes and the first element index they write: 16 wide bytes
-    // at 16b, or 4 narrow lanes at 4b.
-    logic [15:0][7:0] inb;
-    int               inb_base;
-
+    wire       in_accept = in_valid && in_ready;
+    // Narrow mode assembles a word from four beats of four lanes, so the
+    // collector stages one word and writes the bank on the beat that fills it
+    // (and on the pixel's last beat, for a cin that does not fill it).  Wide
+    // mode writes every beat's word directly.
+    logic [3:0][31:0] xw_stage;     // narrow: the word being assembled
+    wire  [2:0]   col_word = wide_r ? 3'(col_beat) : 3'(col_beat[4:2]);
+    wire          col_fill = !wide_r && (col_beat[1:0] == 2'd3);
+    // The word a beat writes: its own in wide mode; in narrow mode the staged
+    // word with this beat's four lanes spliced in, so the beat that fills the
+    // word writes it complete (the stage register itself is one beat behind).
+    logic [3:0][31:0] xw_next;
     always_comb begin
-        inb_base = wide_r ? 16 * int'(col_beat) : 4 * int'(col_beat);
-        for (int j = 0; j < 16; j++) inb[j] = 8'd0;
-        if (wide_r) begin
-            for (int j = 0; j < 16; j++) inb[j] = in_wide[8*j +: 8];
-        end else begin
-            for (int j = 0; j < 4; j++) inb[j] = in_data[10*j +: 8];
-        end
+        for (int k = 0; k < 4; k++)
+            xw_next[k] = (k == int'(col_beat[1:0])) ? in_lane : xw_stage[k];
     end
+    wire  [127:0] xw_data  = wide_r ? in_wide : xw_next;
+    // a narrow beat writes on the beat that fills the word, and on the pixel's
+    // last beat (cin need not fill the bank)
+    wire          xw_we    = in_accept && (wide_r || col_fill || in_last);
+
+    // one group beat as 4 lanes of int8 in the low bytes
+    wire [31:0] in_lane = {in_data[30 +: 8], in_data[20 +: 8],
+                           in_data[10 +: 8], in_data[0 +: 8]};
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) xw_stage <= '0;
+        else if (in_accept && !wide_r) xw_stage[col_beat[1:0]] <= in_lane;
+    end
+
     // The pair on the array reads banks p_iss-2 and p_iss-1, so the collector
     // may only write the two banks of the next pair, p_iss and p_iss+1.
     wire       col_room  = (2'(col_pix - p_iss) < 2'd2);
-    wire       in_accept = in_valid && in_ready;
     // The pixel is complete at this clock edge: its bank is written now and
     // read by the op's first fire next cycle, so the op may start in this
     // cycle instead of waiting for col_pix to move (one cycle per pixel).
@@ -245,20 +263,13 @@ module st_pw #(
             // mode has at most 5 beats of 16 and narrow at most 20 of 4.  The
             // write is gated on that, and an over-long pixel is a stream error
             // (the same bound the simulation checks).
-            if (inb_base < XB) begin
-                // The beat's bytes land at inb_base; every other byte keeps its
-                // value.  One whole bank per case keeps the write a plain
-                // register load instead of a byte-indexed write mux.
-                for (int j = 0; j < 16; j++) begin
-                    if (inb_base + j < XB) begin
-                        unique case (col_bank)
-                            2'd0:    xa0[8*(inb_base + j) +: 8] <= inb[j];
-                            2'd1:    xa1[8*(inb_base + j) +: 8] <= inb[j];
-                            2'd2:    xa2[8*(inb_base + j) +: 8] <= inb[j];
-                            default: xa3[8*(inb_base + j) +: 8] <= inb[j];
-                        endcase
-                    end
-                end
+            if (xw_we) begin
+                unique case (col_bank)
+                    2'd0:    xa0[col_word] <= xw_data;
+                    2'd1:    xa1[col_word] <= xw_data;
+                    2'd2:    xa2[col_word] <= xw_data;
+                    default: xa3[col_word] <= xw_data;
+                endcase
             end
             // the flags of the pixel: ORed over its beats, cleared at its end
             col_sof <= col_sof | in_sof;
@@ -358,18 +369,18 @@ module st_pw #(
                           pix_eol[p_iss]};
 
     // The beat's operand tile: 16 int8 lanes, zero beyond cin.  The pixel
-    // parity picks the bank first (one 80-byte 2:1 mux) and only the beat's 16
-    // bytes are then read out of it, so the byte mux is not duplicated per
-    // bank.
-    wire [XW-1:0] op_vec = op_bank ? (op_px ? xa3 : xa2)
-                                   : (op_px ? xa1 : xa0);
+    // parity picks the bank and op_it the bank's word, so the read is a 4-way
+    // mux of 5-word banks (20:1) rather than of 80-byte banks.
+    wire [127:0] op_word = op_bank ? (op_px ? xa3[op_it] : xa2[op_it])
+                                   : (op_px ? xa1[op_it] : xa0[op_it]);
 
+    // the lanes beyond cin are zero (a word past NI is never read: op_it < NI)
+    wire [4:0] last_word = 5'(ni_r - 4'd1);
     logic [15:0][7:0] x_tile;
     always_comb begin
-        int idx;
         for (int j = 0; j < 16; j++) begin
-            idx = 16 * int'(op_it) + j;
-            x_tile[j] = (idx < int'(cin_r)) ? op_vec[8*idx +: 8] : 8'd0;
+            x_tile[j] = ((16 * int'(op_it) + j) < int'(cin_r))
+                      ? op_word[8*j +: 8] : 8'd0;
         end
     end
 
