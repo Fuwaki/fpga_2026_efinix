@@ -734,29 +734,35 @@ module st_pw #(
         end
     end
 
-    // Configuration bounds: the ROMs are addressed by their parameterised
-    // depths, so a layer outside them would wrap the address instead of
-    // failing.  (Synthesis of a configuration is a build-time decision, so
-    // these checks are for simulation.)
+    // Configuration bounds.  The ROM addresses are parameterised, so a layer
+    // outside the images would wrap an address instead of failing: refuse it
+    // here rather than in the data.  A requant read takes four words from four
+    // banks, so a layer's first word must be 4-aligned, exactly the rule
+    // tools/st_gen_params.py and st_dw keep.
 `ifndef SYNTHESIS
     always_ff @(posedge clk) begin
         if (rst_n && start) begin
             for (int k = 0; k < 2; k++) begin
+                logic [6:0]  cin, cout;
+                logic [9:0]  pwb;
+                logic [10:0] rqb;
+                int          n_words;
+                cin  = (k == 0) ? cfg_cin0  : cfg_cin1;
+                cout = (k == 0) ? cfg_cout0 : cfg_cout1;
+                pwb  = (k == 0) ? cfg_pw_base0 : cfg_pw_base1;
+                rqb  = (k == 0) ? cfg_rq_base0 : cfg_rq_base1;
                 if (k >= int'(cfg_n)) continue;
-                if (cfg_cin0 < 7'd1 || (k == 1 && cfg_cin1 < 7'd1) ||
-                    cfg_cout0 < 7'd1 || (k == 1 && cfg_cout1 < 7'd1))
+                n_words = int'(div8(cout)) * int'(div16(cin));
+                if (cin < 7'd1 || cout < 7'd1)
                     $error("st_pw: layer %0d has a zero channel count", k);
-                if (int'(cfg_cin0) > 80 || (k == 1 && int'(cfg_cin1) > 80) ||
-                    int'(cfg_cout0) > 80 || (k == 1 && int'(cfg_cout1) > 80))
-                    $error("st_pw: layer %0d exceeds 80 channels", k);
-                if ((k == 0 ? int'(cfg_pw_base0) : int'(cfg_pw_base1))
-                    + int'(div8(k == 0 ? cfg_cout0 : cfg_cout1))
-                      * int'(div16(k == 0 ? cfg_cin0 : cfg_cin1)) > PW_DEPTH)
+                else if (int'(cin) > XB || int'(cout) > 80)
+                    $error("st_pw: layer %0d (%0d -> %0d) exceeds 80 channels",
+                           k, cin, cout);
+                else if (int'(pwb) + n_words > PW_DEPTH)
                     $error("st_pw: layer %0d weights exceed PW_DEPTH", k);
-                if ((k == 0 ? int'(cfg_rq_base0) : int'(cfg_rq_base1)) % 4 != 0)
+                else if (rqb[1:0] != 2'd0)
                     $error("st_pw: layer %0d rq base is not a multiple of 4", k);
-                if ((k == 0 ? int'(cfg_rq_base0) : int'(cfg_rq_base1))
-                    + 8 * int'(div8(k == 0 ? cfg_cout0 : cfg_cout1)) > 4 * RQ_DEPTH)
+                else if (int'(rqb) + 8 * int'(div8(cout)) > 4 * RQ_DEPTH)
                     $error("st_pw: layer %0d requant words exceed the rq ROM", k);
             end
         end
