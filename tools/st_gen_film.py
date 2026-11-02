@@ -174,11 +174,14 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--plane", type=int, default=57600)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default=None,
+                    help="output directory (not needed with --params)")
     ap.add_argument("--layer", default=None, help="film layer name (default: the first)")
     ap.add_argument("--params", action="store_true",
                     help="print the st_net_pkg localparams and write nothing")
     a = ap.parse_args()
+    if not a.params and a.out is None:
+        ap.error("--out is required unless --params is given")
 
     m = json.loads((Path(a.manifest) / "manifest.json").read_text())
     films = m["film_layers"]
