@@ -121,10 +121,17 @@ tb_st_dw:
 
 # The PW stage against tools/st_pw_vectors.py: one run per case, each with
 # random input gaps (and a few 300-cycle stalls) and 30% output stalls, then
-# again with no stalls for the cycles-per-pixel figure.
-PW_CASES := c80_80 c80_24 c16_80 c24_40 c40_8 c8_3u w27_8 w27_16 w27_10_40 n24_24
+# again with no stalls for the cycles-per-pixel figure.  One layer per case:
+# the stage runs one 1x1 convolution per pass.
+PW_CASES := c80_80 c80_24 c16_80 c24_40 c40_8 c8_3u w27_8 w27_16 w27_10 n10_40 n24_24
 PW_DIR   := $(OBJ)/tb_st_pw
-EXTRA_tb_st_pw := $(ST_ENG)
+# The stage and its own primitives only: the test does not need the engine top,
+# so it stays runnable while the pass table is being changed.
+EXTRA_tb_st_pw := $(ROOT)/rtl/st_accel_new/engine/st_requant.sv \
+                  $(ROOT)/rtl/st_accel_new/engine/st_rq_rom.sv \
+                  $(ROOT)/rtl/st_accel_new/engine/st_mac8x16.sv \
+                  $(ROOT)/rtl/st_accel_new/engine/st_pw_rom.sv \
+                  $(ROOT)/rtl/st_accel_new/engine/st_pw.sv
 tb_st_pw:
 	@mkdir -p $(PW_DIR)
 	$(call build,$@,$@,$@,)
