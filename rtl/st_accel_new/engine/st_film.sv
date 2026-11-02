@@ -5,25 +5,30 @@
 // GAP.  The tap sniffs the group stream into st_pack of the FiLM pass (p17,
 // 40 int16 channels, 320x180 pixels): one beat per cycle and never stalled,
 // so tap_ready is tied high.  Lane j of the b-th beat of a pixel is channel
-// 4b + j, b counting from 0 at the pixel's first beat; lane j adds into a
-// 25-bit accumulator while b < cfg_g (lanes past the channel count are
-// padding).  |S| <= 57600 * 254 < 2**24, so 25 bits hold every sum.  gap_clear
-// zeroes all 40 sums in one cycle, when a new plane starts.
+// 4b + j, b counting from 0 at the pixel's first beat.  |S| <= 57600 * 254 <
+// 2**24, so 25 bits hold every sum.
 //
-// The sums are a 40-word shift register that turns by four on every tapped
-// beat: lane j of beat b is channel 4b + j, so a beat adds its four lanes
-// into the tail and the array rotates, which brings the next beat's group to
-// the head.  Ten beats are a whole turn, so the array is in channel order at
-// every pixel boundary.  Neither side needs an address mux -- the rotation is
-// pure rewiring -- and a flat 40-word array with an indexed read and write
-// measured three times the logic.
+// The forty sums are ten groups of four lanes in a shift register that turns
+// by one group per tapped beat: the beat adds its four lanes into the head
+// group and the array turns, which brings the next beat's group to the head.
+// Ten beats are a whole turn, so the array is in channel order at every pixel
+// boundary.  gap_clear makes the next pixel's beats overwrite instead of add,
+// so one pixel flushes the whole array -- no clear path, and the sums are
+// zero before the first beat of the pass.
 //
 // The MLP reads the same head.  A reduce row sums over channels 0..39, and
-// the sum is exact integer arithmetic, so the order is free: product k reads
-// gap[k mod 4] (a 4:1 mux) and the array turns by four after every fourth
-// product, on the tap's own rotation.  Forty products are ten turns, so the
-// array is back in channel order after every row, and the read costs a 4:1
-// mux and nothing else.
+// the sum is exact integer arithmetic, so the order is free: the row takes
+// the head group's four lanes as products 4g..4g+3 and then turns the array
+// by one group, on the tap's own rotation.  Forty products are ten turns, so
+// the array is back in channel order after every row.  Neither side has an
+// address mux: the rotation is pure rewiring and the only selection left is
+// the 4:1 lane mux of the head group, which sits on registers.  (A flat
+// 40-word array with an indexed read and write measured three times the
+// logic; so did a 10x4 array with a 10:1 group mux.)
+//
+// The hidden units zq are a shift register for the same reason: they are
+// produced in unit order and read in unit order by every gamma and beta row,
+// ten products per row, so a write shifts in and a read is the tail.
 //
 // The tap must therefore be a whole number of pixels of NC/4 beats: cfg_g is
 // 10 for the FiLM plane of the net, which the assertions check.
@@ -32,9 +37,10 @@
 // GAP sums, all integer, `>>>` arithmetic, rshift_round(v, s) = (v + 2**(s-1))
 // >>> s:
 //
-//   Sg_c  = (S_c + 32) >>> 6                             19 bit
+//   Sg_c  = (S_c + 32) >>> 6                             GS = 6, 19 bit
 //   A_o   = br_o * KB + sum_c Wr[o][c] * Sg_c            o < 10
 //   zq_o  = max(0, rshift_round(A_o * Mz_o, SZ))         24 bit, >= 0
+//                                                        (|A*Mz|>>>SZ < 2**21)
 //   Gb_c  = bg_c * 256 + sum_o Wg[c][o] * zq_o           c < 40
 //   Bb_c  = bb_c * 256 + sum_o Wb[c][o] * zq_o
 //   mul_c = clamp(C0 + rshift_round(Gb_c * Mg_c, SG), +-(2**17 - 1))
@@ -52,20 +58,20 @@
 // disappear.  tools/st_gen_film.py prints the localparams the package wants
 // (ST_FILM_SZ / SG / SB / C0 / KB); the defaults are the p90_ln_w8a8 net's.
 //
-// One serial multiply-accumulate unit does every product: a (36-bit signed)
-// times b (18-bit signed) by shift-add over b's bits, 18 steps, into a
-// 56-bit signed accumulator.  The widest product is Gb*Mg, under 2**52, and
-// the widest folded sum is A, under 2**33.  A product takes 19 cycles and
-// the 1290 of the layer take ~24.5k cycles, inside the 50k budget of the
-// pass.  No DSP: the multiply is one 56-bit adder and a 54-bit shift
-// register, and no scratch RAM is needed either, because A, Gb and Bb are
-// consumed in the step that produces them.
+// One DSP block does every product, in two steps of an 18x18 signed
+// multiplier: a is 36-bit signed and splits into a[17:0] (unsigned) and
+// a[35:18] (signed), and the low half's sign bit is corrected by a shift of
+// b (see the MAC below).  The widest product is Gb*Mg, under 2**52, and the
+// widest folded sum is A, under 2**31.  A product takes three cycles and the
+// 1290 of the layer take ~4.5k cycles, well inside the 50k budget of the
+// pass.  No scratch RAM: A, Gb and Bb are consumed in the step that produces
+// them.
 //
-// Storage.  The GAP sums are 40 registers of 25 bits (1000 FF) with a
-// four-lane adder and no address mux; zq is 10 registers of 24 bits; the
-// four (mul, off) pairs of the group being filled are 4 x 42 bits.  The
-// parameter ROM is one 512x40 array with a registered read: 2 RAM10 blocks in
-// 512x20, 380 words used.
+// Storage.  The GAP sums are 1000 bits, which map to 100 SRLs and ~150 FF;
+// zq is 10 x 24 bit; the four (mul, off) pairs of the group being filled are
+// 4 x 42 bit.  The parameter ROM is one 512x40 array with a registered read:
+// 2 RAM10 blocks in 512x20, 380 words used.  Measured (efx map, standalone):
+// 664 FF, 1118 LUT, 124 SRL, 223 ADD, 2 RAM10, 1 DSP.
 //
 // ROM image (st_film.hex, one 10-digit hex word per line, written by
 // tools/st_gen_film.py, which asserts every field fits):
