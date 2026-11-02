@@ -21,7 +21,10 @@ module compositor
 #(
     parameter int H_ACTIVE = 1280, H_FP = 110, H_SYNC = 40, H_BP = 220,
     parameter int V_ACTIVE = 720,  V_FP = 5,   V_SYNC = 5,  V_BP = 20,
-    parameter comp_cfg_t CFG = COMP_CFG_DEFAULT
+    parameter comp_cfg_t CFG = COMP_CFG_DEFAULT,
+    // 1 = layer 1 keeps its compile-time crop even when live: its reader
+    // fetches only those beats, and a full-screen layer 1 is black outside.
+    parameter bit L1_CROP = 0
 ) (
     vstream_if.snk          layer0,       // pixel clock domain
     vstream_if.snk          layer1,
@@ -116,8 +119,9 @@ module compositor
     // crop; a 1 consumes the whole frame on both layers.
     wire [12:0] l0_x0 = live ? 13'd0 : 13'(8 * int'(X0B0));
     wire [12:0] l0_x1 = live ? 13'(CAM_W) : 13'(8 * (int'(X0B0) + int'(NB0)));
-    wire [12:0] l1_x0 = live ? 13'd0 : 13'(8 * int'(X0B1));
-    wire [12:0] l1_x1 = live ? 13'(CAM_W) : 13'(8 * (int'(X0B1) + int'(NB1)));
+    wire        l1_live = live && !L1_CROP;
+    wire [12:0] l1_x0 = l1_live ? 13'd0 : 13'(8 * int'(X0B1));
+    wire [12:0] l1_x1 = l1_live ? 13'(CAM_W) : 13'(8 * (int'(X0B1) + int'(NB1)));
 
     comp_layer u_l0 (
         .s(layer0), .frame_start(frame_start), .de(ras_de && in_x && in_y), .lx(lx), .ly(ly),

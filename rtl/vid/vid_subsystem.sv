@@ -43,6 +43,9 @@ module vid_subsystem
     parameter bit PROC_EXT        = 0,
     parameter proc_mode_e PROC_MODE = PROC_INVERT,
     parameter comp_cfg_t COMP_CFG = COMP_CFG_DEFAULT,
+    // 1 = the layer-1 (PROC) reader keeps its COMP_CFG crop under ui_live:
+    // less display read bandwidth, and full-screen PROC is black outside it.
+    parameter bit L1_CROP         = 0,
     // Display pattern timing; simulation shortens the frame period.
     parameter int PAT_FRAME_CYCLES  = 3_333_333,
     parameter int PAT_LINE_CYCLES   = 2_000,
@@ -479,8 +482,8 @@ module vid_subsystem
             vdma_rd #(.FIFO_BEATS(512), .RD_BURST(128), .ASYNC(1)) u_rd (
                 .m(mr[R_DISP1]), .ring(pc[0]), .o(lay1),
                 .ring_base(RING_PROC_BASE), .start(rd_start), .policy(ACQ_REPEAT_OK), .geom(CAM_GEOM),
-                .x0_beat(ui_live ? 8'd0 : X0B1),
-                .nbeats(ui_live ? 8'(CAM_W / BEAT_PIX) : NB1),
+                .x0_beat(ui_live && !L1_CROP ? 8'd0 : X0B1),
+                .nbeats(ui_live && !L1_CROP ? 8'(CAM_W / BEAT_PIX) : NB1),
                 .busy(rd1_busy), .token(rd1_tok),
                 .st_frames(status.dr1_frames), .st_miss(status.dr1_miss), .st_late(rd1_late));
         end else begin : g_no_rd1
@@ -546,7 +549,7 @@ module vid_subsystem
         end
 
         logic [15:0] cp_bad [2], cp_rs [2];
-        compositor #(.CFG(COMP_CFG)) u_comp (
+        compositor #(.CFG(COMP_CFG), .L1_CROP(L1_CROP)) u_comp (
             .layer0(lay0), .layer1(lay1), .frame_req(frame_req),
             .r(pix_r), .g(pix_g), .b(pix_b), .de(pix_de), .hs(pix_hs), .vs(pix_vs),
             .st_bad_lines(cp_bad), .st_resyncs(cp_rs),
