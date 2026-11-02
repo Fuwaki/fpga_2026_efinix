@@ -228,6 +228,23 @@ def pw_lines(words: list[bytes]) -> list[bytes]:
     return out
 
 
+RQ_NB, RQ_LINES = 4, 512      # st_rq_rom: NB words of 49 bits per line
+
+
+def rq_lines(words: list[bytes]) -> str:
+    """st_rq_rom's line image: word i is lane i % 4 of line i // 4, in the
+    49-bit form {k, mant[22:0], bias[19:0]}; 4 x 49 = 196 bits per line."""
+    lines = [0] * RQ_LINES
+    for i, w in enumerate(words):
+        v = int.from_bytes(w, "little")
+        bias, mant, k = v & 0xFFFF_FFFF, (v >> 32) & 0xFF_FFFF, (v >> 56) & 0x3F
+        if bias >= 2**31:
+            bias -= 2**32
+        assert -2**19 <= bias < 2**19 and mant >> 23 == 1, f"rq word {i}"
+        lines[i // RQ_NB] |= ((k << 43) | ((mant & 0x7F_FFFF) << 20) | (bias & 0xF_FFFF)) << (49 * (i % RQ_NB))
+    return "".join(f"{x:049x}\n" for x in lines)
+
+
 def self_check(net, out: Path, wts, m):
     L = {l["name"]: l for l in m["layers"]}
     lines = parse_hex((out / "st_pw.hex").read_text())
@@ -408,6 +425,7 @@ def main() -> int:
     (a.out / "st_pw.hex").write_text(hex_lines(pw_lines(pw_words)))
     (a.out / "st_dw.hex").write_text(hex_lines(dw_words))
     (a.out / "st_rq.hex").write_text(hex_lines(rq_words))
+    (a.out / "st_rq_lines.hex").write_text(rq_lines(rq_words))
     (a.out / "st_net.json").write_text(json.dumps(net, indent=1) + "\n")
     (a.out / "st_net_pkg.sv").write_text(sv_pkg(net))
     self_check(net, a.out, wts, m)

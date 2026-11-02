@@ -96,7 +96,7 @@ module st_pw #(
     parameter int    PW_DEPTH   = 512,      // PW ROM lines of 512 bits
     parameter int    RQ_DEPTH   = 512,      // requant words per bank (4 banks)
     parameter string PW_HEX     = "rtl/st_accel_new/gen/guided/st_pw.hex",
-    parameter string RQ_HEX     = "rtl/st_accel_new/gen/guided/st_rq.hex"
+    parameter string RQ_HEX     = "rtl/st_accel_new/gen/guided/st_rq_lines.hex"
 ) (
     input  logic              clk,
     input  logic              rst_n,
