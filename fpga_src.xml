@@ -52,6 +52,8 @@
         <efx:design_file name="rtl/st_accel_new/engine/st_pw.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_pre.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_post.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_film.sv" version="default" library="default" />
+        <efx:design_file name="rtl/st_accel_new/engine/st_norm.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/engine/st_engine.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/dma/tile_dma_rd.sv" version="default" library="default" />
         <efx:design_file name="rtl/st_accel_new/dma/tile_dma_wr.sv" version="default" library="default" />

@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_st_prepost tb_st_engine tb_st_film tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_st_prepost tb_st_engine tb_st_film tb_st_norm tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
