@@ -553,6 +553,49 @@ wire [15:0] st_cpu_dbg_heartbeat;
 //   accel_prdata/pready/pslverr — stub OK, SoC firmware not yet updated.
 //   w_st_irq, w_hw_*, st_dbg_* — tied off until firmware/tb catches up.
 // ─────────────────────────────────────────────────────────────────────────────
+// Video reset (driven by the delay counter further down).  Declared here: a
+// reference inside the generate block below before any declaration makes a
+// local, undriven implicit net and holds the accelerator in reset.
+wire vid_rst_n;
+
+// ST AXI master -> vid_subsystem ext_*.  Declared before the generate block
+// that drives them: a use before the declaration would make implicit nets.
+wire [AXI_ID_WIDTH-1:0] st_awid;
+wire [AXI_ADDR_WIDTH-1:0] st_awaddr;
+wire [7:0] st_awlen;
+wire [2:0] st_awsize;
+wire [1:0] st_awburst;
+wire st_awlock;
+wire [3:0] st_awcache;
+wire [2:0] st_awprot;
+wire st_awvalid, st_awready;
+wire [AXI_DATA_WIDTH-1:0] st_wdata;
+wire [AXI_DATA_WIDTH/8-1:0] st_wstrb;
+wire st_wlast, st_wvalid, st_wready;
+wire [AXI_ID_WIDTH-1:0] st_bid; wire [1:0] st_bresp; wire st_bvalid, st_bready;
+wire [AXI_ID_WIDTH-1:0] st_arid;
+wire [AXI_ADDR_WIDTH-1:0] st_araddr;
+wire [7:0] st_arlen;
+wire [2:0] st_arsize;
+wire [1:0] st_arburst;
+wire st_arlock;
+wire [3:0] st_arcache;
+wire [2:0] st_arprot;
+wire st_arvalid, st_arready;
+wire [AXI_ID_WIDTH-1:0] st_rid; wire [AXI_DATA_WIDTH-1:0] st_rdata; wire [1:0] st_rresp;
+wire st_rlast, st_rvalid, st_rready;
+
+// Accelerator <-> vid_subsystem ring handshakes (PROC_EXT = 1): the
+// accelerator consumes the ISP ring and produces the PROC ring.
+wire                            st_src_req, st_src_ack, st_src_ok;
+vid_pkg::ring_c_op_e            st_src_op;
+vid_pkg::frame_token_t          st_src_token;
+wire                            st_dst_req, st_dst_ack, st_dst_ok;
+vid_pkg::ring_p_op_e            st_dst_op;
+wire [vid_pkg::SEQ_W-1:0]       st_dst_src_seq;
+wire [vid_pkg::RING_SLOT_W-1:0] st_dst_slot;
+wire [vid_pkg::SEQ_W-1:0]       st_pr_frames, st_pr_miss, st_pr_errors, st_pr_skipped;
+
 generate
 if (ENABLE_ST_ACCEL) begin : gen_st_accel
 
@@ -580,52 +623,9 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
     assign st_dbg_last_commit_addr = '0;
     assign st_cpu_dbg_heartbeat  = '0;
 
-    // ── Frame-rate skip: fire once per SKIP_N ISP commits (~60fps/4 = 15fps) ─
-    localparam int SKIP_N = 4;
-    vid_pkg::vid_status_t accel_vid_st;
-    always_ff @(posedge core_clk) accel_vid_st <= w_vid_status; // one-cycle latch
-    wire [vid_pkg::SEQ_W-1:0] isp_commits = accel_vid_st.pw_frames;
-
-    reg  [vid_pkg::SEQ_W-1:0] isp_prev     = '0;
-    reg  [1:0]                 skip_cnt     = '0;
-    reg                        accel_start  = 1'b0;
-    reg                        accel_busy_r = 1'b0;
-    wire                       accel_done;
-    wire                       accel_busy;
-
-    always_ff @(posedge core_clk or negedge vid_rst_n) begin
-        if (!vid_rst_n) begin
-            isp_prev     <= '0;
-            skip_cnt     <= '0;
-            accel_start  <= 1'b0;
-            accel_busy_r <= 1'b0;
-        end else begin
-            accel_start <= 1'b0;
-            accel_busy_r <= accel_busy;
-            if (isp_commits != isp_prev) begin
-                isp_prev <= isp_commits;
-                if (skip_cnt == SKIP_N - 1) begin
-                    skip_cnt    <= 2'd0;
-                    // Only fire when the previous inference is done
-                    if (!accel_busy && !accel_busy_r)
-                        accel_start <= 1'b1;
-                end else begin
-                    skip_cnt <= skip_cnt + 2'd1;
-                end
-            end
-        end
-    end
-
-    // ISP ring slot 0 as the source (firmware can later steer via APB)
-    wire [vid_pkg::AXI_AW-1:0] accel_isp_base  = vid_pkg::RING_ISP_BASE;
-    wire [vid_pkg::AXI_AW-1:0] accel_proc_base = vid_pkg::RING_PROC_BASE;
-    wire [vid_pkg::AXI_AW-1:0] accel_stride    = vid_pkg::AXI_AW'(vid_pkg::LINE_STRIDE);
-
-    // ── st_accel_wrapper ─────────────────────────────────────────────────────
-    st_accel_wrapper #(
-        .FRAME_W  (640),
-        .FRAME_H  (480)
-    ) u_st_accel_wrapper (
+    // ── st_accel_wrapper: takes each new ISP frame, writes the PROC ring ────
+    wire accel_busy;
+    st_accel_wrapper u_st_accel_wrapper (
         .clk            (core_clk),
         .rst_n          (vid_rst_n),
         // AXI4 master → vid_subsystem ext_* (write channel)
@@ -643,20 +643,32 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
         .m_axi_rid      (st_rid),     .m_axi_rdata  (st_rdata),
         .m_axi_rresp    (st_rresp),   .m_axi_rlast  (st_rlast),
         .m_axi_rvalid   (st_rvalid),  .m_axi_rready (st_rready),
-        // Control
-        .start          (accel_start),
-        .done           (accel_done),
-        .busy           (accel_busy),
-        .isp_base_addr  (accel_isp_base),
-        .proc_base_addr (accel_proc_base),
-        .line_stride    (accel_stride)
+        // Rings
+        .src_req (st_src_req), .src_op (st_src_op), .src_ack (st_src_ack),
+        .src_ok  (st_src_ok),  .src_token (st_src_token),
+        .dst_req (st_dst_req), .dst_op (st_dst_op), .dst_src_seq (st_dst_src_seq),
+        .dst_ack (st_dst_ack), .dst_ok (st_dst_ok), .dst_slot (st_dst_slot),
+        // Status
+        .busy       (accel_busy),
+        .st_frames  (st_pr_frames),
+        .st_miss    (st_pr_miss),
+        .st_errors  (st_pr_errors),
+        .st_skipped (st_pr_skipped)
     );
 
-    // Re-use existing sync chain for done counter (reuses w_st_frame_cnt path)
-    assign w_st_frame_cnt = {31'd0, accel_done};   // single-cycle pulse
+    assign w_st_frame_cnt = 32'(st_pr_frames);
     assign w_st_pipe_busy = accel_busy;
 
 end else begin : gen_st_accel_off
+    assign st_src_req     = 1'b0;
+    assign st_src_op      = vid_pkg::RING_C_ACQ;
+    assign st_dst_req     = 1'b0;
+    assign st_dst_op      = vid_pkg::RING_P_ACQ;
+    assign st_dst_src_seq = '0;
+    assign st_pr_frames   = '0;
+    assign st_pr_miss     = '0;
+    assign st_pr_errors   = '0;
+    assign st_pr_skipped  = '0;
     assign accel_prdata  = 32'd0;
     assign accel_pready  = w_soc_apb_psel & ~ui_hit;
     assign accel_pslverr = 1'b0;
@@ -776,31 +788,6 @@ assign o_cam_rst_p = ~w_arstn;
 //=====================================================================================
 // ST accelerator AXI master -> vid_subsystem external port
 //=====================================================================================
-// ST AXI master (driven by u_st_accel when USE_DDR=1; idle tie-offs until connected below)
-wire [AXI_ID_WIDTH-1:0] st_awid;
-wire [AXI_ADDR_WIDTH-1:0] st_awaddr;
-wire [7:0] st_awlen;
-wire [2:0] st_awsize;
-wire [1:0] st_awburst;
-wire st_awlock;
-wire [3:0] st_awcache;
-wire [2:0] st_awprot;
-wire st_awvalid, st_awready;
-wire [AXI_DATA_WIDTH-1:0] st_wdata;
-wire [AXI_DATA_WIDTH/8-1:0] st_wstrb;
-wire st_wlast, st_wvalid, st_wready;
-wire [AXI_ID_WIDTH-1:0] st_bid; wire [1:0] st_bresp; wire st_bvalid, st_bready;
-wire [AXI_ID_WIDTH-1:0] st_arid;
-wire [AXI_ADDR_WIDTH-1:0] st_araddr;
-wire [7:0] st_arlen;
-wire [2:0] st_arsize;
-wire [1:0] st_arburst;
-wire st_arlock;
-wire [3:0] st_arcache;
-wire [2:0] st_arprot;
-wire st_arvalid, st_arready;
-wire [AXI_ID_WIDTH-1:0] st_rid; wire [AXI_DATA_WIDTH-1:0] st_rdata; wire [1:0] st_rresp;
-wire st_rlast, st_rvalid, st_rready;
 
 //=====================================================================================
 // Video subsystem (rtl/vid): camera -> ISP -> DDR frame ring -> processing ->
@@ -835,6 +822,7 @@ vid_subsystem #(
     .PROC_EN         (VID_SPLIT),
     .PROC_MODE       (VID_PROC_MODE),
     .COMP_CFG        (VID_COMP),
+    .PROC_EXT        (ENABLE_ST_ACCEL),   // the accelerator is the PROC engine
     .EXT_EN          (ENABLE_ST_ACCEL)
 ) u_vid (
     .clk         (core_clk),
@@ -848,6 +836,12 @@ vid_subsystem #(
     .ext_arvalid  (st_arvalid), .ext_arready(st_arready),
     .ext_rid      (st_rid),     .ext_rdata  (st_rdata),  .ext_rresp  (st_rresp),
     .ext_rlast    (st_rlast),   .ext_rvalid (st_rvalid), .ext_rready (st_rready),
+    .ext_src_req  (st_src_req), .ext_src_op (st_src_op), .ext_src_ack (st_src_ack),
+    .ext_src_ok   (st_src_ok),  .ext_src_token (st_src_token),
+    .ext_dst_req  (st_dst_req), .ext_dst_op (st_dst_op), .ext_dst_src_seq (st_dst_src_seq),
+    .ext_dst_ack  (st_dst_ack), .ext_dst_ok (st_dst_ok), .ext_dst_slot (st_dst_slot),
+    .ext_pr_frames (st_pr_frames), .ext_pr_miss (st_pr_miss),
+    .ext_pr_errors (st_pr_errors), .ext_pr_skipped (st_pr_skipped),
 
     .ddr_awid    (s_axi_awid),    .ddr_awaddr (s_axi_awaddr), .ddr_awlen  (s_axi_awlen),
     .ddr_awsize  (s_axi_awsize),  .ddr_awburst(s_axi_awburst), .ddr_awlock (s_axi_awlock),
@@ -1391,16 +1385,11 @@ always @(posedge core_clk) begin
 		c_st_frame <= st_frame_sync2;
 		c_st_busy <= st_busy_sync2;
 		c_de_width <= dbg_de_last_width;
-		if (ENABLE_ST_ACCEL) begin
-			c_cap_samples <= cap_samples_sync2;
-			c_cap_tiles <= cap_tiles_sync2;
-			c_commit_count <= commit_sync2;
-			c_last_x <= last_x_sync2; c_last_y <= last_y_sync2;
-			c_last_cap_addr <= last_cap_addr_sync2;
-			c_last_commit_addr <= last_commit_addr_sync2;
-		end else begin
+		begin
 			// vid_subsystem status (rtl/vid), one page per frame, page =
 			// seq[1:0] (byte 19).  Decoded by board_smoke_test.py --vid.
+			// With ENABLE_ST_ACCEL the accelerator is the processing engine:
+			// page 3 pr_* are its frames/errors/skips.
 			case (dbg_seq[1:0])
 			2'd0: begin   // display
 				c_cap_samples  <= vid_st_s2.cp_frame_sum;
