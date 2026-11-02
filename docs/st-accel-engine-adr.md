@@ -131,12 +131,27 @@ One datapath; a pass descriptor configures it:
   The generator also writes `st_net_pkg.sv`: the pass descriptor table, ROM
   bases and the DDR regions.
 
-Estimated resources:
-* DSP: PW 64 (dual int8), DW 36 (int9 single), requant and add about 24,
-  so about 124 of 160.  The gray-path `rgb2yc` (56 DSP) is removed.
-* RAM10: parameters about 70, line buffer about 28, three DMA FIFOs 21.
-  The board has about 104 RAM10 without the accelerator: the DMA self-test
-  is turned off, `ENABLE_SELFTEST=0`, which saves 14.
+Resources (DSP measured with Efinity 2026.1 synthesis + place probes,
+2026-11-02; RAM10 estimated):
+* DSP blocks:
+  * PW array: 64.  The 128 int8 x int8 products map to EFX_DSP24, two per
+    block (DUAL mode), but the placer pairs them only when the design would
+    not fit otherwise.  The probe placed alone shows 128 blocks; doubled, it
+    packs 256 into 128.
+  * DW: 36 (10-bit x 8-bit; one EFX_DSP48 each).
+  * requant: 4 blocks per lane at XW 20..25, 2 per lane at XW 10:
+    * DW 4 lanes: 16;
+    * PW 4 lanes: 16;
+    * add 4 lanes: 8.
+  * the rest of the board: 4 (the SoC CPU).
+
+  Total about 144 of 160.  The gray-path `rgb2yc` (56) is removed.
+  Timing: every probe closes 100 MHz with 1.7..2.1 ns slack.
+* RAM10: parameters about 70, the DW line store 20, three DMA FIFOs 21.
+  The board without the accelerator uses about 104.  The DMA self-test is
+  off (`ENABLE_SELFTEST=0`, commit 62adb88), which saves 14.
+* DDR: the board has 256 MB (DDR3 x16, 8 banks, 14-bit rows, 10-bit
+  columns).  The scratch regions end at 0x08A4_1000.
 
 Estimated cycles per pass:
 * stem: 8 cycles per pixel
