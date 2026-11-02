@@ -6,10 +6,10 @@
 // burst type, cache, prot, lock, strobes) are fixed in one place.
 //
 // Contents:
-//   axi_arb      write masters: 0 external, 1 display producer, 2 processing,
-//                               3 self-test
-//                read  masters: 0 external, 1-2 display layers, 3 processing,
-//                               4 self-test
+//   axi_arb      write masters: 0 display producer, 1 processing,
+//                               2 self-test, 3 external
+//                read  masters: 0-1 display layers, 2 processing,
+//                               3 self-test, 4 external
 //                (lower index = higher priority)
 //   self-test    vid_testgen -> vdma_wr -> frame_ring (test) -> vdma_rd ->
 //                vid_testchk, every word compared, results in status
@@ -175,9 +175,12 @@ module vid_subsystem
 );
     localparam int NW = 4, NR = 5;
     // Lower index = higher priority.  The camera cannot wait and the display
-    // must not underflow; processing and the self-test can wait.
-    localparam int W_DISP = 1, W_PROC = 2, W_SELF = 3;
-    localparam int R_DISP = 1, R_DISP1 = 2, R_PROC = 3, R_SELF = 4;
+    // must not underflow; processing, the self-test and the external master
+    // can wait.  The external master is last: the ST engine streams long
+    // bursts back to back and would otherwise hold the display readers off
+    // until their STARVE timeout, long enough to underflow a line.
+    localparam int W_DISP = 0, W_PROC = 1, W_SELF = 2, W_EXT = 3;
+    localparam int R_DISP = 0, R_DISP1 = 1, R_PROC = 2, R_SELF = 3, R_EXT = 4;
 
     // Pixel-clock reset: asserted with rst_n, released synchronously.
     logic pix_rst_q1, pix_rst_n;
@@ -191,31 +194,31 @@ module vid_subsystem
     axi4_rd_if #(.AW(AXI_AW), .DW(AXI_DW), .IW(AXI_IW)) dr (.clk(clk), .rst_n(rst_n));
 
     // ------------------------------------------------ external = master 0
-    assign mw[0].awid    = ext_awid;
-    assign mw[0].awaddr  = ext_awaddr;
-    assign mw[0].awlen   = ext_awlen;
-    assign mw[0].awvalid = ext_awvalid && EXT_EN;
-    assign ext_awready    = mw[0].awready && EXT_EN;
-    assign mw[0].wdata   = ext_wdata;
-    assign mw[0].wlast   = ext_wlast;
-    assign mw[0].wvalid  = ext_wvalid && EXT_EN;
-    assign ext_wready     = mw[0].wready && EXT_EN;
-    assign ext_bid        = mw[0].bid;
-    assign ext_bresp      = mw[0].bresp;
-    assign ext_bvalid     = mw[0].bvalid;
-    assign mw[0].bready  = ext_bready;
+    assign mw[W_EXT].awid    = ext_awid;
+    assign mw[W_EXT].awaddr  = ext_awaddr;
+    assign mw[W_EXT].awlen   = ext_awlen;
+    assign mw[W_EXT].awvalid = ext_awvalid && EXT_EN;
+    assign ext_awready    = mw[W_EXT].awready && EXT_EN;
+    assign mw[W_EXT].wdata   = ext_wdata;
+    assign mw[W_EXT].wlast   = ext_wlast;
+    assign mw[W_EXT].wvalid  = ext_wvalid && EXT_EN;
+    assign ext_wready     = mw[W_EXT].wready && EXT_EN;
+    assign ext_bid        = mw[W_EXT].bid;
+    assign ext_bresp      = mw[W_EXT].bresp;
+    assign ext_bvalid     = mw[W_EXT].bvalid;
+    assign mw[W_EXT].bready  = ext_bready;
 
-    assign mr[0].arid    = ext_arid;
-    assign mr[0].araddr  = ext_araddr;
-    assign mr[0].arlen   = ext_arlen;
-    assign mr[0].arvalid = ext_arvalid && EXT_EN;
-    assign ext_arready    = mr[0].arready && EXT_EN;
-    assign ext_rid        = mr[0].rid;
-    assign ext_rdata      = mr[0].rdata;
-    assign ext_rresp      = mr[0].rresp;
-    assign ext_rlast      = mr[0].rlast;
-    assign ext_rvalid     = mr[0].rvalid;
-    assign mr[0].rready  = ext_rready;
+    assign mr[R_EXT].arid    = ext_arid;
+    assign mr[R_EXT].araddr  = ext_araddr;
+    assign mr[R_EXT].arlen   = ext_arlen;
+    assign mr[R_EXT].arvalid = ext_arvalid && EXT_EN;
+    assign ext_arready    = mr[R_EXT].arready && EXT_EN;
+    assign ext_rid        = mr[R_EXT].rid;
+    assign ext_rdata      = mr[R_EXT].rdata;
+    assign ext_rresp      = mr[R_EXT].rresp;
+    assign ext_rlast      = mr[R_EXT].rlast;
+    assign ext_rvalid     = mr[R_EXT].rvalid;
+    assign mr[R_EXT].rready  = ext_rready;
 
     // ------------------------------------------------------- self-test
     if (ENABLE_SELFTEST) begin : g_selftest
