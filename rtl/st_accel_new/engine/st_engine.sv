@@ -292,7 +292,7 @@ module st_engine
     st_film u_film (
         .clk(clk), .rst_n(rst_n), .cfg_g(pk_g),
         .gap_clear(go && use_gap),
-        .tap_valid(use_gap && pki_v && pk_in_r), .tap_data(pki_d), .tap_last(pki_l),
+        .tap_valid(use_gap && pki_v && pk_in_r), .tap_ready(), .tap_data(pki_d), .tap_last(pki_l),
         .mlp_start(mlp_start), .mlp_busy(mlp_busy),
         .coef_we(cf_we), .coef_idx(cf_idx), .coef_mul(cf_mul), .coef_off(cf_off));
 
