@@ -206,7 +206,7 @@ tb_st_engine:
 # st_unpack / st_pack / st_add against tools/st_io_vectors.py (the guided
 # net's activations at 640x360; DDR beats from Guided.ddr_image).  One build,
 # one run per case.
-IO_CASES  := unpack_p10 unpack_p17 unpack_p13_hrep unpack_p1 \
+IO_CASES  := unpack_p10 unpack_p17 unpack_p13_hrep unpack_p19_hrep unpack_p1 \
              pack_p2 pack_p16 pack_p10 pack_p17
 ADD_CASES := add_res add_h2 add_head
 EXTRA_tb_st_io  := $(ST_ENG)
