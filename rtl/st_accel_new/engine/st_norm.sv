@@ -31,7 +31,8 @@
 //                t = (u*R + 2^(e+2)) >>> (e+3)
 //                y = clamp((t*G_c + B_c + 2^21) >>> 22, -127, 127)
 //
-// G_c and B_c come from st_ln.hex, one word per channel.
+// G_c and B_c come from st_ln_b<b>.hex, one word per channel: the file of
+// lane b, word a = channel 4a + b.
 //
 // ------------------------------------------------------------- structure
 // collect   the beats of pixel p go into a pixel buffer (four slots by pixel
@@ -69,7 +70,7 @@
 // the stricter G >= 8 the timing above assumes.
 module st_norm #(
     parameter int    OUT_DEPTH = 16,        // output beats in the FIFO
-    parameter string LN_HEX    = "rtl/st_accel_new/gen/guided/st_ln.hex",
+    parameter string LN_HEX    = "rtl/st_accel_new/gen/guided/st_ln_b",   // + "<b>.hex"
     parameter string LUT_HEX   = "rtl/st_accel_new/gen/guided/st_ln_lut.hex"
 ) (
     input  logic         clk,
@@ -143,37 +144,52 @@ module st_norm #(
     // One array per lane, 256 words of 48 bit: [44:18] B_c / off_c (27-bit
     // signed), [17:0] G_c / mul_c (18-bit signed).  Lane b word a holds
     // channel 4a + b, so one read returns the four channels of a group beat.
-    // Words 0..19 of a lane are the LN image (loaded from LN_HEX); words
-    // 128..147 are the FiLM coefficients, written through the coefficient
-    // port while idle.  A pass is one mode, so the two regions never meet,
-    // and one array per lane is the smallest form that gives four
-    // simultaneous reads: 256 x 48 = one 256x40 and one 256x10 RAM10.
+    // Words 0..19 of a lane are the LN image; words 128..147 are the FiLM
+    // coefficients, written through the coefficient port while idle.  A pass
+    // is one mode, so the two regions never meet, and one array per lane is
+    // the smallest form that gives four simultaneous reads: 256 x 48 = one
+    // 256x40 and one 256x10 RAM10 per lane.
+    //
+    // Each lane array is initialised by a $readmemh of its own file straight
+    // into the RAM, which is the only form Efinity infers RAM contents from:
+    // LN_HEX is the path prefix, the module appends "<b>.hex".  The files are
+    // 256 words each (tools/st_gen_norm.py), zeros outside words 0..19, so
+    // the FiLM region needs no separate clear.
     localparam int CBASE_FILM = 128;
 
-    logic [CW-1:0] coef_ram [NB][2*CBASE_FILM];
+    logic [CW-1:0] coef_b0 [2*CBASE_FILM];
+    logic [CW-1:0] coef_b1 [2*CBASE_FILM];
+    logic [CW-1:0] coef_b2 [2*CBASE_FILM];
+    logic [CW-1:0] coef_b3 [2*CBASE_FILM];
     logic [CW-1:0] coef_q [NB];
     logic [7:0]    coef_addr;
-    logic [CW-1:0] ln_img [NB*BW];      // the file, in its own order
 
     // load() is the one place the image is installed; the initial block calls
-    // it with LN_HEX and a testbench may call it again with a per-case file.
-    task automatic load(input string path);
-        for (int i = 0; i < NB * BW; i++) ln_img[i] = '0;
-        $readmemh(path, ln_img);
-        for (int b = 0; b < NB; b++)
-            for (int a = 0; a < 2 * CBASE_FILM; a++)
-                coef_ram[b][a] = (a < GMAX) ? ln_img[NB*a + b] : '0;
+    // it with LN_HEX and a testbench may call it again with a per-case prefix.
+    task automatic load(input string prefix);
+        $readmemh({prefix, "0.hex"}, coef_b0);
+        $readmemh({prefix, "1.hex"}, coef_b1);
+        $readmemh({prefix, "2.hex"}, coef_b2);
+        $readmemh({prefix, "3.hex"}, coef_b3);
     endtask
 
     initial load(LN_HEX);
 
+    wire [7:0] coef_waddr = 8'(CBASE_FILM) + {3'd0, coef_idx[6:2]};
+
     always_ff @(posedge clk) begin
-        for (int b = 0; b < NB; b++) begin
-            if (coef_we && (coef_idx[1:0] == 2'(b)))
-                coef_ram[b][8'(CBASE_FILM) + {3'd0, coef_idx[6:2]}]
-                    <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
-            coef_q[b] <= coef_ram[b][coef_addr];
+        if (coef_we) begin
+            case (coef_idx[1:0])
+                2'd0: coef_b0[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
+                2'd1: coef_b1[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
+                2'd2: coef_b2[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
+                default: coef_b3[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
+            endcase
         end
+        coef_q[0] <= coef_b0[coef_addr];
+        coef_q[1] <= coef_b1[coef_addr];
+        coef_q[2] <= coef_b2[coef_addr];
+        coef_q[3] <= coef_b3[coef_addr];
     end
 
     logic signed [17:0] coef_mul_q [NB];
@@ -293,10 +309,9 @@ module st_norm #(
             p_emit  <= 2'd0;
         end else if (em_issue) begin
             if (em_last_b) begin
-                em_act          <= 1'b0;
-                em_beat         <= 5'd0;
-                p_emit          <= p_emit + 2'd1;
-                par_rdy[par_i]  <= 1'b0;
+                em_act  <= 1'b0;
+                em_beat <= 5'd0;
+                p_emit  <= p_emit + 2'd1;
             end else begin
                 em_act  <= 1'b1;
                 em_beat <= em_beat + 5'd1;
@@ -435,11 +450,20 @@ module st_norm #(
                 lut_addr <= idx_w;
                 e_cap    <= e_w;
             end
+            // par_rdy is driven here only: set for the pixel whose
+            // parameters arrive, cleared for the one whose last beat leaves.
+            // A slot cannot be both in one cycle -- px_par is a pixel whose
+            // compute just finished, par_i one still emitting, and a pixel
+            // does not emit before its own compute -- which the assertion
+            // below checks.
+            for (int k = 0; k < 4; k++)
+                if (cm4_v && (px_par == 2'(k)))  par_rdy[k] <= 1'b1;
+                else if (em_issue && em_last_b && (par_i == 2'(k)))
+                                                 par_rdy[k] <= 1'b0;
             if (cm4_v) begin
                 par_s[px_par]   <= s_cap;
                 par_r[px_par]   <= 17'(lut_q);
                 par_e[px_par]   <= e_cap;
-                par_rdy[px_par] <= 1'b1;
             end
         end
     end
@@ -685,6 +709,9 @@ module st_norm #(
     always @(posedge clk) begin
         if (rst_n && s5_v && of_wfull)
             $error("st_norm: output FIFO overflow (credit broken)");
+        if (rst_n && cm4_v && em_issue && em_last_b && (px_par == par_i))
+            $error("st_norm: par_rdy set and cleared on slot %0d in one cycle",
+                   px_par);
         if (rst_n && in_accept && (in_last !== (beat_cnt == 5'(g_r - 5'd1))))
             $error("st_norm: in_last on beat %0d of a %0d-beat pixel",
                    beat_cnt, g_r);
