@@ -238,7 +238,7 @@ module st_engine
         .in_last(pki_l), .in_eol(pki_e), .in_sof(pki_s),
         .out_valid(pk_v), .out_ready(pk_r), .out_data(pk_d), .out_sof(pk_s), .out_eol(pk_e));
 
-    st_post u_post (
+    st_post #(.PAD(OUT_X0 / BEAT_PIX)) u_post (
         .clk(clk), .rst_n(rst_n),
         .in_valid(pw_v && is_post), .in_ready(po_in_r), .in_data(pw_d),
         .in_last(pw_l), .in_sof(pw_s), .in_eol(pw_e),
@@ -385,8 +385,8 @@ module st_engine
 
             // write
             if (pass == 4'(ST_N_PASSES - 1)) begin
-                wr_base   <= proc_q + AXI_AW'(OUT_X0 * PIX_BYTES);
-                wr_bpl    <= 16'((CAM_W - OUT_X0) * PIX_BYTES / BEAT_BYTES);
+                wr_base   <= proc_q;          // the whole line: left half black
+                wr_bpl    <= 16'(CAM_W * PIX_BYTES / BEAT_BYTES);
                 wr_lines  <= 16'(CAM_H);
                 wr_stride <= AXI_AW'(LINE_STRIDE);
             end else begin

@@ -8,6 +8,8 @@
 //
 //   base = slot + 640*2, 80 beats per line, 720 lines, stride LINE_STRIDE
 //   lines 0..119 and 600..719 black (0)
+//   with PAD > 0, every line starts with PAD black beats first: PAD = 80
+//   and base = slot write the whole 1280-pixel line, left half black
 //   line 120 + 2*sy + d, d = 0, 1: source line sy with every pixel doubled
 //   px = vid_pkg::pack565(rgb), pixel 0 in bits [15:0]
 //   sof on the first beat of the frame, eol on the last beat of every line
@@ -35,7 +37,8 @@ module st_post
     parameter int H     = 240,      // source lines
     parameter int TOP   = 120,      // OUT_Y0 of st_golden.post
     parameter int OUT_H = 720,      // right-half lines (CAM_H)
-    parameter int OUT_W = 640       // right-half pixels (CAM_W - OUT_X0)
+    parameter int OUT_W = 640,      // right-half pixels (CAM_W - OUT_X0)
+    parameter int PAD   = 0         // black beats ahead of every line
 ) (
     input  logic         clk,
     input  logic         rst_n,
@@ -60,13 +63,14 @@ module st_post
     output logic         err         // input framing mismatch, sticky
 );
     localparam int PW4 = W / 4;                   // source pixels per buffer word
-    localparam int OBP = OUT_W / BEAT_PIX;        // output beats per line
+    localparam int OBP = OUT_W / BEAT_PIX;        // image beats per line
+    localparam int LBP = PAD + OBP;               // output beats per line
     localparam int WB  = $clog2(PW4);             // buffer word address
-    localparam int OW  = $clog2(OBP);             // beat within the output line
+    localparam int OW  = $clog2(LBP);             // beat within the output line
     localparam int RW  = $clog2(OUT_H);           // output line
     localparam int SW  = $clog2(W);               // pixel within the source line
     localparam int HW  = $clog2(H + 1);           // source line, 0..H
-    localparam int NACC = OUT_H * OBP;            // output beats in a frame
+    localparam int NACC = OUT_H * LBP;            // output beats in a frame
 
     initial begin
         if (W % 4 != 0)
@@ -80,7 +84,7 @@ module st_post
     // ---------------------------------------------------------- line buffer
     logic [63:0]   lbuf [2][PW4];
     wire           rd_bank = e_sy[0];
-    wire [WB-1:0]  rd_addr = WB'(e_beat);
+    wire [WB-1:0]  rd_addr = WB'(e_beat - OW'(PAD));
     logic [63:0]   rd_word;
 
     // ------------------------------------------------------------- control
@@ -105,17 +109,24 @@ module st_post
 
     // ------------------------------------------------------- emitter address
     wire          e_top   = (e_row < RW'(TOP));
-    wire          e_black = e_top || (e_row >= RW'(TOP + 2 * H));
+    wire          e_band  = e_top || (e_row >= RW'(TOP + 2 * H));  // black line
+    logic         e_pad;                                       // a PAD beat
+    if (PAD > 0) begin : g_pad
+        assign e_pad = (e_beat < OW'(PAD));
+    end else begin : g_nopad
+        assign e_pad = 1'b0;
+    end
+    wire          e_black = e_band || e_pad;                    // black beat
     wire [RW-1:0] e_src   = e_row - RW'(TOP);
     wire [HW-1:0] e_sy    = e_top ? HW'(0) : HW'(e_src >> 1);   // source line
     // How far the fill may run: one source line past the line the emitter
     // needs next.  Above the image that is line 0, so the fill stops after
     // line 1 and cannot overwrite the bank line 0 is in; below the image the
     // fill is done.
-    wire [HW-1:0] emit_sy = e_top ? HW'(0) : (e_black ? HW'(H) : e_sy);
+    wire [HW-1:0] emit_sy = e_top ? HW'(0) : (e_band ? HW'(H) : e_sy);
 
     wire stall  = out_valid && !out_ready;
-    wire src_ok = e_black || (fill_line > e_sy);   // that source line is in
+    wire src_ok = e_band || (fill_line > e_sy);   // that source line is in
     wire issue  = (state == ST_RUN) && !stall && src_ok && (n_iss < 17'(NACC));
     wire last_xfer = out_valid && out_ready;
 
@@ -234,10 +245,10 @@ module st_post
                 s1_v     <= issue;
                 s1_black <= e_black;
                 s1_sof   <= issue && (e_row == '0) && (e_beat == '0);
-                s1_eol   <= issue && (e_beat == OW'(OBP - 1));
+                s1_eol   <= issue && (e_beat == OW'(LBP - 1));
                 if (issue) begin
                     n_iss <= n_iss + 17'(1);
-                    if (e_beat == OW'(OBP - 1)) begin
+                    if (e_beat == OW'(LBP - 1)) begin
                         e_beat <= '0;
                         e_row  <= e_row + RW'(1);
                     end else begin
