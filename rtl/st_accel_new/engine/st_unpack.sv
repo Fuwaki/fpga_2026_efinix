@@ -11,17 +11,29 @@
 // A group is 4 or 8 bytes and never straddles a beat, so groups are cut
 // straight from the beat register: elem 1 gives 4 groups per beat, elem 2
 // gives 2.  int16 elements keep their low 10 bits (the add outputs are
-// within +-254).  The beats of the current pixel are also kept in a pixel
-// buffer (10 x 128 bits, one per PB/16 beat of the widest pixel: 80 int16
-// channels); with cfg_hrep every pixel is emitted a second time from it --
-// the horizontal half of the 2x nearest upsample.  The vertical half is
-// tile_dma_rd's line_shift, so input and output line counts match.
+// within +-254).  Beats are taken one at a time as their last group leaves,
+// so the beat register alone feeds every pixel -- there is no per-pixel
+// buffer.
+//
+// cfg_hrep emits every pixel twice (the horizontal half of the 2x nearest
+// upsample; the vertical half is tile_dma_rd's line_shift, so input and
+// output line counts match).  The replay needs the pixel's beats again after
+// the plain copy has consumed them, and in_ready blocks the next pixel until
+// the replay is done, so the *last* beat is still in the beat register when
+// the replay starts; only the pixel's first beat has to be kept, in a single
+// 128-bit register b0 (written when the first beat of the pixel is taken).
+// Groups of the first beat are therefore muxed from b0 during the replay and
+// from the beat register otherwise.  This needs PB <= 32 -- at most two
+// beats per pixel -- which is checked in simulation below; the guided net
+// only upsamples p13 (24 int8 channels, 2 beats) and p19 (8 channels,
+// 1 beat).  A wider pixel would replay the wrong beats, so cfg_hrep with
+// cfg_pb > 32 is a configuration error, not a supported mode.
 //
 // Geometry: C <= 80 so G = ceil(C/4) <= 20 (a 5-bit group counter), PB <= 160
 // so at most 10 beats per pixel (a 4-bit beat counter), W <= 640, H <= 360.
-// The pixel buffer is read asynchronously in the emission cycle, so it is a
-// register file (10 x 128 = 1280 flops, +256 over the 8-beat version) with a
-// 10:1 128-bit mux, not a RAM10 array.
+// Registers: 2 x 128 bits of beat data (beat, b0), the 40-bit output
+// register and the counters -- about 420 flops, down from 1390 when the
+// 10 x 128-bit pixel buffer and its 10:1 mux were still there.
 //
 // Throughput: one group per cycle; a beat is taken in the cycle its
 // predecessor's last group leaves.  Cycles per pixel: G (x2 with hrep), at
@@ -39,7 +51,7 @@ module st_unpack (
     input  logic [7:0]    cfg_pb,      // pixel bytes, 16..160, multiple of 16
     input  logic [9:0]    cfg_w,       // source pixels per line
     input  logic [9:0]    cfg_h,       // lines
-    input  logic          cfg_hrep,    // emit every pixel twice
+    input  logic          cfg_hrep,    // emit every pixel twice (needs PB <= 32)
     output logic          busy,
 
     input  logic          in_valid,
@@ -64,11 +76,11 @@ module st_unpack (
     // ------------------------------------------------------------- state
     logic         run;                 // groups still to emit
     logic         have;                // beat register holds a beat
-    logic [127:0] beat;
-    logic [127:0] pbuf [10];           // beats of the current pixel
+    logic [127:0] beat;                // the pixel's current beat
+    logic [127:0] b0;                  // its first beat, for the hrep replay
     logic [3:0]   bi;                  // next beat index within the pixel
     logic [4:0]   g;                   // next group of the pixel, 0..G-1
-    logic         rep;                 // emitting the hrep copy from pbuf
+    logic         rep;                 // emitting the hrep copy from b0/beat
     logic [9:0]   x, y;
     logic         first;               // next group is the frame's first
 
@@ -79,7 +91,11 @@ module st_unpack (
     wire  [3:0]   gbeat   = elem2 ? g[4:1] : {1'b0, g[4:2]};
     wire          sub_end = elem2 ? g[0] : (g[1:0] == 2'd3);
     wire          pix_end = (g == gl);
-    wire  [127:0] src     = rep ? pbuf[gbeat] : beat;
+    // Under hrep a pixel has at most two beats, so gbeat is 0 or 1 and its
+    // low bit is g[1] (int16) / g[2] (int8).
+    wire          b0_sel  = elem2 ? g[1] : g[2];
+    wire          src_b0  = rep && !b0_sel;
+    wire  [127:0] src     = src_b0 ? b0 : beat;
 
     logic [39:0]  grp;
     wire  [7:0]   ch = {1'b0, c};       // channel index bound, 8-bit to match 4g+j
@@ -103,6 +119,9 @@ module st_unpack (
     wire frame_end = line_end && (y == h - 10'd1);
     // The beat register frees when its last group leaves on the plain copy.
     wire consume   = emit && !rep && (sub_end || pix_end);
+    // Index of the beat being taken: it restarts with a pixel that begins
+    // this cycle.
+    wire [3:0] widx = (consume && pix_end) ? 4'd0 : bi;
 
     assign in_ready = run && !rep && (!have || (consume && !(pix_end && hrep)))
                     && !frame_end;
@@ -169,9 +188,11 @@ module st_unpack (
             if (take) begin
                 have <= 1'b1;
                 beat <= in_data;
-                // The beat index restarts with a pixel that begins this cycle.
-                pbuf[(consume && pix_end) ? 4'd0 : bi] <= in_data;
-                bi   <= ((consume && pix_end) ? 4'd0 : bi) + 4'd1;
+                // Only the first beat of an hrep pixel needs keeping: the
+                // last one is still in `beat` when the replay starts.
+                if (hrep && widx == 4'd0)
+                    b0 <= in_data;
+                bi   <= widx + 4'd1;
             end
         end
     end
@@ -181,11 +202,13 @@ module st_unpack (
     logic [3:0] pbl;
     always_ff @(posedge clk) if (!busy && start) pbl <= 4'((cfg_pb >> 4) - 8'd1);
     always @(posedge clk)
-        if (rst_n && take) begin
-            automatic logic [3:0] idx = (consume && pix_end) ? 4'd0 : bi;
-            if (in_eol && idx != pbl)
-                $error("st_unpack: DMA eol on beat %0d of a %0d-beat pixel", idx, pbl + 1);
-        end
+        if (rst_n && take)
+            if (in_eol && widx != pbl)
+                $error("st_unpack: DMA eol on beat %0d of a %0d-beat pixel", widx, pbl + 1);
+    // The hrep replay keeps one beat only, so the pixel must not be wider.
+    always @(posedge clk)
+        if (rst_n && !busy && start && cfg_hrep && cfg_pb > 8'd32)
+            $error("st_unpack: cfg_hrep needs cfg_pb <= 32, got %0d", cfg_pb);
 `endif
 
     logic unused;

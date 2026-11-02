@@ -136,6 +136,7 @@ def main() -> int:
     for name, pt, hrep in (("unpack_p10", 10, 0),
                            ("unpack_p17", 17, 0),
                            ("unpack_p13_hrep", 13, 1),
+                           ("unpack_p19_hrep", 19, 1),
                            ("unpack_p1", 1, 0)):
         t = D[pt]
         c, h, w = t.shape
