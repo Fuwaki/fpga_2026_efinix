@@ -3,7 +3,7 @@
 // DDR (axi_mem_model, random back-pressure) holds the camera frame in an ISP
 // slot.  The engine runs passes +FIRST..+LAST (default 0..14); afterwards
 // every DDR region the run wrote is compared byte-exact with the golden
-// p{N}.hex, and with pass 14 the PROC right half with right.hex.  For a
+// p{N}.hex, and with pass 14 the whole PROC slot with proc.hex.  For a
 // subrange, the regions the run does not write are preloaded from the golden
 // images, so one pass can be debugged on its own; the regions it writes start
 // as the model's FILL pattern.  Reports the first mismatching beat of each
@@ -14,7 +14,6 @@ module tb_st_engine;
 
     localparam logic [AXI_AW-1:0] ISP  = 32'h0440_0000;   // ISP slot 1
     localparam logic [AXI_AW-1:0] PROC = 32'h0600_0000;   // PROC slot 0
-    localparam int                OUT_X0 = 640;
 
     logic clk = 0, rst_n = 0;
     always #5 clk = ~clk;
@@ -129,9 +128,8 @@ module tb_st_engine;
             end
         end
         if (la == ST_N_PASSES - 1) begin
-            automatic int b = check("right.hex", "pass 14 PROC right half",
-                                    PROC + AXI_AW'(OUT_X0 * PIX_BYTES),
-                                    (CAM_W - OUT_X0) * PIX_BYTES / BEAT_BYTES, LINE_STRIDE);
+            automatic int b = check("proc.hex", "pass 14 PROC slot", PROC,
+                                    CAM_W * PIX_BYTES / BEAT_BYTES, LINE_STRIDE);
             if (b != 0) $display("  pass 14 (PROC): %0d bad beats", b);
             bad += b;
         end

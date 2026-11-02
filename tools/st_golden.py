@@ -14,14 +14,14 @@ two must agree code for code.
 Usage:
   st_golden.py --manifest DIR --image in.png --out out.png [--float]
                [--ref ref.png] [--dump DIR]
-  st_golden.py --manifest DIR --frame cam.png --out right.png [--dump DIR]
+  st_golden.py --manifest DIR --frame cam.png --out proc.png [--dump DIR]
 --image takes the 320x240 network input directly.  --frame takes a
-1280x720 camera frame and runs the whole board path: RGB565, pre (crop,
-3x3 box average), the network, post (2x, RGB565); --out is then the
-640x720 right half as the board shows it.
+1280x720 camera frame and runs the whole board path: RGB565, pre (4x3 box
+average of the whole frame), the network, post (4x3 replication, RGB565);
+--out is then the 1280x720 PROC slot as the board shows it.
 --dump writes every pass's input and output tensors (int16, CHW, .npy) and,
 for every DDR point, its DDR image p{N}.bin (HWC, see DDR_ELEM); with
---frame also frame.bin (ISP slot) and right.bin (PROC slot right half),
+--frame also frame.bin (ISP slot) and proc.bin (PROC slot),
 both RGB565 little-endian, 2 bytes per pixel.
 """
 import argparse
@@ -55,8 +55,10 @@ PASSES = [
 WIDE_POINTS = {9, 13, 17, 21}
 
 CAM_W, CAM_H = 1280, 720
-CROP_X0 = 160                      # 960x720 crop -> 3x3 box -> 320x240
-OUT_X0, OUT_Y0 = 640, 120          # 2x result in the PROC slot
+# The whole frame <-> 320x240: a 4 wide x 3 tall box each way, so the PROC
+# slot lines up pixel for pixel with the ISP slot it came from.
+BOX_W, BOX_H = 4, 3
+NET_W, NET_H = CAM_W // BOX_W, CAM_H // BOX_H
 
 
 def ddr_image(t, pt):
@@ -84,20 +86,21 @@ def from565(w):
 
 
 def pre(frame565):
-    """ISP slot (720x1280 RGB565) -> 320x240 RGB8: crop, 3x3 box average.
-    (sum * 455 + 2075) >> 12 == round(sum / 9) for every sum of 9 bytes."""
-    rgb = from565(frame565[:, CROP_X0:CROP_X0 + 960])
-    s = rgb.reshape(240, 3, 320, 3, 3).sum(axis=(1, 3))
-    return ((s * 455 + 2075) >> 12).astype(np.uint8)
+    """ISP slot (720x1280 RGB565) -> 240x320 RGB8: 4x3 box average.
+    (sum * 1365 + 9210) >> 14 == (sum + 6) // 12 for every sum of 12 bytes."""
+    rgb = from565(frame565)
+    s = rgb.reshape(NET_H, BOX_H, NET_W, BOX_W, 3).sum(axis=(1, 3))
+    return ((s * 1365 + 9210) >> 14).astype(np.uint8)
+
+
+_s = np.arange(12 * 255 + 1)
+assert ((_s * 1365 + 9210) >> 14 == (_s + 6) // 12).all()
 
 
 def post(rgb):
-    """240x320 RGB8 -> the PROC slot right half, 720x640 RGB565: the image
-    doubled at row OUT_Y0, black above and below."""
-    out = np.zeros((CAM_H, CAM_W - OUT_X0), np.uint16)
-    big = rgb.repeat(2, axis=0).repeat(2, axis=1)
-    out[OUT_Y0:OUT_Y0 + 480] = to565(big)
-    return out
+    """240x320 RGB8 -> the PROC slot, 720x1280 RGB565: every pixel
+    replicated 4 wide x 3 tall."""
+    return to565(rgb.repeat(BOX_H, axis=0).repeat(BOX_W, axis=1))
 
 
 def round_away(v):
@@ -260,12 +263,12 @@ def main():
     y = net.run(rgb, a.dump)
     img = y.transpose(1, 2, 0).astype(np.uint8)
     if a.frame:
-        right = post(img)
-        Image.fromarray(from565(right).astype(np.uint8)).save(a.out)
+        proc = post(img)
+        Image.fromarray(from565(proc).astype(np.uint8)).save(a.out)
         if a.dump:
             Image.fromarray(rgb).save(os.path.join(a.dump, "pre.png"))
             f565.astype("<u2").tofile(os.path.join(a.dump, "frame.bin"))
-            right.astype("<u2").tofile(os.path.join(a.dump, "right.bin"))
+            proc.astype("<u2").tofile(os.path.join(a.dump, "proc.bin"))
         return
     Image.fromarray(img).save(a.out)
     if a.ref:

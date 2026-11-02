@@ -4,7 +4,7 @@
 // For each new frame of the ISP ring:
 //   1. acquire the frame (NEW_ONLY) and a slot of the PROC ring;
 //   2. run st_engine: the style network as 15 DDR passes, pass 0 reading the
-//      ISP slot, pass 14 writing the right half of the PROC slot
+//      ISP slot, pass 14 writing the whole PROC slot
 //      (docs/st-accel-engine-adr.md);
 //   3. release the ISP frame as soon as pass 0 is done, while the network
 //      passes still run;

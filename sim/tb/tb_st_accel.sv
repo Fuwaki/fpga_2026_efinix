@@ -5,10 +5,8 @@
 //
 // The pixels themselves are checked byte-exact by tb_st_engine against the
 // golden model; this test checks the ring level.  On every PROC commit the
-// right half of the slot (x 640..1279) is read back: lines 0..119 and
-// 600..719 must be black, every content line must be doubled (line 2k+1 =
-// line 2k) and so must every pixel pair, and the content must not be
-// constant.  Passes after NGOOD good frames with no aborts.
+// whole slot is read back: every 4x3 block must be one pixel (st_post's
+// replication) and the content must not be constant.  Passes after NGOOD good frames with no aborts.
 module tb_st_accel #(
     parameter int NGOOD = 2
 );
@@ -82,13 +80,13 @@ module tb_st_accel #(
         .pix_clk(pclk), .pix_r(), .pix_g(), .pix_b(), .pix_de(), .pix_hs(), .pix_vs(),
         .status(st));
 
-    // Check each committed PROC slot's right half.
-    localparam int X0 = 640, Y0 = 120, Y1 = 600;
+    // Check each committed PROC slot: every 4x3 block of the 1280x720 slot is
+    // one source pixel.
     int good = 0, checked = 0;
     always @(posedge clk) begin
         if (rst_n && dst_req && dst_ack && dst_op == RING_P_COMMIT) begin
             int bad = 0, f;
-            logic [15:0] first_px, px [CAM_W - X0];
+            logic [15:0] first_px, px [CAM_W], top [CAM_W];
             bit varies;
             logic [AXI_AW-1:0] base;
             f        = int'(dst_src_seq);
@@ -96,32 +94,23 @@ module tb_st_accel #(
             varies   = 0;
             first_px = 'x;
             for (int y = 0; y < CAM_H; y++) begin
-                for (int b = X0 / BEAT_PIX; b < CAM_W / BEAT_PIX; b++) begin
+                for (int b = 0; b < CAM_W / BEAT_PIX; b++) begin
                     logic [AXI_DW-1:0] got;
                     got = u_mem.peek(longint'(line_addr(base, 12'(y))) + longint'(b * BEAT_BYTES));
                     for (int p = 0; p < BEAT_PIX; p++)
-                        px[b * BEAT_PIX + p - X0] = got[p*16 +: 16];
+                        px[b * BEAT_PIX + p] = got[p*16 +: 16];
                 end
-                for (int x = 0; x < CAM_W - X0; x++) begin
-                    logic [15:0] want;
+                if (y % 3 == 0) top = px;      // the block's first line
+                for (int x = 0; x < CAM_W; x++) begin
                     bit ok;
-                    if (y < Y0 || y >= Y1) ok = (px[x] == 16'h0000);
-                    else begin
-                        ok = (x % 2 == 0) || (px[x] == px[x - 1]);
-                        if (y % 2 == 1) begin
-                            logic [AXI_DW-1:0] up;
-                            up = u_mem.peek(longint'(line_addr(base, 12'(y - 1))) +
-                                            longint'((X0 + x) / BEAT_PIX * BEAT_BYTES));
-                            ok = ok && (up[((X0 + x) % BEAT_PIX)*16 +: 16] == px[x]);
-                        end
-                        if (^px[x] === 1'bx) ok = 0;
-                        if (y == Y0 && x == 0) first_px = px[x];
-                        else if (px[x] != first_px) varies = 1;
-                    end
+                    ok = (px[x] == top[x]) && (x % 4 == 0 || px[x] == px[x - 1]);
+                    if (^px[x] === 1'bx) ok = 0;
+                    if (y == 0 && x == 0) first_px = px[x];
+                    else if (px[x] != first_px) varies = 1;
                     if (!ok) begin
                         if (bad < 4)
-                            $display("  frame %0d (%0d,%0d): %h breaks the black band / 2x structure",
-                                     f, X0 + x, y, px[x]);
+                            $display("  frame %0d (%0d,%0d): %h breaks the 4x3 structure",
+                                     f, x, y, px[x]);
                         bad++;
                     end
                 end

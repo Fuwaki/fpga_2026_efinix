@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Vectors for rtl/st_accel_new/engine/st_pre.sv and st_post.sv.
 
-Writes into --out, for the full frame (1280x720 ISP slot -> p0 -> PROC right
-half, docs/st-accel-engine-adr.md):
+Writes into --out, for the full frame (1280x720 ISP slot -> p0 -> 1280x720
+PROC slot, docs/st-accel-engine-adr.md):
 
-  pre_in.hex     the ISP crop as tile_dma_rd delivers it: 120 beats per line,
+  pre_in.hex     the ISP frame as tile_dma_rd delivers it: 160 beats per line,
                  720 lines, 128-bit beats, RGB565 little-endian, 8 px per
                  beat, pixel 0 in bits [15:0].
   pre_exp.hex    p0 = st_golden.ddr_image(quantize_input(pre(frame)), 0): 320
@@ -12,8 +12,8 @@ half, docs/st-accel-engine-adr.md):
                  q of R, G, B, the rest zero.
   post_in.hex    the head output as the engine's group stream: one beat per
                  pixel, 320x240, lanes 0..2 = R, G, B (0..255).
-  post_exp.hex   st_golden.post(): the PROC slot right half, 80 beats per
-                 line, 720 lines, 8 doubled pixels per beat.
+  post_exp.hex   st_golden.post(): the PROC slot, 160 beats per line, 720
+                 lines, 2 source pixels x 4 per beat.
 
 Beat files hold "%032h <sof> <eol>" per line; the group-beat file holds
 "%010h <last> <sof> <eol>".  Every expected beat comes from tools/st_golden.py
@@ -35,12 +35,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_golden import (CAM_H, CAM_W, CROP_X0, Net, ddr_image, post, pre,  # noqa: E402
-                       to565)
+from st_golden import CAM_H, CAM_W, Net, ddr_image, post, pre, to565  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "config/manifest/ink_dw_w8a8"
-CROP_W = 960
 BEAT_PIX = 8
 OUT_PX = 320            # p0 pixels per line == head pixels per line
 
@@ -48,7 +46,7 @@ OUT_PX = 320            # p0 pixels per line == head pixels per line
 # ---------------------------------------------------------------- the frame
 def synth_frame() -> np.ndarray:
     """Deterministic 1280x720 RGB: gradients (bit order), colour bars (channel
-    order), hard edges and 1/2/3-px lines (the 3x3 box average sees every
+    order), hard edges and 1/2/3-px lines (the 4x3 box average sees every
     phase), a moving band (nothing is cached)."""
     h, w = CAM_H, CAM_W
     y = np.arange(h, dtype=np.int32)[:, None]
@@ -133,25 +131,23 @@ def main() -> int:
     net = Net(a.manifest, False)
     p0 = net.quantize_input(rgb)                        # the point-0 codes
 
-    # -------- pre: ISP crop beats in, p0 beats out.  The DMA reads the crop
-    # at x 160 of the slot; the crop is whatever follows from the frame.
-    crop = to565(frame)[:, CROP_X0:CROP_X0 + CROP_W]
-    src = crop.astype("<u2").tobytes()                  # 720 lines of the crop
-    (out / "pre_in.hex").write_text("\n".join(beat_lines(src, CROP_W // BEAT_PIX)) + "\n")
+    # -------- pre: ISP slot beats in, p0 beats out
+    src = to565(frame).astype("<u2").tobytes()          # 720 lines of the slot
+    (out / "pre_in.hex").write_text("\n".join(beat_lines(src, CAM_W // BEAT_PIX)) + "\n")
     exp0 = ddr_image(p0, 0)
     (out / "pre_exp.hex").write_text("\n".join(beat_lines(exp0, OUT_PX)) + "\n")
 
-    # -------- post: head output in, PROC right half out
+    # -------- post: head output in, PROC slot out
     head = net.run(rgb).transpose(1, 2, 0).astype(np.uint8)   # 240x320x3
     assert head.shape == (240, OUT_PX, 3), head.shape
-    right = post(head)
+    proc = post(head)
     (out / "post_in.hex").write_text("\n".join(group_lines(head)) + "\n")
     (out / "post_exp.hex").write_text(
-        "\n".join(beat_lines(right.astype("<u2").tobytes(), 80)) + "\n")
+        "\n".join(beat_lines(proc.astype("<u2").tobytes(), CAM_W // BEAT_PIX)) + "\n")
 
     print(f"PASS st_prepost_vectors: {out}: "
           f"pre {len(src)//16} in / {len(exp0)//16} out beats, "
-          f"post {OUT_PX*240} in / {len(right.tobytes())//16} out beats")
+          f"post {OUT_PX*240} in / {len(proc.tobytes())//16} out beats")
     return 0
 
 

@@ -9,7 +9,7 @@ order):
   frame.hex   the ISP slot, 160 beats per line, 720 lines
   p{N}.hex    the DDR image of every point with a region (st_golden.ddr_image),
               contiguous from the region base
-  right.hex   the PROC slot right half, 80 beats per line, 720 lines
+  proc.hex    the PROC slot, 160 beats per line, 720 lines
 
 Usage: st_engine_vectors.py --out DIR [--frame PNG]
 """
@@ -66,10 +66,10 @@ def main() -> int:
     dump = a.out / "npy"
     dump.mkdir(exist_ok=True)
     y = Net(str(MANIFEST), False).run(rgb, str(dump))
-    right = post(y.transpose(1, 2, 0).astype(np.uint8))
+    proc = post(y.transpose(1, 2, 0).astype(np.uint8))
 
     (a.out / "frame.hex").write_text(hexbeats(f565.astype("<u2").tobytes()))
-    (a.out / "right.hex").write_text(hexbeats(right.astype("<u2").tobytes()))
+    (a.out / "proc.hex").write_text(hexbeats(proc.astype("<u2").tobytes()))
     for f in sorted(dump.glob("p*.bin")):
         (a.out / f"{f.stem}.hex").write_text(hexbeats(f.read_bytes()))
     Image.fromarray(cam).save(a.out / "frame.png")

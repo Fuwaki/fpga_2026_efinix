@@ -3,10 +3,10 @@
 // One testbench, two cases, selected by the CASE_POST parameter (the Makefile
 // target builds and runs both):
 //
-//   pre   ISP crop RGB565 beats in (120 per line) -> p0 out (one beat per
+//   pre   ISP slot RGB565 beats in (160 per line) -> p0 out (one beat per
 //         pixel, 320 beats per line, 240 lines).
-//   post  head output group beats in (320x240 pixels) -> the PROC slot right
-//         half out (80 beats per line, 720 lines).
+//   post  head output group beats in (320x240 pixels) -> the whole PROC slot
+//         out (160 beats per line, 720 lines).
 //
 // The driver offers the input beats with random valid gaps, the checker
 // applies random back-pressure (ready low RDY_PCT of the time) and compares

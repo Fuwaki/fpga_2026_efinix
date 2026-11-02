@@ -14,9 +14,9 @@
 // Per pass p the configuration comes from st_net_pkg (st_pass, st_layer,
 // st_region): it is looked up into registers in S_CFG, the blocks the pass
 // uses get one start pulse in S_GO, and S_RUN waits until all of them are
-// idle and the writer's last B response is back.  Pass 0 reads the 960x720
-// centre crop of the ISP slot; pass 14 writes the 640x720 right half of the
-// PROC slot.  Blocks a pass does not use are never started, so they keep
+// idle and the writer's last B response is back.  Pass 0 reads the whole
+// 1280x720 ISP slot; pass 14 writes the whole 1280x720 PROC slot, aligned
+// pixel for pixel with it.  Blocks a pass does not use are never started, so they keep
 // in_ready low and out_valid low.
 //
 // start (while idle) samples isp_base, proc_base and the pass range; a
@@ -44,10 +44,6 @@ module st_engine
     output logic [3:0]         pass,        // current pass
     output logic [31:0]        cycles       // cycles of the last complete run
 );
-    localparam int CROP_X0 = 160;           // st_golden.CROP_X0
-    localparam int CROP_W  = 960;
-    localparam int OUT_X0  = 640;           // st_golden.OUT_X0
-
     // ==========================================================================
     // AXI: main and aux readers through the arbiter, the writer direct
     // ==========================================================================
@@ -352,8 +348,8 @@ module st_engine
 
             // main read
             if (pass == 4'd0) begin
-                rm_base   <= isp_q + AXI_AW'(CROP_X0 * PIX_BYTES);
-                rm_bpl    <= 16'(CROP_W * PIX_BYTES / BEAT_BYTES);
+                rm_base   <= isp_q;
+                rm_bpl    <= 16'(CAM_W * PIX_BYTES / BEAT_BYTES);
                 rm_lines  <= 16'(CAM_H);
                 rm_stride <= AXI_AW'(LINE_STRIDE);
                 rm_shift  <= 1'b0;
@@ -385,8 +381,8 @@ module st_engine
 
             // write
             if (pass == 4'(ST_N_PASSES - 1)) begin
-                wr_base   <= proc_q + AXI_AW'(OUT_X0 * PIX_BYTES);
-                wr_bpl    <= 16'((CAM_W - OUT_X0) * PIX_BYTES / BEAT_BYTES);
+                wr_base   <= proc_q;
+                wr_bpl    <= 16'(CAM_W * PIX_BYTES / BEAT_BYTES);
                 wr_lines  <= 16'(CAM_H);
                 wr_stride <= AXI_AW'(LINE_STRIDE);
             end else begin

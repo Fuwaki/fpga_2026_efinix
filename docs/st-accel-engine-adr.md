@@ -24,8 +24,9 @@ The network does not fit the board as one fused 640x480 pipeline:
 
 Run the network at **320x240 internally**.  Group its layers into **15
 passes**; each pass is one DDR round trip through a single programmable
-**block engine**.  The ISP frame is cropped and box-downscaled into the
-network input, and the 320x240 result is shown 2x on the right half.
+**block engine**.  The whole ISP frame is box-downscaled 4x3 into the
+network input, and the 320x240 result is stretched back over the whole
+PROC slot, pixel for pixel aligned with the camera frame.
 
 Budget at 320x240: 0.48 GMAC per frame (7.2 GMAC/s at 15 fps), about 3.7 M
 engine cycles (37 ms at 100 MHz), and about 12 MB of DDR traffic per frame.
@@ -65,7 +66,7 @@ outputs).
 
 | # | name  | input (DDR) | ops on chip | output (DDR) |
 |---|-------|-------------|-------------|--------------|
-| 0 | pre   | ISP slot 1280x720 RGB565 | crop x 160..1119, 3x3 box average, LUT | p0 320x240x3 |
+| 0 | pre   | ISP slot 1280x720 RGB565 | 4x3 box average of the whole frame, LUT | p0 320x240x3 |
 | 1 | stem  | p0 | im2col 3x3 → PW 27→32 | p1 320x240x32 |
 | 2 | enc0  | p1 | DW s2 → PW 32→64 | p3 160x120x64 |
 | 3 | enc1  | p3 | DW s2 → PW 64→64 | p5 80x60x64 |
@@ -75,11 +76,12 @@ outputs).
 | 13 | up1a | p24 (2x up) | DW → PW 32→16 → PW 16→16 | p27 320x240x16 |
 | 14 | up1b | p27 | DW → PW 16→3 (u8) → post | PROC slot |
 
-Post: RGB8 → RGB565, each pixel and line doubled (640x480), written to the
-PROC slot at x 640..1279, y 120..599.  Lines 0..119 and 600..719 of the
-right half are written black, so the right half never shows stale memory.
+Post: RGB8 → RGB565, each pixel repeated 4 wide and 3 tall (1280x720), the
+whole PROC slot.  The network sees the 16:9 frame squeezed to 4:3; post
+undoes it, so split view shows the camera and the stylised image of the same
+scene side by side, and full screen shows the stylised frame everywhere.
 
-Pre box average: `avg = (sum9 * 455 + 2075) >> 12` (= round(sum9 / 9) for every sum) per channel of the
+Pre box average: `avg = (sum12 * 1365 + 9210) >> 14` (= (sum12 + 6) / 12 for every sum) per channel of the
 `unpack565` RGB8 values (`vid_pkg::unpack565`).
 
 ### DDR tensor format
@@ -171,12 +173,12 @@ That is about 3.7 M cycles per frame.
 * A pass testbench loads the DDR image into `axi_mem_model`, runs one pass
   and compares the output region byte for byte.
 * A full-frame testbench runs patgen → all passes → PROC slot and compares
-  with the golden model's 640x720 right half.
+  with the golden model's 1280x720 PROC slot.
 
 ## Consequences
 
-* The right half shows the stylised image at 320x240, doubled, with a
-  4:3 crop of the camera.  The resolution goes up later with a smaller
+* The PROC slot shows the stylised image at 320x240, stretched 4x3 over
+  the whole camera frame.  The resolution goes up later with a smaller
   network (fewer MAC per pixel) or more fusion; the engine and the pass
   table carry over.
 * Weights live in on-chip ROM: one style per bitstream.  Style switching
