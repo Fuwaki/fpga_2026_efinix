@@ -14,8 +14,15 @@ two must agree code for code.
 Usage:
   st_golden.py --manifest DIR --image in.png --out out.png [--float]
                [--ref ref.png] [--dump DIR]
---dump writes every pass's input and output tensors (int8, CHW, .npy) for
-the RTL testbenches.
+  st_golden.py --manifest DIR --frame cam.png --out right.png [--dump DIR]
+--image takes the 320x240 network input directly.  --frame takes a
+1280x720 camera frame and runs the whole board path: RGB565, pre (crop,
+3x3 box average), the network, post (2x, RGB565); --out is then the
+640x720 right half as the board shows it.
+--dump writes every pass's input and output tensors (int16, CHW, .npy) and,
+for every DDR point, its DDR image p{N}.bin (HWC, see DDR_ELEM); with
+--frame also frame.bin (ISP slot) and right.bin (PROC slot right half),
+both RGB565 little-endian, 2 bytes per pixel.
 """
 import argparse
 import json
@@ -38,8 +45,60 @@ PASSES = [
     )
 ] + [
     ("up0",   ["up3.0.dw", "up3.0.pw", "up1.0"], True, "skip"),
-    ("up1",   ["up3.1.dw", "up3.1.pw", "up1.1", "head.dw", "head.pw"], True, None),
+    ("up1a",  ["up3.1.dw", "up3.1.pw", "up1.1"], True, None),
+    ("up1b",  ["head.dw", "head.pw"], False, None),
 ]
+
+# Points whose DDR elements are int16 (add outputs, up to +-254); the rest
+# are int8.  A DDR pixel is roundup16(C * elem) bytes, HWC, little-endian,
+# padding zero (docs/st-accel-engine-adr.md).
+WIDE_POINTS = {9, 13, 17, 21}
+
+CAM_W, CAM_H = 1280, 720
+CROP_X0 = 160                      # 960x720 crop -> 3x3 box -> 320x240
+OUT_X0, OUT_Y0 = 640, 120          # 2x result in the PROC slot
+
+
+def ddr_image(t, pt):
+    """CHW int tensor -> its DDR bytes (HWC, padded pixels)."""
+    c, h, w = t.shape
+    e = 2 if pt in WIDE_POINTS else 1
+    pb = -(-(c * e) // 16) * 16
+    hwc = np.ascontiguousarray(t.transpose(1, 2, 0).astype("<i2" if e == 2 else "i1"))
+    buf = np.zeros((h, w, pb), np.uint8)
+    buf[:, :, :c * e] = hwc.view(np.uint8).reshape(h, w, c * e)
+    return buf.tobytes()
+
+
+def to565(rgb):
+    """RGB8 HWC -> RGB565 words (vid_pkg::pack565)."""
+    rgb = rgb.astype(np.uint16)
+    return (rgb[..., 0] >> 3) << 11 | (rgb[..., 1] >> 2) << 5 | (rgb[..., 2] >> 3)
+
+
+def from565(w):
+    """RGB565 words -> RGB8 HWC (vid_pkg::unpack565, bit replication)."""
+    w = w.astype(np.int64)
+    r, g, b = w >> 11 & 31, w >> 5 & 63, w & 31
+    return np.stack([r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2], axis=-1)
+
+
+def pre(frame565):
+    """ISP slot (720x1280 RGB565) -> 320x240 RGB8: crop, 3x3 box average.
+    (sum * 455 + 2075) >> 12 == round(sum / 9) for every sum of 9 bytes."""
+    rgb = from565(frame565[:, CROP_X0:CROP_X0 + 960])
+    s = rgb.reshape(240, 3, 320, 3, 3).sum(axis=(1, 3))
+    return ((s * 455 + 2075) >> 12).astype(np.uint8)
+
+
+def post(rgb):
+    """240x320 RGB8 -> the PROC slot right half, 720x640 RGB565: the image
+    doubled at row OUT_Y0, black above and below."""
+    out = np.zeros((CAM_H, CAM_W - OUT_X0), np.uint16)
+    big = rgb.repeat(2, axis=0).repeat(2, axis=1)
+    out[OUT_Y0:OUT_Y0 + 480] = to565(big)
+    return out
+
 
 def round_away(v):
     """f32 round half away from zero, as Rust f32::round."""
@@ -170,24 +229,44 @@ class Net:
             pts[out_pt] = y
             if dump is not None:
                 np.save(os.path.join(dump, f"{name}_out.npy"), y.astype(np.int16))
+        if dump is not None:
+            for pt, t in pts.items():
+                with open(os.path.join(dump, f"p{pt}.bin"), "wb") as f:
+                    f.write(ddr_image(t, pt))
         return y
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifest", required=True)
-    ap.add_argument("--image", required=True)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--image")
+    src.add_argument("--frame")
     ap.add_argument("--out", required=True)
     ap.add_argument("--ref")
     ap.add_argument("--float", action="store_true")
     ap.add_argument("--dump")
     a = ap.parse_args()
     net = Net(a.manifest, a.float)
-    rgb = np.asarray(Image.open(a.image).convert("RGB"))
     if a.dump:
         os.makedirs(a.dump, exist_ok=True)
+    if a.frame:
+        cam = np.asarray(Image.open(a.frame).convert("RGB"))
+        assert cam.shape[:2] == (CAM_H, CAM_W), f"--frame must be {CAM_W}x{CAM_H}"
+        f565 = to565(cam)
+        rgb = pre(f565)
+    else:
+        rgb = np.asarray(Image.open(a.image).convert("RGB"))
     y = net.run(rgb, a.dump)
     img = y.transpose(1, 2, 0).astype(np.uint8)
+    if a.frame:
+        right = post(img)
+        Image.fromarray(from565(right).astype(np.uint8)).save(a.out)
+        if a.dump:
+            Image.fromarray(rgb).save(os.path.join(a.dump, "pre.png"))
+            f565.astype("<u2").tofile(os.path.join(a.dump, "frame.bin"))
+            right.astype("<u2").tofile(os.path.join(a.dump, "right.bin"))
+        return
     Image.fromarray(img).save(a.out)
     if a.ref:
         ref = np.asarray(Image.open(a.ref).convert("RGB")).astype(int)

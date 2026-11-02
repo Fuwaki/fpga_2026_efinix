@@ -1,113 +1,171 @@
-# ADR: ST Accelerator DDR-Resident Graph Execution Engine
+# ADR: ST accelerator block engine (tiny_dw at 320x240)
 
 Date: 2026-11-02
-Status: Accepted (user-approved multi-pass layer-loop approach)
+Status: Accepted.  Supersedes the 2026-11-02 "DDR layer-loop engine" draft
+(one layer per pass, 480x480, guide branch), which did not fit the board.
 
 ## Context
 
-The 15-layer tiny_dw_guided style-transfer graph cannot run as a single
-stream-through pass because intermediate feature maps (up to 480×480×20
-int8 = 4.5 MB) far exceed on-chip BRAM (~160 KB usable). The current
-`st_accel_wrapper` is a single-pass stream (DMA→rgb2yc→engine stub→DMA)
-that only works for one layer at a time.
+The ring-driven accelerator path runs on the board (commits 69fff12,
+a4c01d0).  The wrapper takes each new ISP frame, runs DMA passes through a
+DDR scratch area, and commits the PROC ring.  The compositor shows the PROC
+ring on the right half of the screen.  This ADR puts the real network on
+that path: `config/manifest/ink_dw_w8a8` (tiny_dw, W8A8, 29 layers, 50,144
+weight bytes).
 
-Three blocking bugs prevent the existing `tile_engine` from synthesizing
-with real DSP usage:
-1. `pw_conv1x1.sv:173` connects `.right_shift(requant_shift)` but
-   `requant.sv` now has `mult [MAC_ROWS][15:0]` (per-channel uint16
-   multiplier = round(requant_fp × 2^16)), not a shift field.
-2. `tile_engine.sv:99` references `desc.out_scale_shift[5:0]` but
-   `layer_desc_t` now has `requant_bram_addr`, not `out_scale_shift`.
-3. `pw_conv1x1` uses static-parameter `weight [OUT_CHANNELS][IN_CHANNELS]`
-   array ports — cannot handle 15 layers with varying channel counts
-   (2→16, 16→32, 32→12, 12→20, 20→4, 4→3).
+The network does not fit the board as one fused 640x480 pipeline:
+
+* compute: about 6.2k MAC per pixel.  640x480 at 15 fps is 28.7 GMAC/s,
+  90% of the peak of 160 DSP48 (2 int8 MACs each at 100 MHz);
+* storage: the 3x3 line buffers of a fully fused pipeline need about 344 KB
+  at 640x480 and 172 KB at 320x240.  The board has about 150 KB of free RAM.
 
 ## Decision
 
-Build a **multi-pass layer-loop engine** where the wrapper is a sequencer
-that drives one layer at a time: DMA reads the input feature map from DDR,
-the engine computes one layer, DMA writes the output back to DDR.
+Run the network at **320x240 internally**.  Group its layers into **15
+passes**; each pass is one DDR round trip through a single programmable
+**block engine**.  The ISP frame is cropped and box-downscaled into the
+network input, and the 320x240 result is shown 2x on the right half.
 
-### DDR scratch layout (ACCEL_SCRATCH_BASE = 0x0800_0000)
+Budget at 320x240: 0.48 GMAC per frame (7.2 GMAC/s at 15 fps), about 3.7 M
+engine cycles (37 ms at 100 MHz), and about 12 MB of DDR traffic per frame.
 
-| Buffer   | Base       | Size | Content                  |
-|----------|------------|------|--------------------------|
-| BUF_A    | 0x08000000 | 4MB  | stem out 480×480×16       |
-| BUF_B    | 0x08400000 | 1MB  | enc0dw out 240×240×16    |
-| BUF_C    | 0x08500000 | 2MB  | enc0pw/enc1pw/decdw4     |
-| BUF_D    | 0x08700000 | 2MB  | enc1dw/decpw4-tmp        |
-| BUF_E    | 0x08900000 | 1MB  | decpw4 out 240×240×12    |
-| BUF_F    | 0x08A00000 | 3MB  | upsamp/decdw2            |
-| BUF_G    | 0x08D00000 | 3MB  | decdw2 out 480×480×12    |
-| BUF_H    | 0x09000000 | 5MB  | decpw2 out 480×480×20   |
-| BUF_I    | 0x09500000 | 2MB  | h2guide out 480×480×5   |
-| BUF_J    | 0x09700000 | 5MB  | h2proj out 480×480×20   |
-| BUF_K    | 0x09C00000 | 1MB  | toguide out 480×480×4   |
-| BUF_L    | 0x09D00000 | 1MB  | guide out 480×480×4     |
-| BUF_M    | 0x09E00000 | 1MB  | headdw out 480×480×4    |
-| **Total** |           | **31MB** | ends at 0x09F00000   |
+### Numerics: bit-exact with the integer reference
 
-YC input (480×480×2 = 450KB) is written to a pinned location
-(0x07800000) by the pre-pass and read by guide-branch layers 9,12.
+`tools/st_golden.py` is the golden model.  It reproduces
+`fpga_st_train::intref` code for code, and every RTL test compares against
+it.  The semantics:
 
-### Pass schedule
+* conv: reflect pad 1 (the edge is not repeated) for 3x3 kernels; int32
+  accumulate; `+ bias_int32`; requant; clamp to [0,127] (relu), [-127,127]
+  (no relu), or [0,255] (head, unsigned).
+* requant: `round_half_away(f32(acc) * f32(r))`, computed with integers
+  (`f32_mul_round`):
+  * `r = mant * 2^(exp-24)`, where `mant` is 24 bits and `exp` is -11..-6;
+  * the product `|acc| * mant` is exact in 48 bits;
+  * round it to 24 significant bits (round to nearest even, at the leading
+    one);
+  * shift right by `24-exp` bits, rounding half away from zero;
+  * apply the sign.
+
+  Plain 16-bit fixed point is not acceptable: the residual chain amplifies
+  its tie flips into 59% wrong output codes.
+* add (residual and skip): `clamp(f32_mul_round(src, factor), ±127) +
+  trunk`, with no clamp after the add.  The add outputs (points 9, 13, 17,
+  21) are 9-bit signed (±254).
+* upsample: nearest 2x, a wire.
+* input: point 0 is `LUT[rgb8]` with 256 entries: `round_half_away(f32(p) /
+  255 / f32(s0))`.
+
+Value ranges: |acc| < 2^21 (the worst case is 64·254·127 + bias), |bias| <
+2^15.  PW inputs are always int8.  DW inputs are int9 (they may be add
+outputs).
+
+### Passes
+
+| # | name  | input (DDR) | ops on chip | output (DDR) |
+|---|-------|-------------|-------------|--------------|
+| 0 | pre   | ISP slot 1280x720 RGB565 | crop x 160..1119, 3x3 box average, LUT | p0 320x240x3 |
+| 1 | stem  | p0 | im2col 3x3 → PW 27→32 | p1 320x240x32 |
+| 2 | enc0  | p1 | DW s2 → PW 32→64 | p3 160x120x64 |
+| 3 | enc1  | p3 | DW s2 → PW 64→64 | p5 80x60x64 |
+| 4,6,8,10 | resKa | p5/9/13/17 | DW → PW 64→64 | p7/11/15/19 |
+| 5,7,9,11 | resKb | p7/11/15/19, aux p5/9/13/17 | DW → PW 64→64 → + requant(aux) | p9/13/17/21 (int16) |
+| 12 | up0  | p21 (2x up), aux p3 | + requant(aux) → DW → PW 64→32 → PW 32→32 | p24 160x120x32 |
+| 13 | up1a | p24 (2x up) | DW → PW 32→16 → PW 16→16 | p27 320x240x16 |
+| 14 | up1b | p27 | DW → PW 16→3 (u8) → post | PROC slot |
+
+Post: RGB8 → RGB565, each pixel and line doubled (640x480), written to the
+PROC slot at x 640..1279, y 120..599.  Lines 0..119 and 600..719 of the
+right half are written black, so the right half never shows stale memory.
+
+Pre box average: `avg = (sum9 * 455 + 2075) >> 12` (= round(sum9 / 9) for every sum) per channel of the
+`unpack565` RGB8 values (`vid_pkg::unpack565`).
+
+### DDR tensor format
+
+* HWC, pixel-major.  An element is int8, or int16 for the add outputs.
+* Pixel bytes `PB = roundup16(C * elem_bytes)`, so a pixel is 1, 2, 4 or 8
+  whole AXI beats.  Channel `c` sits at byte `c * elem_bytes` of the pixel,
+  little-endian: byte k of a beat is bits [8k+7:8k].  Padding bytes are
+  zero.
+* The line stride is `W * PB`.
+* Scratch from `0x0800_0000`; each point has a fixed region (generated, see
+  below).
+
+### Block engine
+
+One datapath; a pass descriptor configures it:
 
 ```
-Pass 0:  ISP ring → rgb2yc → BUF_YC (pinned)
-Pass 1:  BUF_YC → stem(conv3x3)    → BUF_A
-Pass 2:  BUF_A  → enc0.dw(dw,s2)  → BUF_B    [A freed]
-Pass 3:  BUF_B  → enc0.pw(pw)     → BUF_C    [B freed]
-Pass 4:  BUF_C  → enc1.dw(dw)     → BUF_D    [C freed]
-Pass 5:  BUF_D  → enc1.pw(pw)     → BUF_C    [D freed, reuse C]
-Pass 6:  BUF_C  → dec_h4.dw(dw)   → BUF_D    [C freed]
-Pass 7:  BUF_D  → dec_h4.pw(pw)   → BUF_E    [D freed]
-Pass 8:  BUF_E  → upsample(2x)    → BUF_F    [E freed]   ← phase 2
-Pass 9:  BUF_F  → dec_h2.dw(dw)   → BUF_G    [F freed]
-Pass 10: BUF_G  → dec_h2.pw(pw)   → BUF_H    [G freed]
---- guide branch (phase 2) ---
-Pass 11: BUF_YC → h2_guide(conv3x3) → BUF_I
-Pass 12: BUF_I  → h2_proj(pw)       → BUF_J  [I freed]
-Pass 13: BUF_H+BUF_J → to_guide(add+pw) → BUF_K  [H,J freed]
-Pass 14: BUF_YC → guide(conv3x3)    → BUF_L  [YC freed]
-Pass 15: BUF_K+BUF_L → head.dw(add+dw) → BUF_M  [K,L freed]
-Pass 16: BUF_M → head.pw(pw) → PROC ring (RGB565)
+ rd main ─ unpack ─ [2x up] ─ [+ aux (add_in)] ─ DW stage ─ PW stage ─ [+ aux (add_out)] ─ pack ─ wr
+ rd aux  ─ unpack ──────────────┘                                          │
+                                                                  post (pass 14) ┘
 ```
 
-### Phase 1 (this work): linear trunk passes 1-10
+* **DMA**: the existing `tile_dma_rd/wr`.  A second `tile_dma_rd` reads the
+  aux stream.  `axi_arb` (NR=2) merges the two readers on the one ext
+  master.  `tile_dma_rd` gets a line-repeat option for the vertical 2x
+  upsample (line y reads source line y/2).
+* **DW stage**: 3x3 window generator over a 2-line buffer plus the
+  incoming line, with reflect at all four edges and stride 1 or 2.  Modes:
+  * depthwise: 4 channels per cycle, 9 taps, int9 x int8;
+  * im2col: stem; emits 27 values, in index order `ic*9 + ky*3 + kx`;
+  * bypass.
 
-Only conv/dw/pw operators. Upsample (pass 8) is a simple 2× nearest-neighbor
-replication done in the wrapper as a DMA pass with address arithmetic.
-Guide branch (passes 11-16) deferred to phase 2.
+  The line buffer is at most 2 x 320 x 32 (or 160 x 64) 9-bit elements.
+* **PW stage**: an 8-output x 16-input int8 MAC array.  One weight word
+  (128 int8 = 1024 bits) per cycle comes from the PW ROM.  For each pixel it
+  runs the pass's PW program (1 or 2 layers, chained through a local vector
+  buffer): for each output tile of 8, for each input tile of 16, one cycle;
+  then bias, requant and clamp.  Cycles per pixel are
+  `ceil(Cout/8)*ceil(Cin/16)` per layer.
+* **Requant**: 4 lanes of the integer f32 emulation, II = 1.  The aux add
+  uses the same lane design (int9 source x 24-bit factor).
+* **Parameters**: ROMs initialised with `$readmemh`, generated from the
+  manifest by `tools/st_gen_params.py`:
+  * PW ROM: 1024-bit words, about 400 deep (about 52 RAM10);
+  * DW ROM: 4 channels x 9 taps = 288-bit words;
+  * RQ ROM: per channel, bias int16, mant24 and shift.
 
-### Weight loading architecture
+  The generator also writes `st_net_pkg.sv`: the pass descriptor table, ROM
+  bases and the DDR regions.
 
-Weights are stored in a flat int8 BRAM (3666 bytes, initialized via
-`$readmemh`). Each layer's weights start at `desc.weight_bram_addr`.
+Estimated resources:
+* DSP: PW 64 (dual int8), DW 36 (int9 single), requant and add about 24,
+  so about 124 of 160.  The gray-path `rgb2yc` (56 DSP) is removed.
+* RAM10: parameters about 70, line buffer about 28, three DMA FIFOs 21.
+  The board has about 104 RAM10 without the accelerator: the DMA self-test
+  is turned off, `ENABLE_SELFTEST=0`, which saves 14.
 
-For PW (1×1): weight layout is [out_c][in_c] row-major.
-At each output tile (8 output channels), preload 8 × in_c weights into a
-local register file (max 8×32 = 256 int8 = 256 FFs), then stream input
-pixels through mac_array. Preload takes in_c cycles per output-tile-row
-(8 reads/cycle from a wide BRAM port, or sequential with a 64-bit port).
+Estimated cycles per pass:
+* stem: 8 cycles per pixel
+* enc0: 16 cycles per output pixel
+* enc1 and the res passes: 32 cycles per output pixel
+* up0: 24 cycles per pixel
+* up1a: 8 cycles per pixel (DW bound)
+* up1b: 4 cycles per pixel
 
-For DW (3×3): weight layout is [kh][kw][out_c].
-Only 9 × out_c weights per layer (max 9×32 = 288 int8). Preload all at
-layer start into a register file.
+That is about 3.7 M cycles per frame.
 
-### requant interface
+### Verification
 
-`requant.sv` takes `mult [MAC_ROWS][15:0]` (per-channel uint16) and
-`bias [MAC_ROWS][31:0]` (per-channel int32). Both are read from BRAM
-at the addresses in `desc.requant_bram_addr` and `desc.bias_bram_addr`.
-The engine loads the current output tile's 8 bias + 8 mult values at
-tile start.
+* `st_golden.py --dump` writes, per pass, the input and output tensors and
+  their DDR images.
+* Unit testbenches (verilator) compare each stage's output against them.
+* A pass testbench loads the DDR image into `axi_mem_model`, runs one pass
+  and compares the output region byte for byte.
+* A full-frame testbench runs patgen → all passes → PROC slot and compares
+  with the golden model's 640x720 right half.
 
 ## Consequences
 
-- Wrapper becomes a state machine driving ~10 passes per frame.
-- Each pass: set DMA in/out addresses + layer desc → start engine →
-  wait done → advance.
-- Engine is a single-layer executor, not a 15-layer FSM.
-- DSP count should reach 32 (mac_array) after this phase.
-- Estimated frame time: ~150ms (8 PW layers × ~9ms + DW layers) → ~6fps
-  before optimization. 1fps smoke test is comfortably achievable.
+* The right half shows the stylised image at 320x240, doubled, with a
+  4:3 crop of the camera.  The resolution goes up later with a smaller
+  network (fewer MAC per pixel) or more fusion; the engine and the pass
+  table carry over.
+* Weights live in on-chip ROM: one style per bitstream.  Style switching
+  needs the parameters in DDR, loaded per pass through the aux reader.
+* The f32 emulation keeps the hardware equal to the training repository's
+  integer reference.  A model export can be checked on the board by image
+  comparison, without a tolerance.
