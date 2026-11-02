@@ -17,8 +17,9 @@
 //   cfg_g     groups per pixel: 8..20 in LN mode (20 for C = 80), 1..20 FILM
 //   cfg_npix  pixels of the pass
 //
-// FiLM coefficients are written while idle through coef_we / coef_idx
-// (channel 0..79) / coef_mul / coef_off, one channel per cycle.
+// FiLM coefficients are written while idle through coef_we / coef_grp
+// (group 0..19, channels 4*grp..4*grp+3) / coef_mul[4] / coef_off[4], one
+// group per cycle.
 //
 // ------------------------------------------------------------------- LN
 // Per pixel, N = 4*cfg_g channels, x the int9 codes (tools/st_guided.py
@@ -31,8 +32,9 @@
 //                t = (u*R + 2^(e+2)) >>> (e+3)
 //                y = clamp((t*G_c + B_c + 2^21) >>> 22, -127, 127)
 //
-// G_c and B_c come from st_ln_b<b>.hex, one word per channel: the file of
-// lane b, word a = channel 4a + b.
+// G_c and B_c come from st_ln.hex, one 180-bit word per group of four
+// channels: word a holds channels 4a..4a+3, lane j of the word being channel
+// 4a + j (words 0..19 for C = 80).
 //
 // ------------------------------------------------------------- structure
 // collect   the beats of pixel p go into a pixel buffer (four slots by pixel
@@ -55,11 +57,13 @@
 //           fixed-latency pipeline is ever back-pressured.  In FILM the
 //           credit also gates the input, which has no buffer of its own.
 //
-// DSP: 4 u*R, 4 affine, 1 S^2 = 9.  RAM10: coefficient store 4 lanes x
-// 256 x 48 (2 each, 8), R LUT 768 x 17 (2), pixel buffer 128 x 43 (2),
-// output FIFO 16 x 43 (2) -- 14 in all.  One array per lane is what gives
-// the four simultaneous coefficient reads a beat needs; the LN and FiLM
-// words share each array because a pass is one mode.
+// DSP: 4 u*R, 4 affine, 1 S^2 = 9.  RAM10: coefficient store 256 x 180
+// (9), R LUT 768 x 17 (2), pixel buffer 128 x 43 (2), output FIFO 16 x 43
+// (2) -- 15 in all.  The coefficient store is one array a whole group wide,
+// written and read a group at a time, which is the cheapest shape for the
+// four simultaneous reads a beat needs (9 blocks in 256x180; four 48-bit
+// lane arrays cost 12).  The LN and FiLM words share it because a pass is
+// one mode.
 //
 // Pipelining.  Pixel p collects in cycles C..C+G-1 and emits in
 // C+G+3..C+2G+2, so the collect of p+1 (C+G..C+2G-1) overlaps the compute of
@@ -70,7 +74,7 @@
 // the stricter G >= 8 the timing above assumes.
 module st_norm #(
     parameter int    OUT_DEPTH = 16,        // output beats in the FIFO
-    parameter string LN_HEX    = "rtl/st_accel_new/gen/guided/st_ln_b",   // + "<b>.hex"
+    parameter string LN_HEX    = "rtl/st_accel_new/gen/guided/st_ln.hex",
     parameter string LUT_HEX   = "rtl/st_accel_new/gen/guided/st_ln_lut.hex"
 ) (
     input  logic         clk,
@@ -101,20 +105,21 @@ module st_norm #(
     input  logic [4:0]   cfg_g,         // groups per pixel
     input  logic [17:0]  cfg_npix,      // pixels of the pass
 
-    // FiLM coefficient write port, while idle
+    // FiLM coefficient write port, while idle: one group of four channels
     input  logic         coef_we,
-    input  logic [6:0]   coef_idx,      // channel
-    input  logic [17:0]  coef_mul,
-    input  logic [23:0]  coef_off
+    input  logic [3:0]   coef_grp,      // group: channels 4*grp .. 4*grp + 3
+    input  logic [17:0]  coef_mul [4],  // lane j = channel 4*grp + j
+    input  logic [23:0]  coef_off [4]
 );
     localparam int MODE_LN   = 1;
     localparam int MODE_FILM = 2;
 
     localparam int GMAX      = 20;          // groups per pixel
     localparam int GBITS     = 5;           // 0 .. 19
-    localparam int NB        = 4;           // coefficient banks = lanes
-    localparam int BW        = 32;          // words per coefficient bank
-    localparam int CW        = 48;          // {3'b0, B/off[26:0], G/mul[17:0]}
+    localparam int BW        = 32;          // beats per pixel buffer slot
+    localparam int CW        = 45;          // one lane: {B/off[26:0], G/mul[17:0]}
+    localparam int GW        = 4 * CW;      // one group: 4 lanes, 180 bits
+    localparam int COEF_DEPTH = 256;        // coefficient words (groups)
     localparam int PB_AW     = 7;           // 4 slots x 32 beats
     localparam int PW        = 43;          // pixel buffer word: flags + data
     localparam int LUT_DEPTH = 768;
@@ -141,64 +146,55 @@ module st_norm #(
     wire ln_mode = (mode_r == 2'(MODE_LN));
 
     // --------------------------------------------------- coefficient store
-    // One array per lane, 256 words of 48 bit: [44:18] B_c / off_c (27-bit
-    // signed), [17:0] G_c / mul_c (18-bit signed).  Lane b word a holds
-    // channel 4a + b, so one read returns the four channels of a group beat.
-    // Words 0..19 of a lane are the LN image; words 128..147 are the FiLM
-    // coefficients, written through the coefficient port while idle.  A pass
-    // is one mode, so the two regions never meet, and one array per lane is
-    // the smallest form that gives four simultaneous reads: 256 x 48 = one
-    // 256x40 and one 256x10 RAM10 per lane.
+    // One array of 256 words of 180 bit, a whole group of four channels per
+    // word: lane j of word a is {B_c/off_c[26:0], G_c/mul_c[17:0]} (45 bit
+    // signed) of channel 4a + j, so one read returns the four channels of a
+    // group beat and one write stores a group.  Words 0..19 are the LN image;
+    // words 128..147 are the FiLM coefficients, written through the
+    // coefficient port while idle.  A pass is one mode, so the two regions
+    // never meet.
     //
-    // Each lane array is initialised by a $readmemh of its own file straight
-    // into the RAM, which is the only form Efinity infers RAM contents from:
-    // LN_HEX is the path prefix, the module appends "<b>.hex".  The files are
-    // 256 words each (tools/st_gen_norm.py), zeros outside words 0..19, so
-    // the FiLM region needs no separate clear.
+    // 256 x 180 is nine RAM10 blocks (256x20 each); four 48-bit lane arrays
+    // were twelve, because a RAM's cost is ceil(width/20) whenever the depth
+    // is <= 512 -- the depth is free, the width is not.
+    //
+    // The array is initialised by ONE $readmemh straight into the RAM, which
+    // is the only form Efinity infers RAM contents from: LN_HEX is the whole
+    // 256-word file (tools/st_gen_norm.py), zeros outside words 0..19, so the
+    // FiLM region needs no separate clear.
     localparam int CBASE_FILM = 128;
 
-    logic [CW-1:0] coef_b0 [2*CBASE_FILM];
-    logic [CW-1:0] coef_b1 [2*CBASE_FILM];
-    logic [CW-1:0] coef_b2 [2*CBASE_FILM];
-    logic [CW-1:0] coef_b3 [2*CBASE_FILM];
-    logic [CW-1:0] coef_q [NB];
+    logic [GW-1:0] coef_ram [COEF_DEPTH];
+    logic [GW-1:0] coef_q;
     logic [7:0]    coef_addr;
 
     // load() is the one place the image is installed; the initial block calls
-    // it with LN_HEX and a testbench may call it again with a per-case prefix.
-    task automatic load(input string prefix);
-        $readmemh({prefix, "0.hex"}, coef_b0);
-        $readmemh({prefix, "1.hex"}, coef_b1);
-        $readmemh({prefix, "2.hex"}, coef_b2);
-        $readmemh({prefix, "3.hex"}, coef_b3);
+    // it with LN_HEX and a testbench may call it again with a per-case file.
+    task automatic load(input string path);
+        $readmemh(path, coef_ram);
     endtask
 
     initial load(LN_HEX);
 
-    wire [7:0] coef_waddr = 8'(CBASE_FILM) + {3'd0, coef_idx[6:2]};
+    wire [7:0] coef_waddr = 8'(CBASE_FILM) + {4'd0, coef_grp};
+
+    logic [GW-1:0] coef_wdata;
+    always_comb
+        for (int b = 0; b < 4; b++)
+            coef_wdata[45*b +: 45] = {{3{coef_off[b][23]}}, coef_off[b], coef_mul[b]};
 
     always_ff @(posedge clk) begin
-        if (coef_we) begin
-            case (coef_idx[1:0])
-                2'd0: coef_b0[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
-                2'd1: coef_b1[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
-                2'd2: coef_b2[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
-                default: coef_b3[coef_waddr] <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
-            endcase
-        end
-        coef_q[0] <= coef_b0[coef_addr];
-        coef_q[1] <= coef_b1[coef_addr];
-        coef_q[2] <= coef_b2[coef_addr];
-        coef_q[3] <= coef_b3[coef_addr];
+        if (coef_we) coef_ram[coef_waddr] <= coef_wdata;
+        coef_q <= coef_ram[coef_addr];
     end
 
-    logic signed [17:0] coef_mul_q [NB];
-    logic signed [26:0] coef_off_q [NB];
+    logic signed [17:0] coef_mul_q [4];
+    logic signed [26:0] coef_off_q [4];
 
     always_comb
-        for (int b = 0; b < NB; b++) begin
-            coef_mul_q[b] = $signed(coef_q[b][17:0]);
-            coef_off_q[b] = $signed(coef_q[b][44:18]);
+        for (int b = 0; b < 4; b++) begin
+            coef_mul_q[b] = $signed(coef_q[45*b +: 18]);
+            coef_off_q[b] = $signed(coef_q[45*b + 18 +: 27]);
         end
 
     // --------------------------------------------------------- R LUT (LN)
@@ -762,8 +758,10 @@ module st_norm #(
             $error("st_norm: OUT_DEPTH must be a power of two >= 8");
         if (PB_AW != 2 + GBITS || 4 * BW != (1 << PB_AW))
             $error("st_norm: pixel buffer address disagrees with the slots");
-        if (CW != 3 + 27 + 18)
+        if (CW != 27 + 18 || GW != 4 * CW)
             $error("st_norm: coefficient word layout changed");
+        if (CBASE_FILM + GMAX > COEF_DEPTH)
+            $error("st_norm: FiLM coefficients do not fit the store");
     end
 
 endmodule

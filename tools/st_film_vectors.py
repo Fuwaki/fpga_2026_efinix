@@ -6,9 +6,10 @@ Writes into --out:
   tap.hex    one line per group beat of the plane: "<data:10 hex> <last>"
              (data = 4 lanes of 10-bit two's complement, lane j at bits
              10j+9:10j; last marks the pixel's final group beat)
-  coef.hex   the expected coefficient writes, one per line: "<idx> <mul> <off>"
-             (idx decimal, mul 5 hex digits, off 6 hex digits, two's
-             complement)
+  coef.hex   the expected coefficient writes, one per line per group of four
+             channels: "<grp> <mul0> <mul1> <mul2> <mul3> <off0> .. <off3>"
+             (grp decimal, mul 5 hex digits, off 6 hex digits, two's
+             complement, lane j = channel 4*grp + j)
   meta.txt   "nbeat npix cfg_g", decimal
 
 The expected coefficients are st_guided.film_coeffs of the per-channel sums
@@ -114,8 +115,10 @@ def main():
             nbeat += 1
     assert nbeat == PLANE * G, f"{nbeat} beats for {PLANE} pixels"
     with open(out / "coef.hex", "w") as fh:
-        for c in range(NC):
-            fh.write(f"{c} {int(mul[c]) & 0x3FFFF:05x} {int(off[c]) & 0xFFFFFF:06x}\n")
+        for grp in range(NC // 4):
+            m = " ".join(f"{int(mul[4*grp + j]) & 0x3FFFF:05x}" for j in range(4))
+            o = " ".join(f"{int(off[4*grp + j]) & 0xFFFFFF:06x}" for j in range(4))
+            fh.write(f"{grp} {m} {o}\n")
     (out / "meta.txt").write_text(f"{nbeat} {PLANE} {G}\n")
     print(f"st_film_vectors: {a.case}: {nbeat} beats, {PLANE} pixels, "
           f"mul {int(mul.min())}..{int(mul.max())}, off {int(off.min())}..{int(off.max())}")

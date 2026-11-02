@@ -5,10 +5,20 @@
 // GAP.  The tap sniffs the group stream into st_pack of the FiLM pass (p17,
 // 40 int16 channels, 320x180 pixels): one beat per cycle and never stalled,
 // so tap_ready is tied high.  Lane j of the b-th beat of a pixel is channel
-// 4b + j, b counting from 0 after tap_last; lane j adds into a 25-bit
-// accumulator while b < cfg_g (lanes past the channel count are padding).
-// |S| <= 57600 * 254 < 2**24, so 25 bits hold every sum.  gap_clear zeroes
-// all 40 sums in one cycle, when a new plane starts.
+// 4b + j, b counting from 0 at the pixel's first beat; lane j adds into a
+// 25-bit accumulator while b < cfg_g (lanes past the channel count are
+// padding).  |S| <= 57600 * 254 < 2**24, so 25 bits hold every sum.  gap_clear
+// zeroes all 40 sums in one cycle, when a new plane starts.
+//
+// The sums live in a 40-word shift register that rotates by four on every
+// tapped beat, so the four channels of the current beat are always lanes
+// 0..3 of the array and the write needs no 40-way address decoder and no
+// read mux: a beat shifts the array (gap[i] <= gap[i+4]) and adds the four
+// lanes into the tail.  Ten beats per pixel turn the array through 4*10 = 40
+// words, so it is back in channel order at every pixel boundary and at the
+// end of the pass; the MLP reads channel c at index c through one 40:1 mux.
+// The array therefore requires cfg_g = 10 (NC/4), which the FiLM plane of the
+// net always is -- the assertions check it.
 //
 // MLP.  After the pass, mlp_start runs the sequencer of film_coeffs on the
 // GAP sums, all integer, `>>>` arithmetic, rshift_round(v, s) = (v + 2**(s-1))
@@ -22,10 +32,17 @@
 //   mul_c = clamp(C0 + rshift_round(Gb_c * Mg_c, SG), +-(2**17 - 1))
 //   off_c = clamp(rshift_round(Bb_c * Mb_c, SB), +-(2**23 - 1))
 //
-// then one coefficient write per channel, in channel order: coef_we with
-// coef_idx = c, coef_mul = mul_c, coef_off = off_c (st_norm's port, which
-// always accepts a write).  mlp_busy is high from mlp_start until the last
-// write is issued; mlp_start while busy is ignored.
+// then one coefficient write per group of four channels, in channel order:
+// coef_we with coef_grp = c/4, coef_mul[j] = mul_(4c/4+j) and coef_off[j] =
+// off_(4c/4+j) (st_norm's port, which always accepts a write).  Ten writes
+// per pass.  mlp_busy is high from mlp_start until the last write is issued;
+// mlp_start while busy is ignored.
+//
+// SZ, SG, SB, C0 and KB are per-network constants, so they are parameters
+// rather than ROM words: the shift is then a wiring shift, the rounding term
+// a constant, and the whole barrel shifter and its variable round-off
+// disappear.  tools/st_gen_film.py prints the localparams the package wants
+// (ST_FILM_SZ / SG / SB / C0 / KB); the defaults are the p90_ln_w8a8 net's.
 //
 // One serial multiply-accumulate unit does every product: a (36-bit signed)
 // times b (18-bit signed) by shift-add over b's bits, 18 steps, into a
@@ -36,31 +53,35 @@
 // register, and no scratch RAM is needed either, because A, Gb and Bb are
 // consumed in the step that produces them.
 //
-// Storage.  The GAP sums are 40 registers of 25 bits (1000 FF) read through
-// a 40:1 mux; zq is 16 registers of 24 bits.  The parameter ROM is one
-// 512x40 array with a registered read: 2 RAM10 blocks in 256x40, 383 words
-// used.
+// Storage.  The GAP sums are 40 registers of 25 bits (1000 FF) with a
+// four-lane adder and no address mux; zq is 10 registers of 24 bits; the
+// four (mul, off) pairs of the group being filled are 4 x 42 bits.  The
+// parameter ROM is one 512x40 array with a registered read: 2 RAM10 blocks in
+// 512x20, 380 words used.
 //
 // ROM image (st_film.hex, one 10-digit hex word per line, written by
 // tools/st_gen_film.py, which asserts every field fits):
 //
-//   word   0             [5:0] SB, [11:6] SG, [17:12] SZ
-//   word   1             [18:0] C0, signed
-//   word   2             [17:0] KB, signed
-//   word   3 + o         [31:0] br_o, signed          (o = 0..9)
-//   word  13 + o         [16:0] Mz_o, < 2**17         (o = 0..9)
-//   word  23 + c         [31:0] bg_c, signed          (c = 0..39)
-//   word  63 + c         [31:0] bb_c, signed          (c = 0..39)
-//   word 103 + c         [16:0] Mg_c, [33:17] Mb_c, both < 2**17
-//   word 143 + 8o + w    byte 5w + i = Wr[o][5w + i], int8
-//   word 223 + 2c + w    byte 5w + i = Wg[c][5w + i], int8
-//   word 303 + 2c + w    byte 5w + i = Wb[c][5w + i], int8
+//   word   0 + o         [31:0] br_o, signed          (o = 0..9)
+//   word  10 + o         [16:0] Mz_o, < 2**17         (o = 0..9)
+//   word  20 + c         [31:0] bg_c, signed          (c = 0..39)
+//   word  60 + c         [31:0] bb_c, signed          (c = 0..39)
+//   word 100 + c         [16:0] Mg_c, [33:17] Mb_c, both < 2**17
+//   word 140 + 8o + w    byte 5w + i = Wr[o][5w + i], int8
+//   word 220 + 2c + w    byte 5w + i = Wg[c][5w + i], int8
+//   word 300 + 2c + w    byte 5w + i = Wb[c][5w + i], int8
 //
 // Every weight row is a whole number of 40-bit words -- 40 bytes for Wr, 10
 // for Wg and Wb -- so a row is a run of words whose bytes are consecutive
 // channels (Wr) or hidden units (Wg, Wb).  The sequencer reads one word per
-// five products.
+// five products and holds the address for the whole word, so the read data
+// is the byte source directly (no word buffer).
 module st_film #(
+    parameter int    SZ  = 26,        // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
+    parameter int    SG  = 23,        // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
+    parameter int    SB  = 20,        // off = (Bb*Mb + 2**(SB-1)) >>> SB
+    parameter int    C0  = 26755,     // affine offset, 19-bit signed
+    parameter int    KB  = 900,       // reduce bias scale, br_o * KB
     parameter string HEX = "rtl/st_accel_new/gen/guided/st_film.hex"
 ) (
     input  logic        clk,
@@ -78,52 +99,50 @@ module st_film #(
     input  logic        mlp_start,    // one cycle, ignored while busy
     output logic        mlp_busy,
 
-    output logic        coef_we,      // one write per channel, in order
-    output logic [6:0]  coef_idx,
-    output logic [17:0] coef_mul,
-    output logic [23:0] coef_off
+    output logic        coef_we,      // one write per group of four channels
+    output logic [3:0]  coef_grp,     // group: channels 4*grp .. 4*grp + 3
+    output logic [17:0] coef_mul [4], // mul of lane j = channel 4*grp + j
+    output logic [23:0] coef_off [4]
 );
     localparam int NC    = 40;        // channels of the FiLM plane
     localparam int NO    = 10;        // hidden units of the MLP
-    localparam int DEPTH = 512;       // ROM words (383 used)
-    localparam int GB    = NC / 4;    // group beats per pixel at most
+    localparam int GB    = NC / 4;    // group beats per pixel
+    localparam int DEPTH = 512;       // ROM words (380 used)
+    localparam int GS    = 6;         // Sg = (S + 2**(GS-1)) >>> GS
+    localparam int F     = 8;         // bg_c * 2**F  (golden FILM_F)
 
     // ROM word map, see the header.
-    localparam int A_SC = 0;          // SZ, SG, SB
-    localparam int A_C0 = 1;
-    localparam int A_KB = 2;
-    localparam int A_BR = 3;          // + o
-    localparam int A_MZ = 13;         // + o
-    localparam int A_BG = 23;         // + c
-    localparam int A_BB = 63;         // + c
-    localparam int A_MM = 103;        // + c
-    localparam int A_WR = 143;        // + 8*o + w
-    localparam int A_WG = 223;        // + 2*c + w
-    localparam int A_WB = 303;        // + 2*c + w
+    localparam int A_BR = 0;          // + o
+    localparam int A_MZ = 10;         // + o
+    localparam int A_BG = 20;         // + c
+    localparam int A_BB = 60;         // + c
+    localparam int A_MM = 100;        // + c
+    localparam int A_WR = 140;        // + 8*o + w
+    localparam int A_WG = 220;        // + 2*c + w
+    localparam int A_WB = 300;        // + 2*c + w
 
-    localparam int MUL_MAX = (1 << 17) - 1;   // mul is 18-bit signed
-    localparam int OFF_MAX = (1 << 23) - 1;   // off is 24-bit signed
+    localparam signed [55:0] RND_Z = 56'sd1 <<< (SZ - 1);
+    localparam signed [55:0] RND_G = 56'sd1 <<< (SG - 1);
+    localparam signed [55:0] RND_B = 56'sd1 <<< (SB - 1);
+    localparam signed [55:0] C0_EXT = 56'(C0);
 
     // ------------------------------------------------------------ GAP sums
+    // Channel (i + 4*beats) mod 40 sits in gap[i]; a tapped beat adds its
+    // four lanes into the tail and rotates the array by four, which brings
+    // the next beat's group to the head.  Ten beats are a whole turn.
     logic signed [24:0] gap [NC];
-    logic        [4:0]  beat;         // group beat of the current pixel
-    wire                g_ok = (beat < cfg_g) && (beat < 5'(GB));
 
     assign tap_ready = 1'b1;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int i = 0; i < NC; i++) gap[i] <= '0;
-            beat <= '0;
         end else if (gap_clear) begin
             for (int i = 0; i < NC; i++) gap[i] <= '0;
-            beat <= '0;
         end else if (tap_valid) begin
-            if (g_ok)
-                for (int j = 0; j < 4; j++)
-                    gap[4*beat + j] <= gap[4*beat + j] +
-                                       25'(signed'(tap_data[10*j +: 10]));
-            beat <= tap_last ? 5'd0 : beat + 5'd1;
+            for (int i = 0; i < NC - 4; i++) gap[i] <= gap[i + 4];
+            for (int j = 0; j < 4; j++)
+                gap[NC - 4 + j] <= gap[j] + 25'(signed'(tap_data[10*j +: 10]));
         end
     end
 
@@ -190,7 +209,6 @@ module st_film #(
     // ----------------------------------------------------- sequencer state
     typedef enum logic [4:0] {
         S_IDLE,
-        S_SCAL0, S_SCAL1, S_SCAL2,       // SZ/SG/SB, C0, KB
         S_BR0, S_BR1, S_MZW,             // br_o, Mz_o, br_o*KB
         S_ROW0, S_ROWLOOP, S_ROWDONE,    // one weight row, 5 products per word
         S_ZQ0, S_ZQW,                    // A_o * Mz_o
@@ -212,12 +230,7 @@ module st_film #(
 
     logic signed [31:0] br;
     logic        [16:0] mz, mg, mb;
-    logic signed [17:0] kb;
-    logic signed [18:0] c0;
-    logic        [5:0]  sz, sg, sb;
-    logic signed [17:0] mul;
-    logic signed [23:0] off;
-    logic        [23:0] zq [16];      // hidden units, 10 used
+    logic        [23:0] zq [NO];      // hidden units
 
     // ---------------------------------------------------- product operands
     // bi counts finished products of the current word, so S_ROWLOOP loads
@@ -232,38 +245,41 @@ module st_film #(
     wire [3:0] hidx  = 4'(k_idx);     // hidden unit of a gamma or beta row
 
     wire signed [24:0] gap_sel = gap[widx];
-    wire signed [25:0] sg_sel  = ($signed(gap_sel) + 26'sd32) >>> 6;
+    wire signed [25:0] sg_sel  = ($signed(gap_sel) + 26'sd32) >>> GS;
     wire signed [35:0] a_row   = (kind == 2'd0) ? {{10{sg_sel[25]}}, sg_sel}
                                                 : {12'b0, zq[hidx]};
 
-    logic [47:0] wbuf;                // the weight word being consumed
-    wire  [7:0]  wbyte = (state == S_ROW0) ? rom_dout[7:0] : wbuf[8*(bi+1) +: 8];
-
-    // The round-up term belongs to the product being started; the shift that
-    // finishes a product belongs to the state that holds its result.
-    wire [5:0] rnd_sh = (state == S_MM1) ? sg : (state == S_OFF0) ? sb : sz;
-    wire [5:0] sh_amt = (state == S_MMW) ? sg : (state == S_OFFW) ? sb : sz;
-    wire signed [55:0] rnd = 56'sd1 <<< (rnd_sh - 6'd1);
+    // The ROM holds the row's word for the whole word, so the byte of the
+    // product being started is a slice of rom_dout; the address only moves
+    // on in the cycle the word's last product finishes.
+    wire        row_last = (state == S_ROWLOOP) && mac_done && (bi == 3'd4);
+    wire [2:0]  bidx     = (state == S_ROW0) ? 3'd0
+                         : (bi == 3'd4)      ? 3'd4 : 3'(bi) + 3'd1;
+    wire [7:0]  wbyte    = rom_dout[8*bidx +: 8];
 
     always_comb begin
         ld_a    = '0;
         ld_b    = '0;
-        ld_init = rnd;
+        ld_init = '0;
         unique case (state)
             S_BR1:     begin
                 ld_a    = $signed({{4{br[31]}}, br});
-                ld_b    = kb;
+                ld_b    = 18'(KB);
                 ld_init = '0;
             end
             S_ROW0,
             S_ROWLOOP: begin
                 ld_a    = a_row;
                 ld_b    = {{10{wbyte[7]}}, wbyte};
-                ld_init = (state == S_ROW0 && wc == 4'd0) ? acc_hold : mac_acc;
+                ld_init = ((state == S_ROW0) && (wc == 4'd0)) ? acc_hold
+                                                             : mac_acc;
             end
-            S_ZQ0:     begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mz}; end
-            S_MM1:     begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mg}; end
-            S_OFF0:    begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mb}; end
+            S_ZQ0:     begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mz};
+                             ld_init = RND_Z; end
+            S_MM1:     begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mg};
+                             ld_init = RND_G; end
+            S_OFF0:    begin ld_a = mac_acc[35:0]; ld_b = {1'b0, mb};
+                             ld_init = RND_B; end
             default:   ;
         endcase
     end
@@ -273,21 +289,25 @@ module st_film #(
                       (state == S_ZQ0) || (state == S_MM1) || (state == S_OFF0);
 
     // ------------------------------------------------------------ results
-    wire signed [55:0] acc_shr = mac_acc >>> sh_amt;
+    // The shifts are by parameters, so each is a wiring shift; only the
+    // state that consumes a product shifts it.
+    wire signed [55:0] acc_z = mac_acc >>> SZ;    // A_o * Mz_o
+    wire signed [55:0] acc_g = mac_acc >>> SG;    // Gb_c * Mg_c
+    wire signed [55:0] acc_b = mac_acc >>> SB;    // Bb_c * Mb_c
 
     // zq = max(0, rshift_round(A*Mz, SZ)): |A*Mz| < 2**50, so the shift
     // leaves 24 bits; the saturation is defensive.
-    wire [23:0] zq_new = acc_shr[55] ? 24'd0
-                       : (|acc_shr[55:24]) ? 24'hFF_FFFF : acc_shr[23:0];
+    wire [23:0] zq_new = acc_z[55] ? 24'd0
+                       : (|acc_z[55:24]) ? 24'hFF_FFFF : acc_z[23:0];
 
-    wire signed [55:0] mul_sum = $signed({{37{c0[18]}}, c0}) + acc_shr;
+    wire signed [55:0] mul_sum = C0_EXT + acc_g;
     wire signed [17:0] mul_new = (mul_sum > 56'sd131071)  ? 18'sd131071
                                : (mul_sum < -56'sd131071) ? -18'sd131071
                                : 18'(mul_sum);
 
-    wire signed [23:0] off_new = (acc_shr > 56'sd8388607)  ? 24'sd8388607
-                               : (acc_shr < -56'sd8388607) ? -24'sd8388607
-                               : 24'(acc_shr);
+    wire signed [23:0] off_new = (acc_b > 56'sd8388607)  ? 24'sd8388607
+                               : (acc_b < -56'sd8388607) ? -24'sd8388607
+                               : 24'(acc_b);
 
     // --------------------------------------------------------- ROM address
     // rom_dout is one cycle behind rom_addr, so each state presents the
@@ -296,17 +316,13 @@ module st_film #(
     wire [8:0] c_nxt   = 9'(A_BG + 32'(c) + 1);
 
     always_comb begin
-        rom_addr = 9'(A_SC);
+        rom_addr = 9'(A_BR);
         unique case (state)
-            S_SCAL0:   rom_addr = 9'(A_C0);
-            S_SCAL1:   rom_addr = 9'(A_KB);
-            S_SCAL2:   rom_addr = 9'(A_BR);
             S_BR0:     rom_addr = 9'(A_MZ + 32'(o));
             S_BR1:     rom_addr = 9'(A_WR + 32'(8 * o));
-            // S_ROW0 captures the word, so the wait states present its address.
             S_MZW:     rom_addr = row_base;
             S_ROW0,
-            S_ROWLOOP: rom_addr = row_base + 9'(32'(wc) + 1);
+            S_ROWLOOP: rom_addr = row_base + 9'(32'(wc)) + 9'(row_last);
             S_ROWDONE: rom_addr = (kind == 2'd0) ? red_nxt
                                : (kind == 2'd1) ? 9'(A_MM + 32'(c)) : c_nxt;
             S_ZQ0,
@@ -340,34 +356,13 @@ module st_film #(
             mz       <= '0;
             mg       <= '0;
             mb       <= '0;
-            kb       <= '0;
-            c0       <= '0;
-            sz       <= '0;
-            sg       <= '0;
-            sb       <= '0;
-            mul      <= '0;
-            off      <= '0;
-            for (int i = 0; i < 16; i++) zq[i] <= '0;
+            for (int i = 0; i < NO; i++) zq[i] <= '0;
         end else begin
             unique case (state)
                 S_IDLE: if (mlp_start) begin
                     busy  <= 1'b1;
                     o     <= '0;
                     c     <= '0;
-                    state <= S_SCAL0;
-                end
-                S_SCAL0: begin
-                    sb    <= rom_dout[5:0];
-                    sg    <= rom_dout[11:6];
-                    sz    <= rom_dout[17:12];
-                    state <= S_SCAL1;
-                end
-                S_SCAL1: begin
-                    c0    <= $signed(rom_dout[18:0]);
-                    state <= S_SCAL2;
-                end
-                S_SCAL2: begin
-                    kb    <= $signed(rom_dout[17:0]);
                     state <= S_BR0;
                 end
                 S_BR0: begin
@@ -387,10 +382,7 @@ module st_film #(
                     acc_hold <= mac_acc;              // br_o * KB
                     state    <= S_ROW0;
                 end
-                S_ROW0: begin
-                    wbuf  <= {8'b0, rom_dout};
-                    state <= S_ROWLOOP;
-                end
+                S_ROW0: state <= S_ROWLOOP;
                 S_ROWLOOP: if (mac_done) begin
                     if (bi != 3'd4) begin
                         bi <= bi + 3'd1;
@@ -430,10 +422,7 @@ module st_film #(
                     state <= S_MM1;
                 end
                 S_MM1: state <= S_MMW;
-                S_MMW: if (mac_done) begin
-                    mul   <= mul_new;
-                    state <= S_BB0;
-                end
+                S_MMW: if (mac_done) state <= S_BB0;
                 S_BB0: begin
                     acc_hold <= {{16{rom_dout[31]}}, rom_dout[31:0], 8'b0};
                     kind     <= 2'd2;
@@ -444,10 +433,7 @@ module st_film #(
                     state    <= S_ROW0;
                 end
                 S_OFF0: state <= S_OFFW;
-                S_OFFW: if (mac_done) begin
-                    off   <= off_new;
-                    state <= S_WRITE;
-                end
+                S_OFFW: if (mac_done) state <= S_WRITE;
                 S_WRITE: begin
                     if (c == 6'(NC - 1)) begin
                         busy  <= 1'b0;
@@ -462,11 +448,32 @@ module st_film #(
         end
     end
 
+    // ------------------------------------------------- coefficient writes
+    // One write per group: the four (mul, off) pairs of channels 4g..4g+3
+    // are staged in mul_q/off_q as they are computed, and the write goes out
+    // in the cycle the fourth channel's off is in its register.
+    logic signed [17:0] mul_q [4];
+    logic signed [23:0] off_q [4];
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int j = 0; j < 4; j++) begin
+                mul_q[j] <= '0;
+                off_q[j] <= '0;
+            end
+        end else begin
+            if ((state == S_MMW) && mac_done) mul_q[c[1:0]] <= mul_new;
+            if ((state == S_OFFW) && mac_done) off_q[c[1:0]] <= off_new;
+        end
+    end
+
     assign mlp_busy = busy;
-    assign coef_we  = (state == S_WRITE);
-    assign coef_idx = 7'(c);
-    assign coef_mul = mul;
-    assign coef_off = off;
+    assign coef_we  = (state == S_WRITE) && (c[1:0] == 2'd3);
+    assign coef_grp = c[5:2];
+    for (genvar j = 0; j < 4; j++) begin : g_coef
+        assign coef_mul[j] = mul_q[j];
+        assign coef_off[j] = off_q[j];
+    end
 
 `ifndef SYNTHESIS
     // rst_done gates the checks: with --x-initial unique the state bits are
@@ -486,9 +493,31 @@ module st_film #(
     always @(posedge clk)
         if (rst_done && gap_clear && tap_valid)
             $error("st_film: gap_clear and tap_valid in the same cycle");
-    // The sums are indexed by 4*beat + j, so cfg_g must stay inside NC/4.
+    // The sums are a rotating shift register: the tap must be a whole number
+    // of pixels of NC/4 beats, or the array is not in channel order when the
+    // MLP reads it.
     always @(posedge clk)
-        if (rst_done && tap_valid && cfg_g > 5'(GB))
-            $error("st_film: cfg_g %0d exceeds %0d groups", cfg_g, GB);
+        if (rst_done && tap_valid && (cfg_g != 5'(GB)))
+            $error("st_film: cfg_g %0d, the GAP tap needs %0d groups", cfg_g, GB);
+    // Beat structure of the tapped stream: tap_last closes a pixel of GB beats.
+    logic [3:0] beat_chk;
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n)               beat_chk <= '0;
+        else if (gap_clear)       beat_chk <= '0;
+        else if (tap_valid)       beat_chk <= tap_last ? 4'd0 : beat_chk + 4'd1;
+    always @(posedge clk)
+        if (rst_done && tap_valid && (tap_last !== (beat_chk == 4'(GB - 1))))
+            $error("st_film: tap_last on beat %0d of a %0d-beat pixel",
+                   beat_chk, GB);
+
+    initial begin
+        if (SZ < 1 || SG < 1 || SB < 1 || SZ > 55 || SG > 55 || SB > 55)
+            $error("st_film: SZ/SG/SB must be in 1..55 (got %0d/%0d/%0d)",
+                   SZ, SG, SB);
+        if (C0 < -(1 << 18) || C0 > (1 << 18) - 1)
+            $error("st_film: C0 %0d does not fit 19-bit signed", C0);
+        if (KB < -(1 << 17) || KB > (1 << 17) - 1)
+            $error("st_film: KB %0d does not fit 18-bit signed", KB);
+    end
 `endif
 endmodule

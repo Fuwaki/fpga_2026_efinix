@@ -3,7 +3,8 @@
 // CASE_DIR (plusarg) holds cfg.txt ("<mode> <g> <npix>"), in.hex (the group
 // beats to drive), out.hex (the expected group beats, from
 // tools/st_guided.py) and, for FILM, coef.txt (one "<mul> <off>" per channel,
-// written through the coefficient port while idle).
+// written through the coefficient port a group of four channels at a time
+// while idle).
 //
 // Every case runs twice:
 //
@@ -39,9 +40,9 @@ module tb_st_norm #(
     logic [4:0]   cfg_g;
     logic [17:0]  cfg_npix;
     logic         coef_we;
-    logic [6:0]   coef_idx;
-    logic [17:0]  coef_mul;
-    logic [23:0]  coef_off;
+    logic [3:0]   coef_grp;
+    logic [17:0]  coef_mul [4];
+    logic [23:0]  coef_off [4];
 
     st_norm #(.OUT_DEPTH(OUT_DEPTH)) dut (
         .clk      (clk),
@@ -64,7 +65,7 @@ module tb_st_norm #(
         .cfg_g    (cfg_g),
         .cfg_npix (cfg_npix),
         .coef_we  (coef_we),
-        .coef_idx (coef_idx),
+        .coef_grp (coef_grp),
         .coef_mul (coef_mul),
         .coef_off (coef_off)
     );
@@ -200,16 +201,20 @@ module tb_st_norm #(
 
     task automatic write_coefs();
         coef_we = 1'b1;
-        for (int c = 0; c < MAXCH; c++) begin
-            coef_idx = 7'(c);
-            coef_mul = cmul[c];
-            coef_off = coff[c];
+        for (int g = 0; g < ncoef / 4; g++) begin
+            coef_grp = 4'(g);
+            for (int j = 0; j < 4; j++) begin
+                coef_mul[j] = cmul[4 * g + j];
+                coef_off[j] = coff[4 * g + j];
+            end
             @(negedge clk);
         end
-        coef_we  = 1'b0;
-        coef_idx = 7'd0;
-        coef_mul = 18'd0;
-        coef_off = 24'd0;
+        coef_we = 1'b0;
+        coef_grp = 4'd0;
+        for (int j = 0; j < 4; j++) begin
+            coef_mul[j] = 18'd0;
+            coef_off[j] = 24'd0;
+        end
     endtask
 
     task automatic pulse_start();
@@ -265,9 +270,11 @@ module tb_st_norm #(
         cfg_g    = 5'd20;
         cfg_npix = 18'd0;
         coef_we  = 1'b0;
-        coef_idx = 7'd0;
-        coef_mul = 18'd0;
-        coef_off = 24'd0;
+        coef_grp = 4'd0;
+        for (int j = 0; j < 4; j++) begin
+            coef_mul[j] = 18'd0;
+            coef_off[j] = 24'd0;
+        end
 
         repeat (3) @(posedge clk);
         rst_n = 1;

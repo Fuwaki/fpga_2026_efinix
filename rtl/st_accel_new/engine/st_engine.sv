@@ -217,11 +217,11 @@ module st_engine
     assign ni_e = add_in ? ad_e : mn_e;
     assign ni_s = add_in ? ad_s : mn_s;
 
-    // FiLM coefficients: st_film -> st_norm
+    // FiLM coefficients: st_film -> st_norm, one group of four channels
     logic        cf_we;
-    logic [6:0]  cf_idx;
-    logic [17:0] cf_mul;
-    logic [23:0] cf_off;
+    logic [3:0]  cf_grp;
+    logic [17:0] cf_mul [4];
+    logic [23:0] cf_off [4];
     logic        mlp_start, mlp_busy;
     wire         use_norm = (norm_mode != ST_NORM_OFF);
 
@@ -233,7 +233,7 @@ module st_engine
         .in_last(ni_l), .in_eol(ni_e), .in_sof(ni_s),
         .out_valid(no_v), .out_ready(no_r), .out_data(no_d),
         .out_last(no_l), .out_eol(no_e), .out_sof(no_s),
-        .coef_we(cf_we), .coef_idx(cf_idx), .coef_mul(cf_mul), .coef_off(cf_off));
+        .coef_we(cf_we), .coef_grp(cf_grp), .coef_mul(cf_mul), .coef_off(cf_off));
 
     // DW input: st_norm, or its input straight through
     assign di_v = use_norm ? no_v : ni_v;
@@ -295,7 +295,7 @@ module st_engine
         .gap_clear(go && use_gap),
         .tap_valid(use_gap && pki_v && pk_in_r), .tap_ready(film_tap_r), .tap_data(pki_d), .tap_last(pki_l),
         .mlp_start(mlp_start), .mlp_busy(mlp_busy),
-        .coef_we(cf_we), .coef_idx(cf_idx), .coef_mul(cf_mul), .coef_off(cf_off));
+        .coef_we(cf_we), .coef_grp(cf_grp), .coef_mul(cf_mul), .coef_off(cf_off));
 
     st_post u_post (
         .clk(clk), .rst_n(rst_n),
