@@ -187,9 +187,9 @@ module st_accel_wrapper
     logic [15:0]        requant_rom [244];
 
     initial begin
-        $readmemh("weights.hex",  weight_rom);
-        $readmemh("bias.hex",     bias_rom);
-        $readmemh("requant.hex",  requant_rom);
+        $readmemh("rtl/st_accel_new/gen/weights.hex",  weight_rom);
+        $readmemh("rtl/st_accel_new/gen/bias.hex",     bias_rom);
+        $readmemh("rtl/st_accel_new/gen/requant.hex",  requant_rom);
     end
 
     // Stub: tile_engine output mirrors input for now (placeholder until the
