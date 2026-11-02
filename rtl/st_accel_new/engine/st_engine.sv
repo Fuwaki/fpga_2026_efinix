@@ -134,6 +134,7 @@ module st_engine
     logic        at_v, at_r, at_l, at_e, at_s;  logic [39:0] at_d;
     logic        di_v, di_r, di_l, di_e, di_s;  logic [39:0] di_d;
     logic        dw_v, dw_r, dw_l, dw_e, dw_s;  logic [39:0] dw_d;
+    logic [127:0] dw_wide;                      // the im2col 16-byte beat
     logic        pw_v, pw_r, pw_l, pw_e, pw_s;  logic [39:0] pw_d;
     logic        pk_v, pk_r, pk_s, pk_e;        logic [127:0] pk_d;
     logic        pr_v, pr_r, pr_s, pr_e;        logic [127:0] pr_d;
@@ -198,7 +199,7 @@ module st_engine
         .cfg_dw_base(dw_base), .cfg_rq_base(dw_rq), .cfg_lo(dw_lo), .cfg_hi(dw_hi),
         .in_valid(di_v), .in_ready(di_r), .in_data(di_d),
         .in_last(di_l), .in_eol(di_e), .in_sof(di_s),
-        .out_valid(dw_v), .out_ready(dw_r), .out_data(dw_d),
+        .out_valid(dw_v), .out_ready(dw_r), .out_data(dw_d), .out_wide(dw_wide),
         .out_last(dw_l), .out_eol(dw_e), .out_sof(dw_s));
 
     st_pw u_pw (

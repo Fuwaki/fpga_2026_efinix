@@ -12,7 +12,7 @@
 //
 //   cfg_mode    0 DW, 1 IM2COL (the stem), 2 BYPASS
 //   cfg_w/h     input grid, at least 2; even for stride 2
-//   cfg_g       groups per pixel, 1..16 (line address = x*G + g)
+//   cfg_g       groups per pixel, 1..20 (line address = x*G + g)
 //   cfg_stride  1 or 2: keep only output rows and columns with even yo/xo
 //   cfg_dw_base DW ROM word of group 0, cfg_g words used
 //   cfg_rq_base rq ROM word of channel 0, a multiple of 4
@@ -22,12 +22,14 @@
 // nothing here looks the package up.
 //
 // ------------------------------------------------------------------ window
-// Line storage: two st_line_ram instances (WORDS = 2560 group words of 40
+// Line storage: two st_line_ram instances (WORDS = 3200 group words of 40
 // bit) used as a ping-pong store by row parity; row r is written into slot
-// r%2.  Each instance is a 2048-word and a 512-word bank, 8 + 2 = 10 RAM10,
-// so the line store is 2 x 10 = 20 RAM10 of 2560 x 40: Efinity rounds a
-// non-power-of-two depth up, so one flat 2560-deep array would cost the
-// 4096-deep shape, 20 RAM10 per instance.
+// r%2.  3200 words hold W*G up to 3200: 80 channels at W = 160, 3 or 4
+// channels at W = 640, 16 or 24 channels at W = 320.  Each instance is a
+// 2048-, a 1024- and a 128-word bank, 8 + 4 + 1 = 13 RAM10, so the line
+// store is 2 x 13 = 26 RAM10 of 3200 x 40: Efinity rounds a
+// non-power-of-two depth up, so one flat 3200-deep array would cost the
+// 4096-deep shape, 16 RAM10 per instance.
 //
 // While input row r streams (r >= 1) every beat at address a reads slot
 // (r-1)%2, which holds row r-1, and slot r%2, which holds row r-2 (garbage
@@ -45,14 +47,14 @@
 // three taps travel as one 120-bit column word.
 //
 // Columns: the three row taps feed a 120-bit column delay line in pixel
-// steps, two shift registers of 32 entries (2 x 16 groups) with one
+// steps, two shift registers of 40 entries (2 x 20 groups) with one
 // asynchronous tap each.  The beat for (x, g) is the newest column; the
 // entries G and 2G pushes older are columns x-1 and x-2 of the same group.
 // Two copies, not one array with two read ports: the Titanium has no
-// distributed RAM, so one array with two asynchronous reads becomes 3840
+// distributed RAM, so one array with two asynchronous reads becomes 4800
 // flip-flops plus two 120-way read muxes, while a shift register with one tap
-// per copy becomes SRL8 cells (3840 FF + 3046 LUT against 960 SRL8 + 486
-// LUT, measured with the probe).
+// per copy becomes SRL8 cells (SRL8 has 8 cells of 8 bits, so 120 bits need
+// 15 per entry: 600 per copy, 1200 in all).
 //
 // Column x emits output column xo = x-1 from columns x-2, x-1 and x, with
 // the reflect at xo = 0 taking the left column from the newest beat.  After
@@ -73,10 +75,14 @@
 // the bias): 36 DSP, plus four per XW = 25 requant lane (measured, see the
 // ADR), 52 in all.
 //
-// IM2COL (C = 3, G = 1, the stem): 7 output beats per window beat, no
-// requantisation.  Lane j of beat b is element n = 4b + j of
-// v[n] = win[ky][kx][ic], n = ic*9 + ky*3 + kx, the PW ROM lane order of
-// st_gen_params.rom_inputs; n = 27 is zero, and last is on beat 6.
+// IM2COL (C = 3, G = 1, the stem): two 128-bit output beats per window beat,
+// no requantisation.  Byte k (bits [8k+7:8k]) of beat b is element
+// n = 16b + k of v[n] = win[ky][kx][ic], n = ic*9 + ky*3 + kx (the PW ROM
+// lane order of st_gen_params.rom_inputs), the low 8 bits of the int8
+// element; v[n] = 0 for n >= 27.  last is on beat 1, sof on beat 0 of the
+// frame's first pixel, eol on beat 1 of the line's last pixel.  The two
+// beats drive out_wide, and out_data is zero in this mode.  Taking one
+// window beat every two cycles gives the stem its 2 cycles per pixel.
 //
 // BYPASS: the input beat goes straight to the output with its flags.
 //
@@ -98,17 +104,17 @@
 // output register lands the bias on the accumulator, and one 24+6-bit
 // register per lane carries mantissa and shift to the lanes.
 //
-// IM2COL registers the window at C too and emits its 7 beats on the seven
-// cycles after C, so it takes one window beat every 8 cycles -- the stem's 8
-// cycles per pixel.
+// IM2COL registers the window at C too and emits its 2 beats on the two
+// cycles after C, so it takes one window beat every 2 cycles -- the stem's
+// 2 cycles per pixel of the 27-element im2col.
 //
 // Back-pressure is a credit scheme, not a stalling pipeline: the 64-beat
 // output FIFO sits after the datapath, and a window, flush or replay beat
 // may enter stage A only when fifo_free - inflight >= the beats it will
-// produce (1 for DW, 7 for IM2COL).  Beats that produce nothing (row 0, and
-// the odd rows and columns of stride 2) need no credit, but they still fill
-// the line store and the column delay line.  The pipeline itself never
-// stalls; its valid bits just advance.  in_ready is high only when the
+// produce (1 for DW and BYPASS, 2 for IM2COL).  Beats that produce nothing
+// (row 0, and the odd rows and columns of stride 2) need no credit, but they
+// still fill the line store and the column delay line.  The pipeline itself
+// never stalls; its valid bits just advance.  in_ready is high only when the
 // window logic accepts a beat in that cycle.
 module st_dw (
     input  logic               clk,
@@ -135,18 +141,20 @@ module st_dw (
     input  logic               in_eol,
     input  logic               in_sof,
 
-    // output stream
+    // output stream; out_wide carries the 16-byte IM2COL beat, and the group
+    // beat of the other modes in its low 40 bits (out_data is that copy)
     output logic               out_valid,
     input  logic               out_ready,
     output logic        [39:0] out_data,
+    output logic       [127:0] out_wide,
     output logic               out_last,
     output logic               out_eol,
     output logic               out_sof
 );
-    localparam int LINE_WORDS = 2560;      // 40-bit group words per line
-    localparam int DLINE      = 32;        // 2 x 16 groups of column delay
+    localparam int LINE_WORDS = 3200;      // 40-bit group words per line
+    localparam int DLINE      = 40;        // 2 x 20 groups of column delay
     localparam int FIFO_DEPTH = 64;        // output beats
-    localparam int FIFO_W     = 43;        // 40 data + last/eol/sof
+    localparam int FIFO_W     = 131;       // 128 data + last/eol/sof
     localparam int RQ_BANKS   = 4;         // DW channels per rq ROM word
     localparam int RQ_DEPTH   = 512;       // words per rq bank (1496 in all)
     localparam int DW_DEPTH   = 256;       // DW ROM words (180 in all)
@@ -243,10 +251,10 @@ module st_dw (
 
     // ------------------------------------------------------- output FIFO
     logic        fifo_we;
-    logic [42:0] fifo_wdata;
+    logic [130:0] fifo_wdata;
     logic        fifo_full;
     logic [6:0]  fifo_level;
-    logic [42:0] fifo_rdata;
+    logic [130:0] fifo_rdata;
 
     fifo_sync_core #(.W(FIFO_W), .DEPTH(FIFO_DEPTH)) u_fifo (
         .clk    (clk),
@@ -260,10 +268,13 @@ module st_dw (
         .level  (fifo_level)
     );
 
-    assign out_data = fifo_rdata[39:0];
-    assign out_last = fifo_rdata[40];
-    assign out_eol  = fifo_rdata[41];
-    assign out_sof  = fifo_rdata[42];
+    // DW and BYPASS put the group beat in the low 40 bits; out_wide is the
+    // whole FIFO word there too, the high bytes just carry zero.
+    assign out_data = (mode == MODE_IM2COL) ? 40'd0 : fifo_rdata[39:0];
+    assign out_wide = fifo_rdata[127:0];
+    assign out_last = fifo_rdata[128];
+    assign out_eol  = fifo_rdata[129];
+    assign out_sof  = fifo_rdata[130];
 
     // ------------------------------------------------ issue (stage A)
     wire win_mode = (mode != MODE_BYPASS);
@@ -287,7 +298,7 @@ module st_dw (
             ST_FLUSH:  emit_beat = win_mode;
             default:   emit_beat = 1'b0;
         endcase
-        produce = (emit_beat && (mode == MODE_IM2COL)) ? 8'd7 : {7'd0, emit_beat};
+        produce = (emit_beat && (mode == MODE_IM2COL)) ? 8'd2 : {7'd0, emit_beat};
     end
 
     // Credit: the FIFO's contents plus everything still inside the pipeline
@@ -298,8 +309,8 @@ module st_dw (
     wire       cred_ok  = (produce == 8'd0) ||
                           (used + produce <= 8'(FIFO_DEPTH));
 
-    // IM2COL emits 7 beats over the 7 cycles after stage C, so an issue is
-    // followed by 7 idle cycles: period 8, the stem's 8 cycles per pixel.
+    // IM2COL emits 2 beats over the 2 cycles after stage C, so an issue is
+    // followed by one idle cycle: period 2, the stem's 2 cycles per pixel.
     wire chan_ok = (mode != MODE_IM2COL) || (icool == 4'd0);
 
     wire accept_ok = chan_ok && cred_ok && !fifo_full;
@@ -368,19 +379,18 @@ module st_dw (
     wire [39:0]  b_top   = b_top_ref ? b_data : tap_top;
     wire [119:0] tri_new = {b_top, tap_mid, b_bot};
 
-    // Column delay line: two shift registers of 32 column words, the newest
+    // Column delay line: two shift registers of 40 column words, the newest
     // at entry 0 and one push per entry, so entry k holds the beat pushed k
     // pushes ago.  The taps are G and 2G pushes behind the newest beat; a
     // flush beat reads G - g and 2G - g behind it, which are the entries of
     // columns W-1 and W-2 of group g (the line does not shift during a
-    // flush).  Both offsets are at most 2G <= 32, so the read index is
-    // offset - 1 and never leaves the array.
+    // flush).  Both offsets are at most 2G <= 40, so the read index
+    // offset - 1 is 0..39 and never leaves the array.
     //
     // Two copies rather than one array with two read ports: the Titanium has
-    // no distributed RAM, so an array with two asynchronous reads is 3840
-    // flip-flops plus two read muxes (measured: 3840 FF, 3046 LUT), while a
-    // shift register with one asynchronous tap per copy maps to SRL8 cells
-    // (measured: 960 SRL8, 486 LUT).
+    // no distributed RAM, so an array with two asynchronous reads is 4800
+    // flip-flops plus two read muxes, while a shift register with one
+    // asynchronous tap per copy maps to SRL8 cells.
     logic [DLINE-1:0][119:0] dl_m, dl_lr;
 
     always_ff @(posedge clk) begin
@@ -392,8 +402,8 @@ module st_dw (
 
     wire [5:0] off_m   = b_flush ? (6'(cg) - 6'(b_grp)) : 6'(cg);
     wire [5:0] off_lr  = b_flush ? (6'(cg) * 6'd2 - 6'(b_grp)) : 6'(cg) * 6'd2;
-    wire [4:0] idx_m   = 5'(off_m - 6'd1);
-    wire [4:0] idx_lr  = 5'(off_lr - 6'd1);
+    wire [5:0] idx_m   = off_m - 6'd1;
+    wire [5:0] idx_lr  = off_lr - 6'd1;
     wire [119:0] tap_m  = dl_m[idx_m];
     wire [119:0] tap_lr = dl_lr[idx_lr];
 
@@ -550,53 +560,53 @@ module st_dw (
     end
 
     // ------------------------------------------------------ IM2COL emitter
-    // v[n] = win[ky][kx][ic], n = ic*9 + ky*3 + kx; n = 27 and up are zero,
-    // so the beat index may run past 6 without leaving the array.
-    wire [319:0] im_el;
-    for (genvar n = 0; n < 27; n++) begin : g_el
-        assign im_el[10*n +: 10] = win_c[40*(n % 9) + 10*(n / 9) +: 10];
-    end
-    for (genvar n = 27; n < 32; n++) begin : g_el0
-        assign im_el[10*n +: 10] = 10'd0;
+    // v[n] = win[ky][kx][ic], n = ic*9 + ky*3 + kx, the PW ROM's byte order;
+    // the element is the low 8 bits of the 10-bit lane (int8 two's
+    // complement) and n >= 27 is zero.  One window beat is 32 bytes, so it
+    // leaves as two 128-bit beats: beat b holds elements 16b .. 16b+15.
+    wire [255:0] im_v;
+    for (genvar n = 0; n < 32; n++) begin : g_el
+        localparam int T = n % 9;                  // tap ky*3 + kx
+        localparam int C = n / 9;                  // channel (lane)
+        assign im_v[8*n +: 8] = (n < 27) ? win_c[40*T + 10*C +: 8] : 8'd0;
     end
 
-    logic [2:0] icnt;
-    logic       irun;
+    // Two beats per window beat: beat 0 leaves in the cycle c_im_vld is high,
+    // when the window register still holds the beat, and beat 1 in the cycle
+    // after, from the half latched while beat 0 was going out.  The issue
+    // side holds the next window beat off with icool for one cycle, so
+    // c_im_vld rises every other cycle and the two beats never collide.
+    logic        im_pend;                  // beat 1 of the last window beat
+    logic        im_pend_eol;
+    logic [127:0] im_hi;                   // its elements 16 .. 31
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            irun <= 1'b0;
-            icnt <= 3'd0;
-        end else if (c_im_vld) begin
-            irun <= 1'b1;
-            icnt <= 3'd0;
-        end else if (irun) begin
-            if (icnt == 3'd6)
-                irun <= 1'b0;
-            icnt <= icnt + 3'd1;
-        end
+        if (!rst_n) im_pend <= 1'b0;
+        else        im_pend <= c_im_vld;
     end
 
-    wire [39:0] im_beat = {im_el[10*(4*icnt + 3) +: 10], im_el[10*(4*icnt + 2) +: 10],
-                           im_el[10*(4*icnt + 1) +: 10], im_el[10*(4*icnt + 0) +: 10]};
-    wire        im_last = (icnt == 3'd6);
-    wire        im_eol  = im_last && c_im_eol;
-    wire        im_sof  = (icnt == 3'd0) && c_im_sof;
+    always_ff @(posedge clk) begin
+        if (c_im_vld) begin
+            im_hi       <= im_v[255:128];
+            im_pend_eol <= c_im_eol;
+        end
+    end
 
     // ------------------------------------------------------- output select
     always_comb begin
         case (mode)
             MODE_BYPASS: begin
                 fifo_we    = run_go;
-                fifo_wdata = {in_sof, in_eol, in_last, in_data};
+                fifo_wdata = {in_sof, in_eol, in_last, 88'd0, in_data};
             end
             MODE_IM2COL: begin
-                fifo_we    = irun;
-                fifo_wdata = {im_sof, im_eol, im_last, im_beat};
+                fifo_we    = c_im_vld || im_pend;
+                fifo_wdata = c_im_vld ? {c_im_sof, 1'b0, 1'b0, im_v[127:0]}
+                                      : {1'b0, im_pend_eol, 1'b1, im_hi};
             end
             default: begin
                 fifo_we    = rq_vld;
-                fifo_wdata = {rq_lane_tag[0], rq_y[3], rq_y[2], rq_y[1], rq_y[0]};
+                fifo_wdata = {rq_lane_tag[0], 88'd0, rq_y[3], rq_y[2], rq_y[1], rq_y[0]};
             end
         endcase
     end
@@ -649,8 +659,8 @@ module st_dw (
             dly_we   <= 1'b0;
             if (cfg_w < 10'd2 || cfg_h < 10'd2)
                 $error("st_dw: cfg_w and cfg_h must be at least 2");
-            if (cfg_g < 5'd1 || cfg_g > 5'd16)
-                $error("st_dw: cfg_g must be 1..16");
+            if (cfg_g < 5'd1 || cfg_g > 5'd20)
+                $error("st_dw: cfg_g must be 1..20");
             if (cfg_mode == MODE_IM2COL && cfg_g != 5'd1)
                 $error("st_dw: im2col needs cfg_g = 1 (the stem has 3 channels)");
             if (cfg_mode != MODE_BYPASS &&
@@ -669,7 +679,7 @@ module st_dw (
             inflight <= inflight + (issue ? produce : 8'd0) - (fifo_we ? 8'd1 : 8'd0);
 
             if (mode == MODE_IM2COL && issue)
-                icool <= 4'd7;
+                icool <= 4'd1;
             else if (icool != 4'd0)
                 icool <= icool - 4'd1;
 
@@ -791,12 +801,12 @@ module st_dw (
     initial begin
         if ((1 << $clog2(FIFO_DEPTH)) != FIFO_DEPTH || FIFO_DEPTH < 8)
             $error("st_dw: FIFO_DEPTH must be a power of two, at least 8");
-        if (DLINE != 32)
-            $error("st_dw: the column delay line is 2 x 16 groups deep");
+        if (DLINE != 40)
+            $error("st_dw: the column delay line is 2 x 20 groups deep");
         if (RQ_BANKS != 4)
             $error("st_dw: the DW rq ROM has four banks");
-        if (LINE_WORDS != 2560)
-            $error("st_dw: one line is 2560 group words (2 x 10 RAM10)");
+        if (LINE_WORDS != 3200)
+            $error("st_dw: one line is 3200 group words (2 x 13 RAM10)");
     end
 
 endmodule
