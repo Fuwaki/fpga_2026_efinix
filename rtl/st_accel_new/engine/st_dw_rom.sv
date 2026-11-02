@@ -9,7 +9,7 @@
 // with HEX and a testbench may call it again with a per-case file.
 module st_dw_rom #(
     parameter int    DEPTH = 256,
-    parameter string HEX   = "rtl/st_accel_new/gen/tiny_dw/st_dw.hex"
+    parameter string HEX   = "rtl/st_accel_new/gen/guided/st_dw.hex"
 ) (
     input  logic                     clk,
     input  logic [$clog2(DEPTH)-1:0] addr,

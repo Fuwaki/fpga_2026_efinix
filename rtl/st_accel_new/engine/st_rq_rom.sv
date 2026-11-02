@@ -22,7 +22,7 @@
 module st_rq_rom #(
     parameter int    NB    = 4,
     parameter int    DEPTH = 512,
-    parameter string HEX   = "rtl/st_accel_new/gen/tiny_dw/st_rq.hex"
+    parameter string HEX   = "rtl/st_accel_new/gen/guided/st_rq.hex"
 ) (
     input  logic                     clk,
     input  logic [$clog2(DEPTH)-1:0] addr,   // word address / NB
