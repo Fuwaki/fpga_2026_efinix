@@ -264,10 +264,12 @@ module st_engine
         .out_valid(pw_v), .out_ready(pw_r), .out_data(pw_d),
         .out_last(pw_l), .out_eol(pw_e), .out_sof(pw_s),
         .start(go && !no_layers), .busy(pw_busy),
-        .cfg_npix(pw_npix), .cfg_wide(pw_wide),
-        .cfg_cin(pw_cin0), .cfg_cout(pw_cout0),
-        .cfg_pw_base(pw_base0), .cfg_rq_base(pw_rq0),
-        .cfg_lo(pw_lo0), .cfg_hi(pw_hi0));
+        .cfg_npix(pw_npix), .cfg_n(pw_n), .cfg_wide(pw_wide),
+        .cfg_cin0(pw_cin0), .cfg_cin1(pw_cin1),
+        .cfg_cout0(pw_cout0), .cfg_cout1(pw_cout1),
+        .cfg_pw_base0(pw_base0), .cfg_pw_base1(pw_base1),
+        .cfg_rq_base0(pw_rq0), .cfg_rq_base1(pw_rq1),
+        .cfg_lo0(pw_lo0), .cfg_lo1(pw_lo1), .cfg_hi0(pw_hi0), .cfg_hi1(pw_hi1));
 
     // PW output: the add (OUT), st_post or st_pack
     assign pw_r = add_out ? at_r : is_post ? po_in_r : pk_in_r;

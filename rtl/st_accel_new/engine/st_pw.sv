@@ -175,7 +175,12 @@ module st_pw #(
     logic [10:0] pw2_r;                      // 2 * pw_base, the first line
 
     // ------------------------------------------------------- vector banks
-    logic [XW-1:0] xa [4];          // input vectors, bank = pixel index mod 4
+    // Four banks, pixel index mod 4: four named vectors, not an array.  Efinity
+    // reads an unpacked array of wide words with a dynamic index as a memory,
+    // and a four-entry array of 640-bit banks makes its mapper crash, so the
+    // banks are flattened: the write is a four-way case of byte enables and
+    // the read a two-level mux.  The banks hold data only, no reset.
+    logic [XW-1:0] xa0, xa1, xa2, xa3;
 
     // ===================================================== input collector
     logic [1:0]  col_pix;           // pixel being collected, index mod 4
@@ -186,6 +191,20 @@ module st_pw #(
     logic        pix_eol [4];
 
     wire [1:0] col_bank  = col_pix;
+    // The beat's bytes and the first element index they write: 16 wide bytes
+    // at 16b, or 4 narrow lanes at 4b.
+    logic [15:0][7:0] inb;
+    int               inb_base;
+
+    always_comb begin
+        inb_base = wide_r ? 16 * int'(col_beat) : 4 * int'(col_beat);
+        for (int j = 0; j < 16; j++) inb[j] = 8'd0;
+        if (wide_r) begin
+            for (int j = 0; j < 16; j++) inb[j] = in_wide[8*j +: 8];
+        end else begin
+            for (int j = 0; j < 4; j++) inb[j] = in_data[10*j +: 8];
+        end
+    end
     // The pair on the array reads banks p_iss-2 and p_iss-1, so the collector
     // may only write the two banks of the next pair, p_iss and p_iss+1.
     wire       col_room  = (2'(col_pix - p_iss) < 2'd2);
@@ -226,15 +245,19 @@ module st_pw #(
             // mode has at most 5 beats of 16 and narrow at most 20 of 4.  The
             // write is gated on that, and an over-long pixel is a stream error
             // (the same bound the simulation checks).
-            if (wide_r ? (col_beat < 5) : (col_beat < 20)) begin
-                if (wide_r) begin
-                    // 16 int8 per beat, byte k = element 16b + k
-                    for (int j = 0; j < 16; j++)
-                        xa[col_bank][8*(16*int'(col_beat) + j) +: 8] <= in_wide[8*j +: 8];
-                end else begin
-                    // 4 lanes of int8 in 10-bit fields: keep the low byte
-                    for (int j = 0; j < 4; j++)
-                        xa[col_bank][8*(4*int'(col_beat) + j) +: 8] <= in_data[10*j +: 8];
+            if (inb_base < XB) begin
+                // The beat's bytes land at inb_base; every other byte keeps its
+                // value.  One whole bank per case keeps the write a plain
+                // register load instead of a byte-indexed write mux.
+                for (int j = 0; j < 16; j++) begin
+                    if (inb_base + j < XB) begin
+                        unique case (col_bank)
+                            2'd0:    xa0[8*(inb_base + j) +: 8] <= inb[j];
+                            2'd1:    xa1[8*(inb_base + j) +: 8] <= inb[j];
+                            2'd2:    xa2[8*(inb_base + j) +: 8] <= inb[j];
+                            default: xa3[8*(inb_base + j) +: 8] <= inb[j];
+                        endcase
+                    end
                 end
             end
             // the flags of the pixel: ORed over its beats, cleared at its end
@@ -338,7 +361,8 @@ module st_pw #(
     // parity picks the bank first (one 80-byte 2:1 mux) and only the beat's 16
     // bytes are then read out of it, so the byte mux is not duplicated per
     // bank.
-    wire [XW-1:0] op_vec = op_px ? xa[{op_bank, 1'b1}] : xa[{op_bank, 1'b0}];
+    wire [XW-1:0] op_vec = op_bank ? (op_px ? xa3 : xa2)
+                                   : (op_px ? xa1 : xa0);
 
     logic [15:0][7:0] x_tile;
     always_comb begin
