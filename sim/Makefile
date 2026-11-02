@@ -192,7 +192,7 @@ tb_st_film:
 # The whole block engine on one frame against tools/st_engine_vectors.py:
 # every DDR region and the PROC right half, byte-exact.  ENGINE_PASSES=a..b
 # runs a subrange on golden-preloaded DDR (one pass takes 1-3 minutes).
-ENGINE_PASSES ?= 0..11
+ENGINE_PASSES ?= 0..12
 EXTRA_tb_st_engine := $(ROOT)/rtl/st_accel_new/dma/tile_dma_rd.sv \
                       $(ROOT)/rtl/st_accel_new/dma/tile_dma_wr.sv $(ST_ENG)
 tb_st_engine:
