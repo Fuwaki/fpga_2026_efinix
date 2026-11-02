@@ -21,7 +21,7 @@
 `include "ddr3_controller/ddr3_parameter.vh"
 // `include "define.v"
 
-localparam ENABLE_ST_ACCEL = 0;
+localparam ENABLE_ST_ACCEL = 1;
 
 
 module fpga_src #(
@@ -543,59 +543,146 @@ wire [15:0] st_dbg_last_x, st_dbg_last_y;
 wire [7:0]  st_dbg_last_cap_addr, st_dbg_last_commit_addr;
 wire [15:0] st_cpu_dbg_heartbeat;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ST accelerator: st_accel_wrapper (DDR-based tile DMA + CNN engine)
+// Replaces the old on-chip-RAM-only st_accel.  Frame-rate skip logic (every
+// SKIP_N ISP frames → one inference) is here rather than in the wrapper so
+// the wrapper remains a pure execute-on-demand block.
+//
+// Tie-offs for legacy signals the old st_accel drove (APB, hw_*, dbg_*):
+//   accel_prdata/pready/pslverr — stub OK, SoC firmware not yet updated.
+//   w_st_irq, w_hw_*, st_dbg_* — tied off until firmware/tb catches up.
+// ─────────────────────────────────────────────────────────────────────────────
 generate
 if (ENABLE_ST_ACCEL) begin : gen_st_accel
-	st_accel #(
-		.N_PE(16)
-	) u_st_accel (
-		.clk       (core_clk),
-		.rst_n     (~w_soc_async_reset),
-		.PADDR     (w_soc_apb_paddr),
-		.PSEL      (w_soc_apb_psel & ~ui_hit),
-		.PENABLE   (w_soc_apb_penable),
-		.PWRITE    (w_soc_apb_pwrite),
-		.PWDATA    (w_soc_apb_pwdata),
-		.PRDATA    (accel_prdata),
-		.PREADY    (accel_pready),
-		.PSLVERROR (accel_pslverr),
-		.irq       (w_st_irq),
-		.hw_x_we   (w_hw_x_we),
-		.hw_x_addr (w_hw_x_addr),
-		.hw_x_data (w_hw_x_data),
-		.hw_load_w (w_hw_load_w),
-		.hw_start  (w_hw_start),
-		.hw_busy   (w_hw_busy),
-		.hw_done   (w_hw_done),
-		.hw_y_addr (w_hw_y_addr),
-		.hw_y_data (w_hw_y_data),
-		.dbg_cap_samples(st_dbg_cap_samples), .dbg_cap_tiles(st_dbg_cap_tiles),
-		.dbg_commit_count(st_dbg_commit_count), .dbg_last_x(st_dbg_last_x),
-		.dbg_last_y(st_dbg_last_y), .dbg_last_cap_addr(st_dbg_last_cap_addr),
-		.dbg_last_commit_addr(st_dbg_last_commit_addr), .cpu_dbg_heartbeat(st_cpu_dbg_heartbeat),
-		.m_awid(st_awid), .m_awaddr(st_awaddr), .m_awlen(st_awlen), .m_awsize(st_awsize),
-		.m_awburst(st_awburst), .m_awlock(st_awlock), .m_awcache(st_awcache), .m_awprot(st_awprot),
-		.m_awvalid(st_awvalid), .m_awready(st_awready),
-		.m_wdata(st_wdata), .m_wstrb(st_wstrb), .m_wlast(st_wlast), .m_wvalid(st_wvalid), .m_wready(st_wready),
-		.m_bid(st_bid), .m_bresp(st_bresp), .m_bvalid(st_bvalid), .m_bready(st_bready),
-		.m_arid(st_arid), .m_araddr(st_araddr), .m_arlen(st_arlen), .m_arsize(st_arsize),
-		.m_arburst(st_arburst), .m_arlock(st_arlock), .m_arcache(st_arcache), .m_arprot(st_arprot),
-		.m_arvalid(st_arvalid), .m_arready(st_arready),
-		.m_rid(st_rid), .m_rdata(st_rdata), .m_rresp(st_rresp), .m_rlast(st_rlast),
-		.m_rvalid(st_rvalid), .m_rready(st_rready)
-	);
+
+    // ── Legacy signal tie-offs (old APB / hw_pe / dbg not wired to new wrapper) ─
+    assign accel_prdata          = 32'd0;
+    assign accel_pready          = w_soc_apb_psel & ~ui_hit;
+    assign accel_pslverr         = 1'b0;
+    assign w_st_irq              = 1'b0;
+    // Old PE control inputs (driven to no-op)
+    assign w_hw_x_we             = 1'b0;
+    assign w_hw_load_w           = 1'b0;
+    assign w_hw_start            = 1'b0;
+    // Old PE status outputs (tie off to keep lint clean)
+    assign w_hw_busy             = 1'b0;
+    assign w_hw_done             = 1'b0;
+    assign w_hw_y_addr           = '0;
+    assign w_hw_y_data           = '0;
+    // Old debug outputs
+    assign st_dbg_cap_samples    = '0;
+    assign st_dbg_cap_tiles      = '0;
+    assign st_dbg_commit_count   = '0;
+    assign st_dbg_last_x         = '0;
+    assign st_dbg_last_y         = '0;
+    assign st_dbg_last_cap_addr  = '0;
+    assign st_dbg_last_commit_addr = '0;
+    assign st_cpu_dbg_heartbeat  = '0;
+
+    // ── Frame-rate skip: fire once per SKIP_N ISP commits (~60fps/4 = 15fps) ─
+    localparam int SKIP_N = 4;
+    vid_pkg::vid_status_t accel_vid_st;
+    always_ff @(posedge core_clk) accel_vid_st <= w_vid_status; // one-cycle latch
+    wire [vid_pkg::SEQ_W-1:0] isp_commits = accel_vid_st.pw_frames;
+
+    reg  [vid_pkg::SEQ_W-1:0] isp_prev     = '0;
+    reg  [1:0]                 skip_cnt     = '0;
+    reg                        accel_start  = 1'b0;
+    reg                        accel_busy_r = 1'b0;
+    wire                       accel_done;
+    wire                       accel_busy;
+
+    always_ff @(posedge core_clk or negedge vid_rst_n) begin
+        if (!vid_rst_n) begin
+            isp_prev     <= '0;
+            skip_cnt     <= '0;
+            accel_start  <= 1'b0;
+            accel_busy_r <= 1'b0;
+        end else begin
+            accel_start <= 1'b0;
+            accel_busy_r <= accel_busy;
+            if (isp_commits != isp_prev) begin
+                isp_prev <= isp_commits;
+                if (skip_cnt == SKIP_N - 1) begin
+                    skip_cnt    <= 2'd0;
+                    // Only fire when the previous inference is done
+                    if (!accel_busy && !accel_busy_r)
+                        accel_start <= 1'b1;
+                end else begin
+                    skip_cnt <= skip_cnt + 2'd1;
+                end
+            end
+        end
+    end
+
+    // ISP ring slot 0 as the source (firmware can later steer via APB)
+    wire [vid_pkg::AXI_AW-1:0] accel_isp_base  = vid_pkg::RING_ISP_BASE;
+    wire [vid_pkg::AXI_AW-1:0] accel_proc_base = vid_pkg::RING_PROC_BASE;
+    wire [vid_pkg::AXI_AW-1:0] accel_stride    = vid_pkg::AXI_AW'(vid_pkg::LINE_STRIDE);
+
+    // ── st_accel_wrapper ─────────────────────────────────────────────────────
+    st_accel_wrapper #(
+        .FRAME_W  (640),
+        .FRAME_H  (480)
+    ) u_st_accel_wrapper (
+        .clk            (core_clk),
+        .rst_n          (vid_rst_n),
+        // AXI4 master → vid_subsystem ext_* (write channel)
+        .m_axi_awid     (st_awid),    .m_axi_awaddr (st_awaddr),
+        .m_axi_awlen    (st_awlen),   .m_axi_awvalid(st_awvalid),
+        .m_axi_awready  (st_awready),
+        .m_axi_wdata    (st_wdata),   .m_axi_wlast  (st_wlast),
+        .m_axi_wvalid   (st_wvalid),  .m_axi_wready (st_wready),
+        .m_axi_bid      (st_bid),     .m_axi_bresp  (st_bresp),
+        .m_axi_bvalid   (st_bvalid),  .m_axi_bready (st_bready),
+        // AXI4 master → vid_subsystem ext_* (read channel)
+        .m_axi_arid     (st_arid),    .m_axi_araddr (st_araddr),
+        .m_axi_arlen    (st_arlen),   .m_axi_arvalid(st_arvalid),
+        .m_axi_arready  (st_arready),
+        .m_axi_rid      (st_rid),     .m_axi_rdata  (st_rdata),
+        .m_axi_rresp    (st_rresp),   .m_axi_rlast  (st_rlast),
+        .m_axi_rvalid   (st_rvalid),  .m_axi_rready (st_rready),
+        // Control
+        .start          (accel_start),
+        .done           (accel_done),
+        .busy           (accel_busy),
+        .isp_base_addr  (accel_isp_base),
+        .proc_base_addr (accel_proc_base),
+        .line_stride    (accel_stride)
+    );
+
+    // Re-use existing sync chain for done counter (reuses w_st_frame_cnt path)
+    assign w_st_frame_cnt = {31'd0, accel_done};   // single-cycle pulse
+    assign w_st_pipe_busy = accel_busy;
+
 end else begin : gen_st_accel_off
-	assign accel_prdata  = 32'd0;
-	assign accel_pready  = w_soc_apb_psel & ~ui_hit;
-	assign accel_pslverr = 1'b0;
-	assign w_st_irq = 1'b0;
-	assign w_hw_x_we = 1'b0;
-	assign w_hw_load_w = 1'b0;
-	assign w_hw_start = 1'b0;
-	assign st_awvalid = 1'b0;
-	assign st_wvalid  = 1'b0;
-	assign st_bready  = 1'b0;
-	assign st_arvalid = 1'b0;
-	assign st_rready  = 1'b0;
+    assign accel_prdata  = 32'd0;
+    assign accel_pready  = w_soc_apb_psel & ~ui_hit;
+    assign accel_pslverr = 1'b0;
+    assign w_st_irq      = 1'b0;
+    assign w_hw_x_we     = 1'b0;
+    assign w_hw_load_w   = 1'b0;
+    assign w_hw_start    = 1'b0;
+    assign w_hw_busy     = 1'b0;
+    assign w_hw_done     = 1'b0;
+    assign w_hw_y_addr   = '0;
+    assign w_hw_y_data   = '0;
+    assign st_dbg_cap_samples      = '0;
+    assign st_dbg_cap_tiles        = '0;
+    assign st_dbg_commit_count     = '0;
+    assign st_dbg_last_x           = '0;
+    assign st_dbg_last_y           = '0;
+    assign st_dbg_last_cap_addr    = '0;
+    assign st_dbg_last_commit_addr = '0;
+    assign st_cpu_dbg_heartbeat    = '0;
+    assign w_st_frame_cnt = '0;
+    assign w_st_pipe_busy = 1'b0;
+    assign st_awvalid     = 1'b0;
+    assign st_wvalid      = 1'b0;
+    assign st_bready      = 1'b0;
+    assign st_arvalid     = 1'b0;
+    assign st_rready      = 1'b0;
 end
 endgenerate
 

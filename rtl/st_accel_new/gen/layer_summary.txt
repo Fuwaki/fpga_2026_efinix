@@ -1,0 +1,15 @@
+[ 0] stem            OP_CONV3x3      ACT_RELU   in=  2 out= 16 stride=1 pad=2'd1 bias_addr=    0 rq_addr=    0 w_off=    0 w_cnt=  288 rq_min=   64 rq_max=  213
+[ 1] enc0.dw         OP_CONV3x3_DW   ACT_RELU   in= 16 out= 16 stride=2 pad=2'd1 bias_addr=   16 rq_addr=   16 w_off=  288 w_cnt=  144 rq_min=  236 rq_max=  550
+[ 2] enc0.pw         OP_CONV1x1      ACT_RELU   in= 16 out= 32 stride=1 pad=2'd0 bias_addr=   32 rq_addr=   32 w_off=  432 w_cnt=  512 rq_min=  194 rq_max=  390
+[ 3] enc1.dw         OP_CONV3x3_DW   ACT_RELU   in= 32 out= 32 stride=1 pad=2'd1 bias_addr=   64 rq_addr=   64 w_off=  944 w_cnt=  288 rq_min=  291 rq_max=  776
+[ 4] enc1.pw         OP_CONV1x1      ACT_RELU   in= 32 out= 32 stride=1 pad=2'd0 bias_addr=   96 rq_addr=   96 w_off= 1232 w_cnt= 1024 rq_min=  227 rq_max=  758
+[ 5] dec_h4.dw       OP_CONV3x3_DW   ACT_RELU   in= 32 out= 32 stride=1 pad=2'd1 bias_addr=  128 rq_addr=  128 w_off= 2256 w_cnt=  288 rq_min=  121 rq_max=  346
+[ 6] dec_h4.pw       OP_CONV1x1      ACT_RELU   in= 32 out= 12 stride=1 pad=2'd0 bias_addr=  160 rq_addr=  160 w_off= 2544 w_cnt=  384 rq_min=  314 rq_max=  631
+[ 7] dec_h2.dw       OP_CONV3x3_DW   ACT_RELU   in= 12 out= 12 stride=1 pad=2'd1 bias_addr=  172 rq_addr=  172 w_off= 2928 w_cnt=  108 rq_min=  112 rq_max=  192
+[ 8] dec_h2.pw       OP_CONV1x1      ACT_RELU   in= 12 out= 20 stride=1 pad=2'd0 bias_addr=  184 rq_addr=  184 w_off= 3036 w_cnt=  240 rq_min=  183 rq_max=  560
+[ 9] h2_guide        OP_CONV3x3      ACT_RELU   in=  2 out=  5 stride=1 pad=2'd1 bias_addr=  204 rq_addr=  204 w_off= 3276 w_cnt=   90 rq_min=  158 rq_max=  300
+[10] h2_proj         OP_CONV1x1      ACT_NONE   in=  5 out= 20 stride=1 pad=2'd0 bias_addr=  209 rq_addr=  209 w_off= 3366 w_cnt=  100 rq_min=  117 rq_max=  243
+[11] to_guide        OP_CONV1x1      ACT_RELU   in= 20 out=  4 stride=1 pad=2'd0 bias_addr=  229 rq_addr=  229 w_off= 3466 w_cnt=   80 rq_min=   89 rq_max=  119
+[12] guide           OP_CONV3x3      ACT_RELU   in=  2 out=  4 stride=1 pad=2'd1 bias_addr=  233 rq_addr=  233 w_off= 3546 w_cnt=   72 rq_min=   83 rq_max=  538
+[13] head.dw         OP_CONV3x3_DW   ACT_RELU   in=  4 out=  4 stride=1 pad=2'd1 bias_addr=  237 rq_addr=  237 w_off= 3618 w_cnt=   36 rq_min=  101 rq_max=  233
+[14] head.pw         OP_CONV1x1      ACT_NONE   in=  4 out=  3 stride=1 pad=2'd0 bias_addr=  241 rq_addr=  241 w_off= 3654 w_cnt=   12 rq_min= 2193 rq_max= 3775
