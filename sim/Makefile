@@ -118,7 +118,7 @@ tb_st_dw:
 # The PW stage against tools/st_pw_vectors.py: one run per case, each with
 # random input gaps (and a few 300-cycle stalls) and 30% output stalls, then
 # again with no stalls for the cycles-per-pixel figure.
-PW_CASES := enc0 res up0 up1a head stem
+PW_CASES := c80_80 c80_24 c16_80 c24_40 c40_8 c8_3u w27_8 w27_16 w27_10_40 n24_24
 PW_DIR   := $(OBJ)/tb_st_pw
 EXTRA_tb_st_pw := $(ST_ENG)
 tb_st_pw:

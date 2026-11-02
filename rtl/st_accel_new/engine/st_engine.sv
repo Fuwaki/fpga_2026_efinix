@@ -78,7 +78,7 @@ module st_engine
     logic [10:0]       dw_rq;
     logic [9:0]        dw_lo, dw_hi;
 
-    logic [16:0]       pw_npix;
+    logic [17:0]       pw_npix;
     logic [1:0]        pw_n;
     logic [6:0]        pw_cin0, pw_cin1, pw_cout0, pw_cout1;
     logic [9:0]        pw_base0, pw_base1;
@@ -201,14 +201,18 @@ module st_engine
         .out_valid(dw_v), .out_ready(dw_r), .out_data(dw_d),
         .out_last(dw_l), .out_eol(dw_e), .out_sof(dw_s));
 
+    // The PW stage's wide input (cfg_wide) is the DW stage's 16-byte im2col
+    // output; the DW port that carries it is not in this tree yet, so the
+    // stage runs narrow here.  Both are wires for the integration to replace.
     st_pw u_pw (
         .clk(clk), .rst_n(rst_n),
-        .in_valid(dw_v), .in_ready(dw_r), .in_data(dw_d),
+        .in_valid(dw_v), .in_ready(dw_r), .in_data(dw_d), .in_wide(128'd0),
         .in_last(dw_l), .in_eol(dw_e), .in_sof(dw_s),
         .out_valid(pw_v), .out_ready(pw_r), .out_data(pw_d),
         .out_last(pw_l), .out_eol(pw_e), .out_sof(pw_s),
         .start(go && !is_pre), .busy(pw_busy),
-        .cfg_npix(pw_npix), .cfg_n(pw_n), .cfg_cin0(pw_cin0), .cfg_cin1(pw_cin1),
+        .cfg_npix(pw_npix), .cfg_wide(1'b0), .cfg_n(pw_n),
+        .cfg_cin0(pw_cin0), .cfg_cin1(pw_cin1),
         .cfg_cout0(pw_cout0), .cfg_cout1(pw_cout1),
         .cfg_pw_base0(pw_base0), .cfg_pw_base1(pw_base1),
         .cfg_rq_base0(pw_rq0), .cfg_rq_base1(pw_rq1),
@@ -405,7 +409,7 @@ module st_engine
             dw_hi     <= l0.hi;
 
             // PW stage: 1x1 layers keep the DW output grid
-            pw_npix  <= 17'(p.out_w * p.out_h);
+            pw_npix  <= 18'(p.out_w * p.out_h);
             pw_n     <= 2'(pn);
             pw_cin0  <= la.cin;   pw_cin1  <= lb.cin;
             pw_cout0 <= la.cout;  pw_cout1 <= lb.cout;
