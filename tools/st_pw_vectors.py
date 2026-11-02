@@ -1,72 +1,80 @@
 #!/usr/bin/env python3
-"""Group-stream vectors for rtl/st_accel_new/engine/st_pw.sv.
+"""Group-stream vectors for rtl/st_accel_new/engine/st_pw.sv (guided net).
 
-Writes into --out:
+One case per invocation, written into --out:
 
-  cfg.txt   configuration:  "<npix> <nin> <nout> <nlay>" then one line per
-            layer "<cin> <cout> <pw_base> <rq_base> <lo> <hi>", decimal.
-  in.hex    one group beat per line: "<data:10 hex> <last> <eol> <sof>"
-  out.hex   the expected output beats, same format
+  cfg.txt   "<npix> <nin> <nout> <nlay> <wide>", then one line per layer
+            "<cin> <cout> <pw_base> <rq_base> <lo> <hi>", decimal
+  in.hex    one input beat per line: "<128-bit hex> <last> <eol> <sof>".  A
+            wide case (cfg_wide = 1) carries 16 int8 values per beat, byte k =
+            element 16b + k; a narrow case carries four 10-bit lanes in the
+            low 40 bits (lane j = bits [10j+9:10j], the int8 code in the low
+            byte of each)
+  out.hex   the expected output beats, "<40-bit hex> <last> <eol> <sof>"
+            (four 10-bit lanes per beat)
+  pw.hex    the case's PW weight ROM words (st_gen_params.pw_word layout)
+  rq.hex    the case's requant ROM words (st_gen_params.rq_word layout)
 
-The activations are the real ones: the golden model runs on the image, and a
-case's input is that pass's DW layer applied to the pass input -- the tensor
-the engine's DW stage really hands the PW stage (it is not a DDR point).  The
-expected outputs come from st_golden.Net.conv of the case's PW layers, so the
-RTL and the model cannot disagree; every case also checks that the chain
-reproduces the model's own pass output.  Everything is bit exact: st_golden is
-the reference (docs/st-accel-engine-adr.md).
+Every case is synthetic but not arbitrary: the weights are random int8, the
+bias is a random int32 below 2**15 in magnitude, and the requant factors are
+drawn with replacement from the guided manifest's own per-layer requant
+lists, so they have the real network's magnitude and mantissa/exponent
+shape.  The expected output is st_golden.Net.conv over those layer dicts --
+the normative integer requantisation (f32_mul_round) -- never a second
+implementation.
 
-Cases (--case), all with the engine part of the pass they belong to:
+Inputs are random int8 codes in the range the layer really sees: 0..127 for
+a tensor that comes out of a relu (every case but n24_24), -127..127 where
+the producer has no clamp (n24_24's first layer), so the collector, the
+vector bank and the requant lanes are exercised with negative codes too.
 
-  enc0   enc.0.pw             32 -> 64
-  res    res.1.s1.pw          64 -> 64   (the residual chain, clamp -127..127)
-  up0    up3.0.pw + up1.0     64 -> 32 -> 32
-  up1a   up3.1.pw + up1.1     32 -> 16 -> 16
-  head   head.pw              16 -> 3    (unsigned clamp 0..255)
-  stem   the stem over im2col 27 -> 32
+Cases (--case), named after the guided net's layers (docs/st-guided-adr.md):
+  c80_80      80 -> 80, relu            (res block)
+  c80_24      80 -> 24, relu            (dec_h4)
+  c16_80      16 -> 80, relu            (enc0)
+  c24_40      24 -> 40, relu            (dec_h2)
+  c40_8       40 -> 8, relu             (to_guide)
+  c8_3u       8 -> 3, unsigned 0..255   (head)
+  w27_8       wide, 27 -> 8, relu       (guide)
+  w27_16      wide, 27 -> 16, relu      (stem)
+  w27_10_40   wide, 27 -> 10 relu -> 10 -> 40 no relu (h2g, two layers)
+  n24_24      24 -> 24 no relu -> 24 relu: signed codes through the layer-2
+              bank (an extra case, the guided net's res0.s2.pw -> dec_h4 path)
 
-The stem's input is not a tensor: the 27-value im2col vector of every pixel,
-element n = ic*9 + ky*3 + kx of the reflect-padded p0 window (n = 27 is 0),
-seven group beats per pixel.
-
-Usage: st_pw_vectors.py --case NAME --out DIR [--lines N] [--image PNG]
-
-Only the first --lines rows of the activation are used (40 by default): the
-whole image makes the simulation slower than a minute per case.
+Usage: st_pw_vectors.py --case NAME --out DIR [--pixels N] [--seed N]
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_golden import Net  # noqa: E402
+from st_golden import Net, f32_parts  # noqa: E402
+from st_gen_params import hex_lines, pw_word, rq_word  # noqa: E402
 
-MANIFEST = Path("config/manifest/ink_dw_w8a8")
-DEFAULT_IMAGE = "/tmp/stgold/in2/c0.png"
-IMG_W, IMG_H = 320, 240
+MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+IMG_W, IMG_H = 50, 40           # 2000 pixels per case
 GROUP = 4                       # lanes per group beat
+WIDE_BYTES = 16                 # int8 values per wide input beat
 
-# case -> (PW layers, DW layer of the same pass, pass)
+# name -> (input channels, [(output channels, clamp)], wide, input code range)
 #
-# The PW layers of a pass read the pass's DW output, which is not in DDR: the
-# case input is that DW layer applied to the pass input (its "in" tensor in
-# the dump), so the vector file holds what the DW stage really hands over.
-# "im2col" is the stem's DW stage in im2col mode.
+# clamp: "relu" 0..act_qmax, "u8" 0..output_qmax, "none" -act_qmax..act_qmax.
 CASES = {
-    "enc0": (["enc.0.pw"],          "enc.0.dw",  "enc0"),
-    "res":  (["res.1.s1.pw"],       "res.1.s1.dw", "res1a"),
-    "up0":  (["up3.0.pw", "up1.0"], "up3.0.dw",  "up0"),
-    "up1a": (["up3.1.pw", "up1.1"], "up3.1.dw",  "up1a"),
-    "head": (["head.pw"],           "head.dw",   "up1b"),
-    "stem": (["stem"],              "im2col",    "stem"),
+    "c80_80":    (80, [(80, "relu")],                 False, (0, 127)),
+    "c80_24":    (80, [(24, "relu")],                 False, (0, 127)),
+    "c16_80":    (16, [(80, "relu")],                 False, (0, 127)),
+    "c24_40":    (24, [(40, "relu")],                 False, (0, 127)),
+    "c40_8":     (40, [(8, "relu")],                  False, (0, 127)),
+    "c8_3u":     (8, [(3, "u8")],                     False, (0, 127)),
+    "w27_8":     (27, [(8, "relu")],                  True,  (0, 127)),
+    "w27_16":    (27, [(16, "relu")],                 True,  (0, 127)),
+    "w27_10_40": (27, [(10, "relu"), (40, "none")],   True,  (0, 127)),
+    "n24_24":    (24, [(24, "none"), (24, "relu")],   False, (-127, 127)),
 }
 
 
@@ -74,173 +82,176 @@ def ceil_div(a: int, b: int) -> int:
     return -(-a // b)
 
 
-def load_params(mdir: Path):
-    """The manifest plus the generated ROM table of the same network.
+def align_up(n: int, a: int) -> int:
+    return ceil_div(n, a) * a
 
-    The manifest describes the layers; the ROM bases (pw_base, rq_base) come
-    from st_net.json, which tools/st_gen_params.py writes next to the images.
-    """
+
+def requant_pool(mdir: Path) -> np.ndarray:
+    """Every requant factor of the guided manifest, one flat list."""
     m = json.loads((mdir / "manifest.json").read_text())
-    tab = Path("rtl/st_accel_new/gen") / m["arch"] / "st_net.json"
-    if not tab.exists():
-        sys.exit(f"st_pw_vectors: {tab} is missing, run tools/st_gen_params.py")
-    t = json.loads(tab.read_text())
-    sha = hashlib.sha256((mdir / "manifest.json").read_bytes()).hexdigest()
-    if t["manifest_sha256"] != sha:
-        sys.exit(f"st_pw_vectors: {tab} was generated from another manifest")
-    rom = {l["name"]: l for l in t["layers"]}
-    L = {}
-    for l in m["layers"]:
-        r = rom[l["name"]]
-        L[l["name"]] = dict(l, pw_base=r["pw_base"], rq_base=r["rq_base"],
-                            n_pw_words=r["n_pw_words"], n_rq_words=r["n_rq_words"])
-    return m, L
+    return np.array([r for l in m["layers"] for r in l["requant"]], np.float64)
 
 
-def synthetic_rgb(w: int = IMG_W, h: int = IMG_H) -> np.ndarray:
-    """Deterministic image for when the golden dump is not available."""
-    yy, xx = np.mgrid[0:h, 0:w]
-    r = (xx * 255 // max(w - 1, 1))
-    g = (yy * 255 // max(h - 1, 1))
-    b = ((xx + yy) * 255 // max(w + h - 2, 1))
-    return np.stack([r, g, b], axis=-1).astype(np.uint8)
+class Case(Net):
+    """A st_golden.Net over generated layers, so conv() and the integer
+    requantisation are the golden model's, bit for bit."""
+
+    def __init__(self, layers: list[dict], wts: np.ndarray):
+        self.m = {"act_qmax": 127, "output_qmax": 255}
+        self.w = wts
+        self.L = {l["name"]: l for l in layers}
+        self.qmax = 127
+        self.oqmax = 255
+        self.use_float = False
+        self.scales = {}
 
 
-def activation(net: Net, image: str):
-    """p0 of the golden network run, or the synthetic one if it is missing."""
-    if Path(image).exists():
-        rgb = np.asarray(Image.open(image).convert("RGB"))
-    else:
-        print(f"st_pw_vectors: {image} missing, using a synthetic image")
-        rgb = synthetic_rgb()
-    return net.quantize_input(rgb)
+def build(name: str, seed: int, mdir: Path):
+    """The case's layers, its weight image, and the golden's output."""
+    cin0, spec, wide, (lo_in, hi_in) = CASES[name]
+    rng = np.random.default_rng(seed)
+    pool = requant_pool(mdir)
+
+    layers, words_pw, words_rq = [], [], []
+    wts = []
+    cin = cin0
+    pw_base = rq_base = 0
+    for k, (cout, clamp) in enumerate(spec):
+        w2d = rng.integers(-127, 128, (cout, cin)).astype(np.int64)
+        bias = rng.integers(-(2**15 - 1), 2**15, cout).astype(np.int64)
+        rq = rng.choice(pool, size=cout, replace=True)
+        clamp_lo, clamp_hi = {"relu": (0, 127), "u8": (0, 255),
+                              "none": (-127, 127)}[clamp]
+        n_pw = ceil_div(cout, 8) * ceil_div(cin, 16)
+        layers.append(dict(
+            name=f"l{k}", op="conv2d", in_channels=cin, out_channels=cout,
+            groups=1, kernel=[1, 1], stride=[1, 1], reflect_pad=0,
+            in_point=0, out_point=0,
+            out_relu=(clamp == "relu"), out_unsigned=(clamp == "u8"),
+            bias_int32=[int(b) for b in bias],
+            requant=[float(r) for r in rq],
+            weight_offset=sum(w.size for w in wts),
+        ))
+        wts.append(w2d.reshape(-1))
+        for ot in range(ceil_div(cout, 8)):
+            for it in range(ceil_div(cin, 16)):
+                words_pw.append(pw_word(w2d, ot, it, cout))
+        # The drain reads four requant words per cycle from four banks, so a
+        # layer's first word must sit on a 4-word boundary (the same rule
+        # st_dw checks); the pad words between layers are zero.
+        while len(words_rq) < rq_base:
+            words_rq.append(rq_word(0, 1 << 23, 24))
+        for c in range(cout):
+            mant, exp = f32_parts(rq[c])
+            kk = 24 - exp
+            assert 16 <= kk <= 47, f"{name}[{c}]: requant k {kk} outside 16..47"
+            words_rq.append(rq_word(int(bias[c]), mant, kk))
+        # the clamp is the layer's; the ROM bases are per case
+        layers[-1]["pw_base"] = pw_base
+        layers[-1]["rq_base"] = rq_base
+        layers[-1]["lo"] = clamp_lo
+        layers[-1]["hi"] = clamp_hi
+        pw_base += n_pw
+        rq_base = align_up(rq_base + cout, 4)
+        cin = cout
+
+    net = Case(layers, np.concatenate(wts))
+    x = rng.integers(lo_in, hi_in + 1, (cin0, IMG_H, IMG_W)).astype(np.int64)
+    y = x
+    for l in layers:
+        y = net.conv(l, y)
+
+    assert pw_base <= 256, f"{name}: {pw_base} weight words exceed PW_DEPTH"
+    assert rq_base <= 4 * 512, f"{name}: requant words exceed the rq ROM"
+    for l in layers:
+        assert l["rq_base"] % 4 == 0, f"{name}: rq base is not 4-aligned"
+        assert l["rq_base"] + 8 * ceil_div(l["out_channels"], 8) <= 4 * 512
+    return layers, hex_lines(words_pw), hex_lines(words_rq), x, y, wide
 
 
-def im2col(x: np.ndarray) -> np.ndarray:
-    """CHW 3-channel padded image -> [27][h][w] im2col vectors, reflect pad 1.
+def flags(p: int, x: int, w: int, nbeat: int, b: int) -> tuple[bool, bool, bool]:
+    """(last, eol, sof) of beat b of pixel p at column x."""
+    last = b == nbeat - 1
+    return last, last and x == w - 1, p == 0 and b == 0
 
-    Element n = ic*9 + ky*3 + kx, matching the PW ROM lane layout of the stem
-    (tools/st_gen_params.py:rom_inputs).
-    """
+
+def input_beats(x: np.ndarray, wide: bool) -> list[str]:
+    """CHW int tensor -> input beat lines.  Wide: 16 int8 per beat; narrow:
+    four 10-bit lanes, the int8 code zero-extended into each."""
     c, h, w = x.shape
-    xp = np.pad(x, ((0, 0), (1, 1), (1, 1)), mode="reflect")
-    out = np.zeros((27, h, w), np.int64)
-    for ic in range(c):
-        for ky in range(3):
-            for kx in range(3):
-                out[ic * 9 + ky * 3 + kx] = xp[ic, ky:ky + h, kx:kx + w]
-    return out
-
-
-def beats(t: np.ndarray, eol_rows: int):
-    """CHW tensor -> [(data, last, eol, sof)] group beats, raster order."""
-    c, h, w = t.shape
-    g = ceil_div(c, GROUP)
-    pad = np.zeros((g * GROUP, h, w), np.int64)
-    pad[:c] = t
-    flat = pad.transpose(1, 2, 0).reshape(h * w, g * GROUP)
+    per = WIDE_BYTES if wide else GROUP
+    nb = ceil_div(c, per)
     out = []
     for p in range(h * w):
-        y, x = divmod(p, w)
-        for b in range(g):
-            data = 0
-            for j in range(GROUP):
-                v = int(flat[p, b * GROUP + j]) & 0x3FF
-                data |= v << (10 * j)
-            last = b == g - 1
-            eol = last and (x == w - 1)
-            sof = (p == 0) and (b == 0)
-            out.append((data, last, eol, sof))
+        yy, xx = divmod(p, w)
+        for b in range(nb):
+            v = 0
+            for j in range(per):
+                ch = per * b + j
+                code = int(x[ch, yy, xx]) & 0xFF if ch < c else 0
+                v |= (code if wide else code) << (8 * j if wide else 10 * j)
+            la, eo, so = flags(p, xx, w, nb, b)
+            out.append(f"{v:032x} {int(la)} {int(eo)} {int(so)}")
     return out
 
 
-def fmt(bs) -> str:
-    return "".join(f"{d:010x} {int(l)} {int(e)} {int(s)}\n" for d, l, e, s in bs)
+def output_beats(y: np.ndarray) -> list[str]:
+    """CHW int tensor -> expected group beats (four 10-bit lanes)."""
+    c, h, w = y.shape
+    nb = ceil_div(c, GROUP)
+    out = []
+    for p in range(h * w):
+        yy, xx = divmod(p, w)
+        for b in range(nb):
+            v = 0
+            for j in range(GROUP):
+                ch = GROUP * b + j
+                v |= (int(y[ch, yy, xx]) & 0x3FF if ch < c else 0) << (10 * j)
+            la, eo, so = flags(p, xx, w, nb, b)
+            out.append(f"{v:010x} {int(la)} {int(eo)} {int(so)}")
+    return out
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True, choices=sorted(CASES))
     ap.add_argument("--out", required=True)
-    ap.add_argument("--lines", type=int, default=40, help="activation rows to use")
-    ap.add_argument("--image", default=DEFAULT_IMAGE)
+    ap.add_argument("--pixels", type=int, default=0,
+                    help="pixels per case (default: the whole 50x40 grid)")
+    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--manifest", default=str(MANIFEST))
     a = ap.parse_args()
 
-    mdir = Path(a.manifest)
-    net = Net(mdir, use_float=False)
-    _, L = load_params(mdir)
+    layers, pw_hex, rq_hex, x, y, wide = build(a.case, a.seed, Path(a.manifest))
+    if 0 < a.pixels < IMG_W * IMG_H:
+        rows = ceil_div(a.pixels, IMG_W)
+        x, y = x[:, :rows], y[:, :rows]
 
-    layers, dw, passname = CASES[a.case]
-
-    with tempfile.TemporaryDirectory() as td:
-        rgb = (np.asarray(Image.open(a.image).convert("RGB"))
-               if Path(a.image).exists() else synthetic_rgb())
-        net.run(rgb, td)
-        dump = Path(td)
-
-        def dumped(nm: str) -> np.ndarray:
-            return np.load(dump / f"{nm}_in.npy").astype(np.int64)
-
-        # Rows are cut after the pass's DW layer, never before: the DW window
-        # of the rows kept must see the same pixels as on the full image.
-        # The PW layers are 1x1, so a cut after them is exact too.
-        x0 = net.quantize_input(rgb)
-        if dw == "im2col":
-            # The stem's DW stage is the im2col; its PW layer is the model's
-            # own 3x3 conv over point 0 (a 1x1 conv over the im2col vectors).
-            x = im2col(x0)[:, :a.lines]
-            y = net.conv(L[layers[0]], x0)[:, :a.lines]
-            rest = layers[1:]
-        else:
-            x = net.conv(L[dw], dumped(passname))[:, :a.lines]
-            y = x
-            rest = layers
-
-        for nm in rest:
-            y = net.conv(L[nm], y)
-
-        # the chain is the model's own pass up to its PW layers: it must
-        # reproduce the pass output, or the vectors would encode a typo
-        want = np.load(dump / f"{passname}_out.npy").astype(np.int64)[:, :a.lines]
-        if not np.array_equal(y, want):
-            sys.exit(f"st_pw_vectors: {a.case}: chain differs from {passname}_out")
-
-    cfg_layers = [L[layers[0]]] + ([L[layers[1]]] if len(layers) > 1 else [])
-
-    def clamp(l):
-        if l["out_unsigned"]:
-            return 0, int(net.m["output_qmax"])
-        if l["out_relu"]:
-            return 0, int(net.m["act_qmax"])
-        return -int(net.m["act_qmax"]), int(net.m["act_qmax"])
+    inb = input_beats(x, wide)
+    outb = output_beats(y)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-
-    inb = beats(x, x.shape[1])
-    outb = beats(y.astype(np.int64), y.shape[1])
-
-    lines = [f"{x.shape[2] * x.shape[1]} {len(inb)} {len(outb)} {len(cfg_layers)}"]
+    hdr = [f"{x.shape[1] * x.shape[2]} {len(inb)} {len(outb)} {len(layers)} {int(wide)}"]
     for k in range(2):
-        if k < len(cfg_layers):
-            l = cfg_layers[k]
-            cin = 27 if layers[k] == "stem" else l["in_channels"]
-            lo, hi = clamp(l)
-            lines.append(f"{cin} {l['out_channels']} {l['pw_base']} "
-                         f"{l['rq_base']} {lo} {hi}")
+        if k < len(layers):
+            l = layers[k]
+            hdr.append(f"{l['in_channels']} {l['out_channels']} {l['pw_base']} "
+                       f"{l['rq_base']} {l['lo']} {l['hi']}")
         else:
-            lines.append("0 0 0 0 0 0")
-
-    (out / "cfg.txt").write_text("\n".join(lines) + "\n")
-    (out / "in.hex").write_text(fmt(inb))
-    (out / "out.hex").write_text(fmt(outb))
-    print(f"st_pw_vectors: {a.case}: {x.shape[2]*x.shape[1]} pixels "
-          f"{x.shape[2]}x{x.shape[1]}x{x.shape[0]}, layers "
-          f"{' -> '.join(n for n in layers)}, {len(inb)} in beats, "
-          f"{len(outb)} out beats")
+            hdr.append("0 0 0 0 0 0")
+    (out / "cfg.txt").write_text("\n".join(hdr) + "\n")
+    (out / "in.hex").write_text("\n".join(inb) + "\n")
+    (out / "out.hex").write_text("\n".join(outb) + "\n")
+    (out / "pw.hex").write_text(pw_hex)
+    (out / "rq.hex").write_text(rq_hex)
+    shape = " -> ".join(f"{l['in_channels']}->{l['out_channels']}" for l in layers)
+    print(f"st_pw_vectors: {a.case}: {x.shape[2]}x{x.shape[1]}x{x.shape[0]} "
+          f"{'wide' if wide else 'narrow'} {shape}, "
+          f"{len(inb)} in beats, {len(outb)} out beats")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

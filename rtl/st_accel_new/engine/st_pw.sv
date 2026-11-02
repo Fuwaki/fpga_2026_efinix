@@ -1,8 +1,9 @@
-// st_pw.sv -- PW stage of the ST block engine (tiny_dw at 320x240).
+// st_pw.sv -- PW stage of the ST block engine (guided net at 640x360).
 //
 // A group-stream stage: for every pixel it runs one or two 1x1 convolutions on
 // one 8-output x 16-input int8 MAC array (st_mac8x16) and requantises the
-// result with four st_requant lanes (docs/st-accel-engine-adr.md).
+// result with four st_requant lanes (docs/st-accel-engine-adr.md,
+// docs/st-guided-adr.md).
 //
 // Throughput.  A layer op (pixel, layer) costs NO*NI array cycles, NO =
 // ceil(cout/8) output tiles and NI = ceil(cin/16) input tiles, one array cycle
@@ -12,14 +13,21 @@
 //     max( sum_k NO_k*NI_k , 2 * sum_k NO_k )  + a small constant
 //
 // cycles, k over the configured layers, when the input keeps up and the output
-// never stalls.  The requant term dominates only for cin <= 16.  The constant
-// is the collector and array latency plus the last op's requant drain
-// (6 + 2*NO cycles).  Layers are issued in the order L1(p), L2(p-1), so the two
-// layers of consecutive pixels overlap on the array.
+// never stalls.  cin <= 80 (NI <= 5) and cout <= 80 (NO <= 10), so the worst
+// 1x1 layer is 50 array cycles, 80 -> 80; the requant term dominates only for
+// cin <= 16.  The constant is the collector and array latency plus the last
+// op's requant drain (6 + 2*NO cycles).  Layers are issued in the order
+// L1(p), L2(p-1), so the two layers of consecutive pixels overlap on the
+// array.
 //
 // Structure.
-//   collector   group beats -> two 64 x int8 banks, one per pixel parity, so
-//               pixel p+1 is collected while pixel p is on the array;
+//   collector   group beats -> two 80 x int8 banks, one per pixel parity, so
+//               pixel p+1 is collected while pixel p is on the array.  Wide
+//               mode (cfg_wide) takes 16 int8 values per beat on in_wide,
+//               byte k of beat b = element 16b + k, which is what the DW
+//               stage's im2col port emits (a 27-element vector is 2 beats);
+//               narrow mode keeps 4 lanes per beat, low 8 bits of each lane
+//               (a 80-channel vector is 20 beats);
 //   issue       one op at a time, one array cycle per (ot, it) with weight word
 //               pw_base + ot*ceil(cin/16) + it;
 //   MAC         st_pw_rom (registered) -> st_mac8x16 (LAT 4) -> tile FIFO
@@ -33,7 +41,11 @@
 //               and layer, so the drain reads them from st_rq_rom, one read
 //               per half tile with the address presented one cycle ahead;
 //   output      OUT_DEPTH-beat FIFO in block RAM, credit-checked at issue, so
-//               no fixed-latency pipeline is ever back-pressured.
+//               no fixed-latency pipeline is ever back-pressured.  An op of
+//               cout = 80 speaks for 20 beats and the credit must admit the
+//               next op while those are still queued, so OUT_DEPTH has to hold
+//               two of them: 64, not 32 (32 cost 3 cycles per pixel on the
+//               16 -> 80 layer).
 //
 // The layer-2 vector bank is also two banks (pixel parity): the issue order
 // L1(p), L2(p-1) reads p-1's bank while p's results arrive in the other one.
@@ -43,14 +55,21 @@
 // Flags.  A pixel's sof/eol are ORed over its input beats; sof is placed on the
 // first output group beat of the pixel, eol and last on the final one.
 //
-// A pass is cfg_npix pixels: the stage takes no input beyond them and ends
-// when all of them are collected and every pipeline is empty, so input gaps
-// of any length are harmless.
+// A pass is cfg_npix pixels (18 bits: 640x360 = 230400): the stage takes no
+// input beyond them and ends when all of them are collected and every pipeline
+// is empty, so input gaps of any length are harmless.
+//
+// Resources.  The two vector families are flip-flop banks, 2 x 80 bytes each:
+// 2560 flops.  The PW ROM is PW_DEPTH words of 1024 bits (256 x 1024 = 26
+// RAM10 at 1024x10, the guided net's 204 words), the requant ROM RQ_DEPTH x
+// 4 x 64 bits (512 x 4 words per bank: 1496 words in all).
 module st_pw #(
     parameter int    TILE_DEPTH = 8,        // accumulator tiles in the tile FIFO
-    parameter int    OUT_DEPTH  = 32,       // output beats
-    parameter string PW_HEX     = "rtl/st_accel_new/gen/tiny_dw/st_pw.hex",
-    parameter string RQ_HEX     = "rtl/st_accel_new/gen/tiny_dw/st_rq.hex"
+    parameter int    OUT_DEPTH  = 64,       // output beats (>= 2 ops of 20)
+    parameter int    PW_DEPTH   = 256,      // PW weight words
+    parameter int    RQ_DEPTH   = 512,      // requant words per bank (4 banks)
+    parameter string PW_HEX     = "rtl/st_accel_new/gen/guided/st_pw.hex",
+    parameter string RQ_HEX     = "rtl/st_accel_new/gen/guided/st_rq.hex"
 ) (
     input  logic              clk,
     input  logic              rst_n,
@@ -59,6 +78,7 @@ module st_pw #(
     input  logic              in_valid,
     output logic              in_ready,
     input  logic [39:0]       in_data,      // 4 int8 lanes in 10-bit fields
+    input  logic [127:0]      in_wide,      // 16 int8 values, cfg_wide = 1
     input  logic              in_last,
     input  logic              in_eol,
     input  logic              in_sof,
@@ -76,7 +96,8 @@ module st_pw #(
     output logic              busy,
 
     // configuration, sampled on start
-    input  logic [16:0]       cfg_npix,     // pixels of the pass
+    input  logic [17:0]       cfg_npix,     // pixels of the pass
+    input  logic              cfg_wide,     // input beats are in_wide[127:0]
     input  logic [1:0]        cfg_n,
     input  logic [6:0]        cfg_cin0,
     input  logic [6:0]        cfg_cin1,
@@ -96,7 +117,14 @@ module st_pw #(
 
     localparam int TF_AW = (TILE_DEPTH > 1) ? $clog2(TILE_DEPTH) : 1;
     localparam int OF_AW = $clog2(OUT_DEPTH);
+    localparam int PW_AW = $clog2(PW_DEPTH);
+    localparam int RQ_AW = $clog2(RQ_DEPTH);
 
+    // The vector banks: 80 int8, the widest cin (NI = 5).
+    localparam int XB    = 80;              // bytes per bank
+    localparam int XW    = 8 * XB;          // bits per bank
+
+    // Output beats of a layer: ceil(cout/4) <= 20, five bits.
     function automatic logic [4:0] div4(input logic [6:0] v);
         div4 = 5'((8'(v) + 8'd3) >> 2);
     endfunction
@@ -109,6 +137,7 @@ module st_pw #(
 
     // ------------------------------------------------------- configuration
     logic [1:0]        n_lay;
+    logic              wide_r;
     logic [6:0]        cin_r  [2];
     logic [6:0]        cout_r [2];
     logic [9:0]        pw_r   [2];
@@ -119,13 +148,13 @@ module st_pw #(
     wire [4:0] g_l2 = div4(cout_r[1]);          // output beats, layer 2
 
     // ------------------------------------------------------- vector banks
-    logic [511:0] xa  [2];          // input vectors, bank = pixel parity
-    logic [511:0] xl2 [2];          // layer-2 input vectors, same parity
-    logic [1:0]   xl2_busy;         // layer-1 results still arriving
+    logic [XW-1:0] xa  [2];         // input vectors, bank = pixel parity
+    logic [XW-1:0] xl2 [2];         // layer-2 input vectors, same parity
+    logic [1:0]    xl2_busy;        // layer-1 results still arriving
 
     // ===================================================== input collector
     logic [1:0]  col_pix;           // pixel being collected, index mod 4
-    logic [3:0]  col_beat;          // group beat of that pixel
+    logic [4:0]  col_beat;          // beat of that pixel (<= 5 wide, <= 20 narrow)
     logic        col_act;           // pixel partially collected
     logic        col_sof, col_eol;
     logic        pix_sof [4];       // per pixel, index mod 4
@@ -135,20 +164,24 @@ module st_pw #(
     wire       col_bank  = col_pix[0];
     wire       col_room  = (2'(col_pix - p_free) < 2'd2);
     wire       in_accept = in_valid && in_ready;
+    // The pixel is complete at this clock edge: its bank is written now and
+    // read by the op's first fire next cycle, so the op may start in this
+    // cycle instead of waiting for col_pix to move (one cycle per pixel).
+    wire       col_fin   = in_accept && in_last;
 
-    logic [16:0] pix_left;          // pixels of the pass still to collect
-    assign in_ready = busy && (pix_left != 17'd0) && (col_act || col_room);
+    logic [17:0] pix_left;          // pixels of the pass still to collect
+    assign in_ready = busy && (pix_left != 18'd0) && (col_act || col_room);
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)                       pix_left <= 17'd0;
+        if (!rst_n)                       pix_left <= 18'd0;
         else if (start)                   pix_left <= cfg_npix;
-        else if (in_accept && in_last)    pix_left <= pix_left - 17'd1;
+        else if (in_accept && in_last)    pix_left <= pix_left - 18'd1;
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             col_pix  <= 2'd0;
-            col_beat <= 4'd0;
+            col_beat <= 5'd0;
             col_act  <= 1'b0;
             col_sof  <= 1'b0;
             col_eol  <= 1'b0;
@@ -158,14 +191,26 @@ module st_pw #(
             end
         end else if (start) begin
             col_pix  <= 2'd0;
-            col_beat <= 4'd0;
+            col_beat <= 5'd0;
             col_act  <= 1'b0;
             col_sof  <= 1'b0;
             col_eol  <= 1'b0;
         end else if (in_accept) begin
-            // the lanes carry int8 values in 10-bit fields: keep the low byte
-            xa[col_bank][32*col_beat +: 32] <=
-                {in_data[37:30], in_data[27:20], in_data[17:10], in_data[7:0]};
+            // The bank is XB bytes, so a legal pixel (cin <= 80) fits: wide
+            // mode has at most 5 beats of 16 and narrow at most 20 of 4.  The
+            // write is gated on that, and an over-long pixel is a stream error
+            // (the same bound the simulation checks).
+            if (wide_r ? (col_beat < 5) : (col_beat < 20)) begin
+                if (wide_r) begin
+                    // 16 int8 per beat, byte k = element 16b + k
+                    for (int j = 0; j < 16; j++)
+                        xa[col_bank][8*(16*int'(col_beat) + j) +: 8] <= in_wide[8*j +: 8];
+                end else begin
+                    // 4 lanes of int8 in 10-bit fields: keep the low byte
+                    for (int j = 0; j < 4; j++)
+                        xa[col_bank][8*(4*int'(col_beat) + j) +: 8] <= in_data[10*j +: 8];
+                end
+            end
             // the flags of the pixel: ORed over its beats, cleared at its end
             col_sof <= col_sof | in_sof;
             col_eol <= col_eol | in_eol;
@@ -175,12 +220,16 @@ module st_pw #(
                 col_sof  <= 1'b0;
                 col_eol  <= 1'b0;
                 col_pix  <= col_pix + 2'd1;
-                col_beat <= 4'd0;
+                col_beat <= 5'd0;
                 col_act  <= 1'b0;
             end else begin
-                col_beat <= col_beat + 4'd1;
+                col_beat <= col_beat + 5'd1;
                 col_act  <= 1'b1;
             end
+`ifndef SYNTHESIS
+            if (wide_r ? (col_beat == 5'd5) : (col_beat == 5'd20))
+                $error("st_pw: pixel beat %0d exceeds the %0d-byte bank", col_beat, XB);
+`endif
         end
     end
 
@@ -201,7 +250,9 @@ module st_pw #(
     // tile's last input beat, so a credit based on tf_wp - tf_rp alone would
     // let a burst overwrite entries that are not written yet.
     logic [TF_AW:0] tile_used;
-    logic [5:0]     pend;           // output beats reserved but not pushed
+    // Beats reserved but not pushed: at most the credit (OUT_DEPTH), so one
+    // bit more than the depth's log2.
+    logic [OF_AW:0] pend;
 
     // Tile FIFO and drain bookkeeping.  The pointers carry one bit more than
     // the index so that full and empty differ; the level is their difference.
@@ -229,9 +280,13 @@ module st_pw #(
 
     // L1(p) writes the layer-2 bank of parity p, which L2(p-2) reads: it may
     // start only after L2(p-2) has been issued, i.e. p_iss - p_l2 <= 1.
-    wire [1:0] l1_diff = 2'(p_iss - p_l2);
-    wire l1_cand = (n_lay == 2'd1) ? ((col_pix != p_iss) && out_room_l1)
-                                   : ((col_pix != p_iss) && (l1_diff <= 2'd1)
+    // The pixel is either already collected (col_pix moved past it) or being
+    // completed in this cycle by its last input beat (col_fin).
+    wire       col_here = (col_pix == p_iss);
+    wire       col_ok   = !col_here || col_fin;
+    wire [1:0] l1_diff  = 2'(p_iss - p_l2);
+    wire l1_cand = (n_lay == 2'd1) ? (col_ok && out_room_l1)
+                                   : (col_ok && (l1_diff <= 2'd1)
                                       && !xl2_busy[p_iss[0]] && out_room_l1);
     wire l2_cand = (n_lay == 2'd2) && (p_l2 != p_iss)
                 && !xl2_busy[p_l2[0]] && out_room_l2;
@@ -252,7 +307,7 @@ module st_pw #(
     wire       iss_final = l2_go || (n_lay == 2'd1);
     wire [4:0] iss_beats = l2_go ? g_l2 : ((n_lay == 2'd1) ? g_l1 : 5'd0);
 
-    wire [511:0] op_vec = op_lyr ? xl2[op_bank] : xa[op_bank];
+    wire [XW-1:0] op_vec = op_lyr ? xl2[op_bank] : xa[op_bank];
 
     // the beat's operand tile: 16 int8 lanes, zero beyond cin
     logic [15:0][7:0] x_tile;
@@ -265,8 +320,9 @@ module st_pw #(
     end
 
     // weight word: pw_base + ot*ni + it (the ROM is tile-major)
-    wire [9:0]  pw_off  = 10'(op_ot) * 10'(op_ni) + 10'(op_it);
-    wire [8:0]  pw_addr = 9'(op_pw + pw_off);
+    wire [9:0]       pw_off  = 10'(op_ot) * 10'(op_ni) + 10'(op_it);
+    wire [9:0]       pw_sum  = 10'(op_pw) + pw_off;
+    wire [PW_AW-1:0] pw_addr = PW_AW'(pw_sum);
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -303,8 +359,13 @@ module st_pw #(
                 op_bank <= iss_pix[0];
                 op_cin  <= l2_go ? cin_r[1]  : cin_r[0];
                 op_pw   <= l2_go ? pw_r[1]   : pw_r[0];
-                op_sof  <= pix_sof[iss_pix];
-                op_eol  <= pix_eol[iss_pix];
+                // a layer-1 op may start on the cycle its pixel's last input
+                // beat is taken; that pixel's flags are still in the running
+                // OR then, not in pix_sof yet
+                op_sof  <= (l2_go || !(col_fin && (iss_pix == col_pix)))
+                           ? pix_sof[iss_pix] : (col_sof | in_sof);
+                op_eol  <= (l2_go || !(col_fin && (iss_pix == col_pix)))
+                           ? pix_eol[iss_pix] : (col_eol | in_eol);
                 op_ot   <= 4'd0;
                 op_it   <= 4'd0;
                 op_no   <= div8(l2_go ? cout_r[1] : cout_r[0]);
@@ -335,7 +396,7 @@ module st_pw #(
     // w_s1).
     logic             s0_vld, s0_first, s0_last;
     logic [15:0][7:0] s0_x;
-    logic [8:0]       s0_pwaddr;
+    logic [PW_AW-1:0] s0_pwaddr;
     logic             s1_vld, s1_first, s1_last;
     logic [15:0][7:0] s1_x;
     logic [1023:0]    pw_dout;
@@ -369,7 +430,7 @@ module st_pw #(
         end
     end
 
-    st_pw_rom #(.DEPTH(512), .HEX(PW_HEX)) u_pw_rom (
+    st_pw_rom #(.DEPTH(PW_DEPTH), .HEX(PW_HEX)) u_pw_rom (
         .clk  (clk),
         .addr (s0_pwaddr),
         .dout (pw_dout)
@@ -472,11 +533,12 @@ module st_pw #(
                               + 11'({7'd0, nx_tag[7:4]}) * 11'd8
                               + 11'(nx_half ? 11'd4 : 11'd0);
 
-    // four banks of 512 words: a read returns the four channels of one half
+    // four banks of RQ_DEPTH words: a read returns the four channels of one
+    // half tile
     logic [3:0][63:0] rq_banks;
-    st_rq_rom #(.NB(4), .DEPTH(512), .HEX(RQ_HEX)) u_rq_rom (
+    st_rq_rom #(.NB(4), .DEPTH(RQ_DEPTH), .HEX(RQ_HEX)) u_rq_rom (
         .clk  (clk),
-        .addr (9'(nx_word >> 2)),
+        .addr (RQ_AW'(nx_word >> 2)),
         .dout (rq_banks)
     );
 
@@ -543,7 +605,7 @@ module st_pw #(
 
     // layer 2, or the only layer of a one-layer pass, is the output
     wire       wb_final = wb_lyr || (n_lay == 2'd1);
-    wire [6:0] wb_cout  = wb_lyr ? cout_r[1] : cout_r[0];   // 1..64
+    wire [6:0] wb_cout  = wb_lyr ? cout_r[1] : cout_r[0];   // 1..80
     wire [4:0] wb_need  = wb_lyr ? g_l2 : g_l1;
     wire       wb_keep  = (wb_g < wb_need);
 
@@ -615,10 +677,10 @@ module st_pw #(
 
     // output beats reserved by issued ops, released one per push
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)      pend <= 6'd0;
-        else if (start)  pend <= 6'd0;
-        else             pend <= pend + 6'(issue && iss_final ? iss_beats : 5'd0)
-                                     - 6'(beat_push);
+        if (!rst_n)      pend <= '0;
+        else if (start)  pend <= '0;
+        else             pend <= pend + (OF_AW+1)'(issue && iss_final ? iss_beats : 5'd0)
+                                     - 1'(beat_push);
     end
 
     // ---------------------------------------------------------------- busy
@@ -626,7 +688,7 @@ module st_pw #(
 
     wire pipe_empty = !op_act && (tile_used == '0) && (tile_occ == '0)
                    && (dr_phase == 1'b0) && !lane_out_valid && of_empty
-                   && (pend == 6'd0) && !col_act && (col_pix == p_free)
+                   && (pend == '0) && !col_act && (col_pix == p_free)
                    && (n_lay == 2'd1 || (p_l2 == p_iss));
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -634,7 +696,7 @@ module st_pw #(
             busy_q <= 1'b0;
         end else if (start) begin
             busy_q <= 1'b1;
-        end else if (busy_q && pipe_empty && (pix_left == 17'd0)) begin
+        end else if (busy_q && pipe_empty && (pix_left == 18'd0)) begin
             busy_q <= 1'b0;
         end
     end
@@ -644,7 +706,8 @@ module st_pw #(
     // ------------------------------------------------- configuration latches
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            n_lay <= 2'd1;
+            n_lay  <= 2'd1;
+            wide_r <= 1'b0;
             for (int k = 0; k < 2; k++) begin
                 cin_r[k]  <= 7'd1;
                 cout_r[k] <= 7'd1;
@@ -655,6 +718,7 @@ module st_pw #(
             end
         end else if (start) begin
             n_lay     <= cfg_n;
+            wide_r    <= cfg_wide;
             cin_r[0]  <= cfg_cin0;
             cin_r[1]  <= cfg_cin1;
             cout_r[0] <= cfg_cout0;
@@ -670,11 +734,48 @@ module st_pw #(
         end
     end
 
-
+    // Configuration bounds.  The ROM addresses are parameterised, so a layer
+    // outside the images would wrap an address instead of failing: refuse it
+    // here rather than in the data.  A requant read takes four words from four
+    // banks, so a layer's first word must be 4-aligned, exactly the rule
+    // tools/st_gen_params.py and st_dw keep.
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n && start) begin
+            for (int k = 0; k < 2; k++) begin
+                logic [6:0]  cin, cout;
+                logic [9:0]  pwb;
+                logic [10:0] rqb;
+                int          n_words;
+                cin  = (k == 0) ? cfg_cin0  : cfg_cin1;
+                cout = (k == 0) ? cfg_cout0 : cfg_cout1;
+                pwb  = (k == 0) ? cfg_pw_base0 : cfg_pw_base1;
+                rqb  = (k == 0) ? cfg_rq_base0 : cfg_rq_base1;
+                if (k >= int'(cfg_n)) continue;
+                n_words = int'(div8(cout)) * int'(div16(cin));
+                if (cin < 7'd1 || cout < 7'd1)
+                    $error("st_pw: layer %0d has a zero channel count", k);
+                else if (int'(cin) > XB || int'(cout) > 80)
+                    $error("st_pw: layer %0d (%0d -> %0d) exceeds 80 channels",
+                           k, cin, cout);
+                else if (int'(pwb) + n_words > PW_DEPTH)
+                    $error("st_pw: layer %0d weights exceed PW_DEPTH", k);
+                else if (rqb[1:0] != 2'd0)
+                    $error("st_pw: layer %0d rq base is not a multiple of 4", k);
+                else if (int'(rqb) + 8 * int'(div8(cout)) > 4 * RQ_DEPTH)
+                    $error("st_pw: layer %0d requant words exceed the rq ROM", k);
+            end
+        end
+    end
+`endif
 
     initial begin
         if (LAT_RQ != 6 || $clog2(OUT_DEPTH) != OF_AW)
             $error("st_pw: pipeline constants disagree with the delay lines");
+        if (PW_DEPTH < 2 || (1 << PW_AW) != PW_DEPTH)
+            $error("st_pw: PW_DEPTH must be a power of two");
+        if (RQ_DEPTH < 2 || (1 << RQ_AW) != RQ_DEPTH)
+            $error("st_pw: RQ_DEPTH must be a power of two");
     end
 
 endmodule
