@@ -128,6 +128,10 @@ def decode_vid(got):
             "layer1_reads":   p["st_tiles"] >> 16,
             "layer1_bad_lines": p["st_tiles"] & 0xFFFF,
             "seq_gap":        p["last_y"],
+            # ENABLE_ST_ACCEL builds: bad_words carries the block engine's
+            # cycles for the last frame (100 MHz core_clk)
+            "st_cycles":      p["cap_tiles"],
+            "st_fps_bound":   round(100e6 / p["cap_tiles"], 1) if p["cap_tiles"] else None,
         }
     errs = [vid.get("display", {}).get("isp_ring_err"), vid.get("camera", {}).get("isp_ring_err"),
             vid.get("selftest", {}).get("ring_proto_err"), vid.get("proc", {}).get("ring_err")]

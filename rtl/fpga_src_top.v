@@ -595,6 +595,7 @@ vid_pkg::ring_p_op_e            st_dst_op;
 wire [vid_pkg::SEQ_W-1:0]       st_dst_src_seq;
 wire [vid_pkg::RING_SLOT_W-1:0] st_dst_slot;
 wire [vid_pkg::SEQ_W-1:0]       st_pr_frames, st_pr_miss, st_pr_errors, st_pr_skipped;
+wire [31:0]                     st_pr_cycles;   // engine cycles of the last frame
 
 generate
 if (ENABLE_ST_ACCEL) begin : gen_st_accel
@@ -625,7 +626,6 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
 
     // ── st_accel_wrapper: takes each new ISP frame, writes the PROC ring ────
     wire accel_busy;
-    wire [31:0] st_pr_cycles;   // engine cycles of the last frame (telemetry later)
     st_accel_wrapper u_st_accel_wrapper (
         .clk            (core_clk),
         .rst_n          (vid_rst_n),
@@ -671,6 +671,7 @@ end else begin : gen_st_accel_off
     assign st_pr_miss     = '0;
     assign st_pr_errors   = '0;
     assign st_pr_skipped  = '0;
+    assign st_pr_cycles   = '0;
     assign accel_prdata  = 32'd0;
     assign accel_pready  = w_soc_apb_psel & ~ui_hit;
     assign accel_pslverr = 1'b0;
@@ -1328,6 +1329,8 @@ reg [7:0]  dbg_seq = 8'd0;
 // wide mux off the telemetry path.
 vid_pkg::vid_status_t vid_st_s2;
 always @(posedge core_clk) vid_st_s2 <= w_vid_status;
+reg [31:0] st_cycles_s2 = 32'd0;
+always @(posedge core_clk) st_cycles_s2 <= st_pr_cycles;
 reg [7:0]  dbg_msg [0:MSG_LEN-1];
 integer dbg_i;
 reg [7:0] dbg_crc;
@@ -1426,8 +1429,10 @@ always @(posedge core_clk) begin
 				c_last_commit_addr <= cp_err_sticky;
 			end
 			default: begin   // DMA self-test, processing, layer 1
+				// With ENABLE_ST_ACCEL the self-test is off and its bad-word
+				// count gives way to the engine cycles of the last frame.
 				c_cap_samples  <= {vid_st_s2.tc_frames, vid_st_s2.tc_bad_frames};
-				c_cap_tiles    <= vid_st_s2.tc_bad_words;
+				c_cap_tiles    <= ENABLE_ST_ACCEL ? st_cycles_s2 : vid_st_s2.tc_bad_words;
 				c_commit_count <= {vid_st_s2.tw_frames, vid_st_s2.tw_errors};
 				c_st_frame     <= {vid_st_s2.dr1_frames, vid_st_s2.cp1_bad_lines};
 				c_last_x       <= vid_st_s2.pr_frames;
