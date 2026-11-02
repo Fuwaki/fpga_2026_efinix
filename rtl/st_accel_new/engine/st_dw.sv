@@ -24,8 +24,10 @@
 // ------------------------------------------------------------------ window
 // Line storage: two st_line_ram instances (WORDS = 2560 group words of 40
 // bit) used as a ping-pong store by row parity; row r is written into slot
-// r%2.  One st_line_ram is one RAM10 chain of 10 blocks, so the line store is
-// 2 x 10 = 20 RAM10 of 2560 x 40.
+// r%2.  Each instance is a 2048-word and a 512-word bank, 8 + 2 = 10 RAM10,
+// so the line store is 2 x 10 = 20 RAM10 of 2560 x 40: Efinity rounds a
+// non-power-of-two depth up, so one flat 2560-deep array would cost the
+// 4096-deep shape, 20 RAM10 per instance.
 //
 // While input row r streams (r >= 1) every beat at address a reads slot
 // (r-1)%2, which holds row r-1, and slot r%2, which holds row r-2 (garbage
@@ -43,9 +45,15 @@
 // three taps travel as one 120-bit column word.
 //
 // Columns: the three row taps feed a 120-bit column delay line in pixel
-// steps, a circular buffer of 32 entries (2 x 16 groups) of registers with
-// an asynchronous read.  The beat for (x, g) is the newest column; the
+// steps, two shift registers of 32 entries (2 x 16 groups) with one
+// asynchronous tap each.  The beat for (x, g) is the newest column; the
 // entries G and 2G pushes older are columns x-1 and x-2 of the same group.
+// Two copies, not one array with two read ports: the Titanium has no
+// distributed RAM, so one array with two asynchronous reads becomes 3840
+// flip-flops plus two 120-way read muxes, while a shift register with one tap
+// per copy becomes SRL8 cells (3840 FF + 3046 LUT against 960 SRL8 + 486
+// LUT, measured with the probe).
+//
 // Column x emits output column xo = x-1 from columns x-2, x-1 and x, with
 // the reflect at xo = 0 taking the left column from the newest beat.  After
 // the last column W-1 of a row the G flush beats of xo = W-1 are replayed
@@ -75,14 +83,20 @@
 // ------------------------------------------------------- latency and flow
 // A window beat accepted in cycle t reaches the FIFO in cycle t + 11:
 //
-//   t        A  accept; the line address goes to both RAMs, the weight and
-//               rq ROM addresses are presented
-//   t+1      B  line RAM and ROM data, row taps, column delay line
-//   t+2      C  registered window, weight word, rq words
+//   t        A  accept; the line address goes to both RAMs, the weight ROM
+//               address is presented
+//   t+1      B  line RAM and weight ROM data, row taps, column delay line
+//   t+2      C  registered window and weight word
 //   t+3         the 36 products
 //   t+4         three kernel-row sums
-//   t+5         the biased accumulators
+//   t+5         the biased accumulators; the rq ROM (addressed at t+3, three
+//               cycles behind the window) supplies the bias in this cycle
 //   t+6..t+11   the four requant lanes (LAT = 6)
+//
+// The rq word is only needed from t+5 on, so its ROM read is held back three
+// cycles instead of the 55-bit word riding down the pipeline: the ROM's own
+// output register lands the bias on the accumulator, and one 24+6-bit
+// register per lane carries mantissa and shift to the lanes.
 //
 // IM2COL registers the window at C too and emits its 7 beats on the seven
 // cycles after C, so it takes one window beat every 8 cycles -- the stem's 8
@@ -176,6 +190,19 @@ module st_dw (
     logic [287:0] dw_dout;
     logic [8:0]   rq_addr;
     logic [RQ_BANKS-1:0][63:0] rq_dout;
+    logic [2:0][4:0] gpipe;                // the issued group, 1..3 cycles back
+
+    // The rq word is needed twice, late: the accumulator stage wants its
+    // bias and the requant lanes one stage after that want its mantissa and
+    // shift.  The address therefore runs three cycles behind the window, so
+    // the ROM's own output register lands the word on the bias adder, and
+    // one 30-bit register per lane carries mant/k on to the lanes.  That
+    // replaces the four 55-bit copies of the word that used to travel the
+    // pipeline.  The conveyor shifts every cycle, like the valid bits it
+    // travels beside: a beat issued in cycle t is in the accumulator stage
+    // in cycle t+4, and the ROM read of its group is then four cycles old.
+    always_ff @(posedge clk)
+        gpipe <= {gpipe[1:0], grp};
 
     st_dw_rom #(.DEPTH(DW_DEPTH)) u_dw_rom (
         .clk  (clk),
@@ -291,8 +318,9 @@ module st_dw (
 
     assign ra      = addr_a;
     assign dw_addr = dwb + 8'(grp);
-    // rq words of the group: cfg_rq_base + 4g, an NB-aligned word address
-    assign rq_addr = 9'((rqb + {4'd0, grp, 2'b00}) >> 2);
+    // rq words of the group: cfg_rq_base + 4g, an NB-aligned word address.
+    // The read runs three cycles behind the window, hence gpipe[2].
+    assign rq_addr = 9'((rqb + {4'd0, gpipe[2], 2'b00}) >> 2);
 
     // Flags of the emitted beat.  A flush beat is column W-1, so the last
     // group of the flush ends the output line; stride 2 has no flush, and
@@ -340,31 +368,34 @@ module st_dw (
     wire [39:0]  b_top   = b_top_ref ? b_data : tap_top;
     wire [119:0] tri_new = {b_top, tap_mid, b_bot};
 
-    // Column delay line, circular over 32 entries.  wp is the index of the
-    // beat pushed this cycle, so the taps are G and 2G pushes behind it; a
+    // Column delay line: two shift registers of 32 column words, the newest
+    // at entry 0 and one push per entry, so entry k holds the beat pushed k
+    // pushes ago.  The taps are G and 2G pushes behind the newest beat; a
     // flush beat reads G - g and 2G - g behind it, which are the entries of
-    // columns W-1 and W-2 of group g (wp does not move during a flush).
-    logic [119:0] dline [DLINE];
-    logic [4:0]   wp;
+    // columns W-1 and W-2 of group g (the line does not shift during a
+    // flush).  Both offsets are at most 2G <= 32, so the read index is
+    // offset - 1 and never leaves the array.
+    //
+    // Two copies rather than one array with two read ports: the Titanium has
+    // no distributed RAM, so an array with two asynchronous reads is 3840
+    // flip-flops plus two read muxes (measured: 3840 FF, 3046 LUT), while a
+    // shift register with one asynchronous tap per copy maps to SRL8 cells
+    // (measured: 960 SRL8, 486 LUT).
+    logic [DLINE-1:0][119:0] dl_m, dl_lr;
 
     always_ff @(posedge clk) begin
-        if (b_push)
-            dline[wp] <= tri_new;
-    end
-
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            wp <= 5'd0;
-        else if (b_push)
-            wp <= wp + 5'd1;
+        if (b_push) begin
+            dl_m  <= {dl_m[DLINE-2:0], tri_new};
+            dl_lr <= {dl_lr[DLINE-2:0], tri_new};
+        end
     end
 
     wire [5:0] off_m   = b_flush ? (6'(cg) - 6'(b_grp)) : 6'(cg);
     wire [5:0] off_lr  = b_flush ? (6'(cg) * 6'd2 - 6'(b_grp)) : 6'(cg) * 6'd2;
-    wire [4:0] idx_m   = 5'(6'(wp) - off_m);
-    wire [4:0] idx_lr  = 5'(6'(wp) - off_lr);
-    wire [119:0] tap_m  = dline[idx_m];
-    wire [119:0] tap_lr = dline[idx_lr];
+    wire [4:0] idx_m   = 5'(off_m - 6'd1);
+    wire [4:0] idx_lr  = 5'(off_lr - 6'd1);
+    wire [119:0] tap_m  = dl_m[idx_m];
+    wire [119:0] tap_lr = dl_lr[idx_lr];
 
     wire [119:0] col_l = b_left_ref ? tri_new : tap_lr;
     wire [119:0] col_m = tap_m;
@@ -386,7 +417,6 @@ module st_dw (
     // captures window, weight word and rq words together.
     logic [359:0] win_c;
     logic [287:0] wgt_c;
-    logic [54:0]  rq_c [4];                // {k, mant, bias[24:0]}, per lane
     logic         c_dw_vld, c_im_vld;
     logic [2:0]   c_dw_flags;
     logic         c_im_eol, c_im_sof;
@@ -405,8 +435,6 @@ module st_dw (
         if (b_emit) begin
             win_c   <= win;
             wgt_c   <= dw_dout;
-            for (int j = 0; j < 4; j++)
-                rq_c[j] <= {rq_dout[j][61:56], rq_dout[j][55:32], rq_dout[j][24:0]};
             c_dw_flags <= {b_sof, b_eol, b_last};
             c_im_eol   <= b_eol;
             c_im_sof   <= b_sof;
@@ -419,17 +447,20 @@ module st_dw (
     logic signed [24:0] acc [4];
     logic        d_vld, e_vld, f_vld;
     logic [2:0]  d_flags, e_flags, f_flags;
-    logic [54:0] rq_d [4], rq_e [4], rq_f [4];
 
-    // The rq words leave stage C with the window, but the bias is not needed
-    // until the accumulator stage and the mantissa one stage after that, so
-    // they travel with the beats: rq_e holds the bias of the beat whose row
-    // sums are being added, rq_f the parameters of the one in the lanes.
+    // The rq word the lanes need, captured one stage after the ROM read: the
+    // ROM address lags the window by three stages (g3), so rq_dout holds the
+    // word of the beat in the accumulator stage and its bias is added there,
+    // while this register holds mant/k for the lanes one stage later.
+    logic [23:0] rq_mant [4];
+    logic [5:0]  rq_k [4];
+
     always_ff @(posedge clk) begin
         for (int j = 0; j < 4; j++) begin
-            if (c_dw_vld) rq_d[j] <= rq_c[j];
-            if (d_vld)    rq_e[j] <= rq_d[j];
-            if (e_vld)    rq_f[j] <= rq_e[j];
+            if (e_vld) begin
+                rq_k[j]    <= rq_dout[j][61:56];
+                rq_mant[j] <= rq_dout[j][55:32];
+            end
         end
     end
 
@@ -472,7 +503,7 @@ module st_dw (
             end
             if (e_vld)
                 acc[j] <= rowsum[j][0] + rowsum[j][1] + rowsum[j][2] +
-                          $signed(rq_e[j][24:0]);
+                          $signed(rq_dout[j][24:0]);
         end
     end
 
@@ -487,8 +518,8 @@ module st_dw (
             .rst_n     (rst_n),
             .in_valid  (f_vld),
             .in_x      (acc[j]),
-            .in_mant   (rq_f[j][48:25]),
-            .in_k      (rq_f[j][54:49]),
+            .in_mant   (rq_mant[j]),
+            .in_k      (rq_k[j]),
             .in_lo     (clo),
             .in_hi     (chi),
             .in_tag    (f_flags),
