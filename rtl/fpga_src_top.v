@@ -827,7 +827,7 @@ vid_subsystem #(
     .PROC_EN         (VID_SPLIT),
     .PROC_MODE       (VID_PROC_MODE),
     .COMP_CFG        (VID_COMP),
-    .L1_CROP         (ENABLE_ST_ACCEL),   // PROC has only its right half
+    .CROP_VIEW       (1),                 // each layer reads what it shows
     .PROC_EXT        (ENABLE_ST_ACCEL),   // the accelerator is the PROC engine
     .EXT_EN          (ENABLE_ST_ACCEL)
 ) u_vid (
