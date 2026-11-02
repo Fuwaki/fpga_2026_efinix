@@ -136,7 +136,7 @@ tb_st_pw:
 # pixels whose statistics hit the ends of the datapath, and the real FiLM of
 # the net with its coefficients written through the port.  Each case runs with
 # random gaps and back-pressure, then clean for the cycles/pixel figure.
-NORM_CASES := ln ln_syn film
+NORM_CASES := ln ln_syn ln_min film
 NORM_DIR   := $(OBJ)/tb_st_norm
 EXTRA_tb_st_norm := $(ST_ENG)
 

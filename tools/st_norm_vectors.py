@@ -22,6 +22,10 @@ Cases (--case):
   ln_syn  2000 synthetic pixels with hand-picked statistics: all-equal
           pixels (D = 1), the +-254 extremes, big S with small D, and
           uniform random int9 codes in [-254, 254].
+  ln_min  the real coefficients of channels 0..31 (N = 32, cfg_g = 8, the
+          stage's LN lower bound) over 512 random pixels: the shortest pixel
+          period the LN pipeline runs at, and a channel count that is not
+          the network's 80.
   film    in = net.ddr[17] (40 ch, 320x180), coefficients =
           film_coeffs(spec, ddr[17].sum((1,2)), 57600), exp = net.ddr[18].
 
@@ -164,6 +168,29 @@ def case_ln_syn(out: Path) -> None:
     print(f"st_norm_vectors: ln_syn: {SYN_PIX} pixels, {g_n} groups")
 
 
+def case_ln_min(out: Path) -> None:
+    """LN at the stage's minimum geometry: G = 8, N = 32.
+
+    The coefficients are the real ones of channels 0..31 (the first 32 words
+    of st_ln.hex), and E = max(1, round(eps*N^2/in^2)) is still 1 at N = 32,
+    which the model asserts here rather than the generator (which only sees
+    the network's N = 80).
+    """
+    spec = dict(SPEC["norm_layers"][0])
+    c = 32
+    spec["channels"] = c
+    spec["gamma"] = spec["gamma"][:c]
+    spec["beta"] = spec["beta"][:c]
+    e_add, _, _ = G.ln_consts(spec)
+    if int(e_add) != 1:
+        sys.exit(f"st_norm_vectors: FAIL ln_min needs E = 1, model says {int(e_add)}")
+    rng = np.random.default_rng(20261103)
+    x = rng.integers(-254, 255, (c, 1, 512))
+    exp = G.ln_int(x, spec, QMAX)
+    write_case(out, 1, c // GROUP, x, exp)
+    print(f"st_norm_vectors: ln_min: {c} ch, 8 groups, 512 pixels, E = 1")
+
+
 def case_film(out: Path, cache: Path) -> None:
     spec = SPEC["film_layers"][0]
     x = np.load(cache / f"p{FILM_IN}.npy").astype(np.int64)
@@ -193,7 +220,8 @@ def main() -> int:
     global SPEC, QMAX
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--case", required=True, choices=["ln", "ln_syn", "film"])
+    ap.add_argument("--case", required=True,
+                    choices=["ln", "ln_syn", "ln_min", "film"])
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--image", default=DEFAULT_IMAGE)
@@ -209,6 +237,8 @@ def main() -> int:
         case_ln(a.out, cache)
     elif a.case == "ln_syn":
         case_ln_syn(a.out)
+    elif a.case == "ln_min":
+        case_ln_min(a.out)
     else:
         case_film(a.out, cache)
     return 0
