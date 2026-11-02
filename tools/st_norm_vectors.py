@@ -172,11 +172,16 @@ def case_film(out: Path, cache: Path) -> None:
     if plane != FILM_PLANE:
         sys.exit(f"st_norm_vectors: FAIL plane {plane} != {FILM_PLANE}")
     mul, off, _ = G.film_coeffs(spec, x.sum((1, 2)), plane)
+    # the golden's own film_int, and the same affine computed from the
+    # coefficients the testbench will write through the port: they must agree
+    exp = G.film_int(x, spec, QMAX)
     y = (x * mul[:, None, None] + off[:, None, None]
          + (1 << (G.FILM_P - 1))) >> G.FILM_P
-    exp = np.clip(y, -QMAX, QMAX)
+    y = np.clip(y, -QMAX, QMAX)
     if not np.array_equal(exp, ref):
-        sys.exit(f"st_norm_vectors: FAIL film_coeffs affine != ddr[{FILM_OUT}]")
+        sys.exit(f"st_norm_vectors: FAIL film_int != ddr[{FILM_OUT}]")
+    if not np.array_equal(exp, y):
+        sys.exit("st_norm_vectors: FAIL the coefficient affine != film_int")
     g_n = -(-x.shape[0] // GROUP)
     write_case(out, 2, g_n, x, exp, (mul, off))
     print(f"st_norm_vectors: film: {x.shape[0]} ch {x.shape[2]}x{x.shape[1]}, "
