@@ -250,7 +250,9 @@ module st_pw #(
     // tile's last input beat, so a credit based on tf_wp - tf_rp alone would
     // let a burst overwrite entries that are not written yet.
     logic [TF_AW:0] tile_used;
-    logic [5:0]     pend;           // output beats reserved but not pushed
+    // Beats reserved but not pushed: at most the credit (OUT_DEPTH), so one
+    // bit more than the depth's log2.
+    logic [OF_AW:0] pend;
 
     // Tile FIFO and drain bookkeeping.  The pointers carry one bit more than
     // the index so that full and empty differ; the level is their difference.
@@ -675,10 +677,10 @@ module st_pw #(
 
     // output beats reserved by issued ops, released one per push
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)      pend <= 6'd0;
-        else if (start)  pend <= 6'd0;
-        else             pend <= pend + 6'(issue && iss_final ? iss_beats : 5'd0)
-                                     - 6'(beat_push);
+        if (!rst_n)      pend <= '0;
+        else if (start)  pend <= '0;
+        else             pend <= pend + (OF_AW+1)'(issue && iss_final ? iss_beats : 5'd0)
+                                     - 1'(beat_push);
     end
 
     // ---------------------------------------------------------------- busy
@@ -686,7 +688,7 @@ module st_pw #(
 
     wire pipe_empty = !op_act && (tile_used == '0) && (tile_occ == '0)
                    && (dr_phase == 1'b0) && !lane_out_valid && of_empty
-                   && (pend == 6'd0) && !col_act && (col_pix == p_free)
+                   && (pend == '0) && !col_act && (col_pix == p_free)
                    && (n_lay == 2'd1 || (p_l2 == p_iss));
 
     always_ff @(posedge clk or negedge rst_n) begin
