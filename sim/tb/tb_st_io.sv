@@ -1,8 +1,8 @@
 // tb_st_io.sv -- st_unpack (+MODE=0) or st_pack (+MODE=1) against
-// tools/st_io_vectors.py: real golden activations, DDR beats from
-// st_golden.ddr_image.  +DIR holds in.hex / out.hex; geometry comes as
+// tools/st_io_vectors.py: the guided net's golden activations, DDR beats from
+// Guided.ddr_image.  +DIR holds in.hex / out.hex; geometry comes as
 // plusargs.  Random input gaps and output back-pressure; the case runs twice
-// back to back to cover the restart.
+// back to back to cover the restart, and prints both runs' cycle counts.
 module tb_st_io;
     logic clk = 0, rst_n = 0;
     always #5 clk = ~clk;

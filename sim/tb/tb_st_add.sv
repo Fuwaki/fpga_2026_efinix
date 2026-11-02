@@ -1,7 +1,7 @@
 // tb_st_add.sv -- st_add against tools/st_io_vectors.py: trunk and aux are
-// golden activations, the expected sum is st_golden's add.  +DIR holds
-// t.hex / a.hex / out.hex, the factor comes as +MANT / +K.  The two inputs
-// get independent random gaps, the output random back-pressure.
+// the guided net's golden activations, the expected sum is the golden add.
+// +DIR holds t.hex / a.hex / out.hex, the factor comes as +MANT / +K.  The
+// two inputs get independent random gaps, the output random back-pressure.
 module tb_st_add;
     logic clk = 0, rst_n = 0;
     always #5 clk = ~clk;
