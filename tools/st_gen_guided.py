@@ -105,6 +105,8 @@ def build(mdir: Path):
             mant, exp = f32_parts(l["requant"][oc])
             k = 24 - exp
             assert 16 <= k <= 47, f"{l['name']}[{oc}]: k={k} outside the lane's 16..47"
+            assert -2**19 <= l["bias_int32"][oc] < 2**19, \
+                f"{l['name']}[{oc}]: bias outside st_rq_rom's 20-bit form"
             rq_words.append(rq_word(int(l["bias_int32"][oc]), mant, k))
         assert cin < (1 << W_CIN) and cout < (1 << W_COUT), f"{l['name']}: channels"
         ltbl.append(dict(index=layers.index(l), name=l["name"], kind=kind, cin=cin, cout=cout,
