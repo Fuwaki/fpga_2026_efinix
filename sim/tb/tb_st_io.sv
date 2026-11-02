@@ -1,8 +1,8 @@
 // tb_st_io.sv -- st_unpack (+MODE=0) or st_pack (+MODE=1) against
-// tools/st_io_vectors.py: real golden activations, DDR beats from
-// st_golden.ddr_image.  +DIR holds in.hex / out.hex; geometry comes as
+// tools/st_io_vectors.py: the guided net's golden activations, DDR beats from
+// Guided.ddr_image.  +DIR holds in.hex / out.hex; geometry comes as
 // plusargs.  Random input gaps and output back-pressure; the case runs twice
-// back to back to cover the restart.
+// back to back to cover the restart, and prints both runs' cycle counts.
 module tb_st_io;
     logic clk = 0, rst_n = 0;
     always #5 clk = ~clk;
@@ -61,6 +61,7 @@ module tb_st_io;
                                        : {p_od, 1'b0, p_sof, p_eol};
 
     int ii = 0, oi = 0, errs = 0, n_in, n_out, rep = 0;
+    int cyc = 0, cyc0 = 0, cyc1 = 0, cyc2 = 0;   // cycles: this run, run 1, run 2
 
     // input driver: random gaps, holds a beat until taken
     always @(posedge clk) begin
@@ -74,6 +75,7 @@ module tb_st_io;
                 cur     <= vin[ii % n_in];
                 i_valid <= 1'b1;
             end
+            cyc++;
         end
         o_ready <= $urandom_range(99) < 70;
     end
@@ -90,11 +92,14 @@ module tb_st_io;
         end
 
     task automatic run;
+        cyc0 = cyc;
         @(negedge clk);
         start = 1;
         @(negedge clk);
         start = 0;
         wait (!busy);
+        if (rep == 0) cyc1 = cyc - cyc0;
+        else          cyc2 = cyc - cyc0;
     endtask
 
     initial begin
@@ -117,7 +122,7 @@ module tb_st_io;
         if (errs != 0 || oi != 2 * n_out || ii != 2 * n_in)
             $fatal(1, "tb_st_io %s FAIL %0d errors, %0d of %0d outputs, %0d of %0d inputs",
                    dir, errs, oi, 2 * n_out, ii, 2 * n_in);
-        $display("tb_st_io %s PASS %0d outputs", dir, oi);
+        $display("tb_st_io %s PASS %0d outputs, %0d + %0d cycles", dir, oi, cyc1, cyc2);
         $finish;
     end
 endmodule

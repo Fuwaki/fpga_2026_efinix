@@ -12,6 +12,11 @@
 // register (4 per beat for int8, 2 for int16) and the beat goes out when it
 // is full or the pixel ends.  One group per cycle.
 //
+// Geometry: C <= 80 so G = ceil(C/4) <= 20 (a 5-bit group counter) and an
+// int16 pixel is at most 160 bytes (10 beats); W <= 640, H <= 360.  Padding
+// bytes stay zero: the beat register starts cleared and only lanes below C
+// are ever written.
+//
 // Configuration is sampled on start while idle; busy stays high until the
 // frame's last beat has been accepted downstream.
 module st_pack (
@@ -19,7 +24,7 @@ module st_pack (
     input  logic          rst_n,
 
     input  logic          start,
-    input  logic [6:0]    cfg_c,       // channels, 1..64
+    input  logic [6:0]    cfg_c,       // channels, 1..80
     input  logic          cfg_elem2,   // 1: int16 elements, 0: int8
     input  logic [9:0]    cfg_h,       // lines
     output logic          busy,
@@ -41,7 +46,7 @@ module st_pack (
     logic         elem2;
     logic [9:0]   h, y;
     logic         run, first;
-    logic [3:0]   g;                   // group of the pixel
+    logic [4:0]   g;                   // group of the pixel, 0..G-1
     logic [127:0] acc;                 // beat being filled
 
     wire  [1:0]   sub     = elem2 ? {1'b0, g[0]} : g[1:0];
@@ -49,11 +54,12 @@ module st_pack (
 
     // The incoming group placed into the beat being filled.
     logic [127:0] fill;
+    wire  [7:0]   ch = {1'b0, c};       // channel index bound, 8-bit to match 4g+j
     always_comb begin
         fill = acc;
         for (int j = 0; j < 4; j++) begin
             logic [9:0] v;
-            v = ({1'b0, g, 2'(j)} < c) ? in_data[10*j +: 10] : 10'd0;
+            v = ({1'b0, g, 2'(j)} < ch) ? in_data[10*j +: 10] : 10'd0;
             if (elem2)
                 fill[64*sub + 16*j +: 16] = {{6{v[9]}}, v};
             else
@@ -88,7 +94,7 @@ module st_pack (
                 out_valid <= 1'b0;
 
             if (take) begin
-                g <= in_last ? 4'd0 : g + 4'd1;
+                g <= in_last ? 5'd0 : g + 5'd1;
                 if (done_beat) begin
                     out_valid <= 1'b1;
                     out_data  <= fill;

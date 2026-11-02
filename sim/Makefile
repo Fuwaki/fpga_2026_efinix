@@ -160,15 +160,18 @@ tb_st_engine:
 	  +DIR=$(OBJ)/$@/vec +FIRST=$(firstword $(subst .., ,$(ENGINE_PASSES))) \
 	  +LAST=$(lastword $(subst .., ,$(ENGINE_PASSES)))
 
-# st_unpack / st_pack / st_add against tools/st_io_vectors.py (golden
-# activations; DDR beats from st_golden.ddr_image).  One build, one run per case.
-IO_CASES  := unpack_p1 unpack_p9 unpack_p0 unpack_p21_hrep pack_p3 pack_p9 pack_p27
-ADD_CASES := add_res0 add_skip
+# st_unpack / st_pack / st_add against tools/st_io_vectors.py (the guided
+# net's activations at 640x360; DDR beats from Guided.ddr_image).  One build,
+# one run per case.
+IO_CASES  := unpack_p10 unpack_p17 unpack_p13_hrep unpack_p1 \
+             pack_p2 pack_p16 pack_p10 pack_p17
+ADD_CASES := add_res add_h2 add_head
 EXTRA_tb_st_io  := $(ST_ENG)
 EXTRA_tb_st_add := $(ST_ENG)
-$(OBJ)/st_io_vec/stamp: $(ROOT)/tools/st_io_vectors.py $(ROOT)/tools/st_golden.py
+$(OBJ)/st_io_vec/stamp: $(ROOT)/tools/st_io_vectors.py $(ROOT)/tools/st_golden.py \
+                        $(ROOT)/tools/st_guided.py
 	@mkdir -p $(OBJ)/st_io_vec
-	$(ROOT)/tools/st_io_vectors.py --out $(OBJ)/st_io_vec --cache $(OBJ)/st_golden_c0
+	$(ROOT)/tools/st_io_vectors.py --out $(OBJ)/st_io_vec
 	@touch $@
 tb_st_io: $(OBJ)/st_io_vec/stamp
 	$(call build,$@,$@,$@,)
