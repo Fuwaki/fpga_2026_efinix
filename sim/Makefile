@@ -28,7 +28,7 @@ SVA := $(ROOT)/rtl/vid/common/sva/vstream_sva.sv \
 MODELS := $(ROOT)/sim/models/vstream_bfm.sv \
           $(ROOT)/sim/models/axi_mem_model.sv
 
-TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
+TESTS := tb_st_accel tb_st_requant tb_st_dma_rep tb_st_io tb_st_add tb_st_dw tb_st_pw tb_st_prepost tb_fifo tb_ring tb_ring_tight tb_dma tb_vidsub tb_vidsub_badid \
          tb_disp tb_proc tb_disp_split tb_disp_split0 tb_osd tb_isp tb_isp_bypass tb_isp_pat sva_neg
 
 .PHONY: all lint $(TESTS)
@@ -67,7 +67,9 @@ ST_ENG := $(ROOT)/rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_line_ram.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_mac8x16.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pw_rom.sv \
-          $(ROOT)/rtl/st_accel_new/engine/st_pw.sv
+          $(ROOT)/rtl/st_accel_new/engine/st_pw.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_pre.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_post.sv
 
 # ST accelerator as the processing engine (external AXI master + ring ports).
 EXTRA_tb_st_accel := $(ST)
@@ -126,6 +128,22 @@ tb_st_pw:
 	  cd $(ROOT) && $(PW_DIR)/Vtb_st_pw +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	    +CASE_DIR=$(PW_DIR)/$$c || exit 1; \
 	done
+
+# Pass 0 (pre) and pass 14 (post) against tools/st_prepost_vectors.py: a
+# synthetic 1280x720 camera frame through the golden model's pre(), the
+# network's head layer and post(); both cases are full frames, pre in and out
+# beats included.
+EXTRA_tb_st_prepost      := $(ST_ENG)
+EXTRA_tb_st_prepost_post := $(ST_ENG)
+tb_st_prepost:
+	@mkdir -p $(OBJ)/$@
+	$(ROOT)/tools/st_prepost_vectors.py --out $(OBJ)/$@
+	$(call build,$@,$@,tb_st_prepost,-GCASE_POST=0)
+	cd $(ROOT) && $(OBJ)/$@/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	  +VEC=$(OBJ)/$@
+	$(call build,$@_post,$@,tb_st_prepost,-GCASE_POST=1)
+	cd $(ROOT) && $(OBJ)/$@_post/Vtb_st_prepost +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	  +VEC=$(OBJ)/$@
 
 # st_unpack / st_pack / st_add against tools/st_io_vectors.py (golden
 # activations; DDR beats from st_golden.ddr_image).  One build, one run per case.
