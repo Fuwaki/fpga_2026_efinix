@@ -208,8 +208,16 @@ class Guided(Net):
         self.ref = ref
         self.norm = {n["name"]: n for n in self.m.get("norm_layers", [])}
         self.film = {f["name"]: f for f in self.m.get("film_layers", [])}
-        # DDR element width: points written by an add are int16.
-        self.wide = {op["point"] for op in self.m["graph"] if op["op"] == "add"}
+        # DDR element width: a point is int16 when an add writes it before it
+        # goes to DDR (the add runs in its producer pass); an add after an
+        # upsample runs on chip in the consumer pass.
+        self.wide = set()
+        up = set()
+        for op in self.m["graph"]:
+            if op["op"] == "upsample_nearest2x":
+                up.add(op["point"])
+            elif op["op"] == "add" and op["point"] not in up:
+                self.wide.add(op["point"])
 
     def run(self, rgb, dump=None):
         """RGB8 HWC -> RGB8 HWC.  self.ddr[p] is point p as its producer pass
