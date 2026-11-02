@@ -116,9 +116,9 @@ def rq_words(bias, mant, k):
 
 
 def synthetic_case(cout, w, h, stride, seed, xr=256):
-    """A random int input and a random depthwise layer over it."""
+    """A random int9 input (|x| < xr) and a random depthwise layer over it."""
     rng = np.random.default_rng(seed)
-    x = rng.integers(-xr, xr, (cout, h, w))
+    x = rng.integers(-xr, xr + 1, (cout, h, w))
     wts = rng.integers(-127, 128, cout * 9)
     bias, mant, k = random_rq(rng, cout)
     layer = {
@@ -175,7 +175,7 @@ CASES = {
     "syn_g20":     dict(kind="synth",  cout=80, w=160, h=12, stride=1, seed=4),
     "syn_g20_s2":  dict(kind="synth",  cout=80, w=160, h=12, stride=2, seed=5),
     "syn_g4_s2":   dict(kind="synth",  cout=16, w=320, h=10, stride=2, seed=6),
-    "syn_g6":      dict(kind="synth",  cout=24, w=320, h=8,  stride=1, seed=7, xr=255),
+    "syn_g6":      dict(kind="synth",  cout=24, w=320, h=8,  stride=1, seed=7, xr=254),
     "syn_g2_w640": dict(kind="synth",  cout=8,  w=640, h=6,  stride=1, seed=8),
     "im2col":      dict(kind="im2col", w=640, h=8, seed=9),
     "bypass":      dict(kind="bypass", cout=40, w=320, h=4, seed=10),

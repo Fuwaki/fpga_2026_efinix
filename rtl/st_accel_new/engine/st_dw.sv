@@ -29,7 +29,7 @@
 // 2048-, a 1024- and a 128-word bank, 8 + 4 + 1 = 13 RAM10, so the line
 // store is 2 x 13 = 26 RAM10 of 3200 x 40: Efinity rounds a
 // non-power-of-two depth up, so one flat 3200-deep array would cost the
-// 4096-deep shape, 16 RAM10 per instance.
+// 4096-deep shape instead.
 //
 // While input row r streams (r >= 1) every beat at address a reads slot
 // (r-1)%2, which holds row r-1, and slot r%2, which holds row r-2 (garbage
@@ -53,8 +53,8 @@
 // Two copies, not one array with two read ports: the Titanium has no
 // distributed RAM, so one array with two asynchronous reads becomes 4800
 // flip-flops plus two 120-way read muxes, while a shift register with one tap
-// per copy becomes SRL8 cells (SRL8 has 8 cells of 8 bits, so 120 bits need
-// 15 per entry: 600 per copy, 1200 in all).
+// per copy becomes SRL cells (measured: 960 cells for 32 entries x 120 bits,
+// so the 40 entries of the guided net cost 1200).
 //
 // Column x emits output column xo = x-1 from columns x-2, x-1 and x, with
 // the reflect at xo = 0 taking the left column from the newest beat.  After
@@ -85,6 +85,13 @@
 // window beat every two cycles gives the stem its 2 cycles per pixel.
 //
 // BYPASS: the input beat goes straight to the output with its flags.
+//
+// --------------------------------------------------------------- resources
+// Line store 2 x 13 RAM10 (2048 + 1024 + 128 deep x 40, the 256x40 shape),
+// DW ROM 8 (256 x 288 as 8 x 256x40), rq ROM 16 (4 banks of 512 x 64 as
+// 512x20 shapes), output FIFO 4 (64 x 131 as 256x40 shapes; the 43-bit word
+// took 2, so the wide word costs 2 RAM10, the extra the ADR accepted).
+// Column delay line: 2 x 40 x 120 SRL cells.  52 DSP, unchanged.
 //
 // ------------------------------------------------------- latency and flow
 // A window beat accepted in cycle t reaches the FIFO in cycle t + 11:
@@ -309,9 +316,11 @@ module st_dw (
     wire       cred_ok  = (produce == 8'd0) ||
                           (used + produce <= 8'(FIFO_DEPTH));
 
-    // IM2COL emits 2 beats over the 2 cycles after stage C, so an issue is
-    // followed by one idle cycle: period 2, the stem's 2 cycles per pixel.
-    wire chan_ok = (mode != MODE_IM2COL) || (icool == 4'd0);
+    // IM2COL emits 2 beats over the 2 cycles after stage C, so a producing
+    // issue is followed by one idle cycle: period 2, the stem's 2 cycles per
+    // pixel.  A beat that produces nothing (row 0, column 0, stride 2 skips)
+    // may issue back to back -- it never reaches the emitter.
+    wire chan_ok = (mode != MODE_IM2COL) || (icool == 4'd0) || !emit_beat;
 
     wire accept_ok = chan_ok && cred_ok && !fifo_full;
     wire run_go    = (state == ST_RUN)    && in_valid && accept_ok;

@@ -257,8 +257,16 @@ module tb_st_dw;
                                                         vout_sof[oidx]));
                 end
                 // IM2COL is the one mode that does not carry the beat on
-                // out_data; the other two always mirror its low 40 bits
-                if (cfg_mode != 2'd1 && out_data !== out_wide[39:0]) begin
+                // out_data (it is zero there); the other two mirror the low
+                // 40 bits of out_wide
+                if (cfg_mode == 2'd1) begin
+                    if (out_data !== 40'd0) begin
+                        errs++;
+                        if (errs <= 10)
+                            $display("MISMATCH beat %0d: im2col out_data %010x is not 0",
+                                     oidx, out_data);
+                    end
+                end else if (out_data !== out_wide[39:0]) begin
                     errs++;
                     if (errs <= 10)
                         $display("MISMATCH beat %0d: out_data %010x does not mirror out_wide",

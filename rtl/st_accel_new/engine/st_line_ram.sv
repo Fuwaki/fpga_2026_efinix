@@ -4,10 +4,11 @@
 // the canonical simple-dual-port block-RAM form.  The 3200-word depth is
 // split into a 2048-, a 1024- and a 128-word bank because Efinity rounds a
 // non-power-of-two depth up before it splits the array: one 3200 x 40 array
-// would cost the 4096 x 40 shape, 16 RAM10, while the three banks cost
-// 8 + 4 + 1 = 13.  The write enable is steered to the bank of the write
-// address and the registered bank select picks the read data, so the read
-// latency is still one cycle.
+// would cost the 4096 x 40 shape, while the three banks cost 8 + 4 + 1 = 13
+// RAM10 (2048 x 40 is 8, 1024 x 40 is 4, 128 x 40 fits one 256 x 40 shape).
+// The write enable is steered to the bank of the write address and the
+// registered bank select picks the read data, so the read latency is still
+// one cycle.
 //
 // 3200 group words hold W*G up to 3200: 80 channels at W = 160, 3 or 4
 // channels at W = 640, 16 or 24 channels at W = 320.  The DW stage
@@ -36,12 +37,12 @@ module st_line_ram #(
     logic [39:0] q_big, q_mid, q_top;
     logic [1:0]  rsel;                      // bank of the read address
 
-    // only the selected bank's own address bits index it, so a read of any
-    // address stays inside its array
-    wire [1:0] wsel = (waddr >= AW'(BW + MW)) ? 2'd2 :
-                      (waddr >= AW'(BW))      ? 2'd1 : 2'd0;
-    wire [1:0] rbank = (raddr >= AW'(BW + MW)) ? 2'd2 :
-                       (raddr >= AW'(BW))      ? 2'd1 : 2'd0;
+    // the depths are aligned to their own sizes (2048 / 1024 / 128), so the
+    // top two address bits pick the bank: 0xxx -> big, 10xx -> mid,
+    // 11xx -> top.  Only the selected bank's own address bits index it, so
+    // a read of any address stays inside its array.
+    wire [1:0] wsel  = waddr[AW-1] ? (waddr[AW-2] ? 2'd2 : 2'd1) : 2'd0;
+    wire [1:0] rbank = raddr[AW-1] ? (raddr[AW-2] ? 2'd2 : 2'd1) : 2'd0;
 
     always_ff @(posedge clk) begin
         if (we && wsel == 2'd0)
