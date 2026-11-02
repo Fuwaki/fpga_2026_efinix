@@ -70,6 +70,7 @@ ST_ENG := $(ROOT)/rtl/st_accel_new/gen/tiny_dw/st_net_pkg.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pw.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_pre.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_post.sv \
+          $(ROOT)/rtl/st_accel_new/engine/st_norm.sv \
           $(ROOT)/rtl/st_accel_new/engine/st_engine.sv
 
 # ST accelerator as the processing engine (external AXI master + ring ports).
@@ -128,6 +129,25 @@ tb_st_pw:
 	  cd $(ROOT) && tools/st_pw_vectors.py --case $$c --out $(PW_DIR)/$$c || exit 1; \
 	  cd $(ROOT) && $(PW_DIR)/Vtb_st_pw +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	    +CASE_DIR=$(PW_DIR)/$$c || exit 1; \
+	done
+
+# The norm stage (LayerNorm and the FiLM affine) against
+# tools/st_norm_vectors.py: the real LN of the guided net, 2000 synthetic
+# pixels whose statistics hit the ends of the datapath, and the real FiLM of
+# the net with its coefficients written through the port.  Each case runs with
+# random gaps and back-pressure, then clean for the cycles/pixel figure.
+NORM_CASES := ln ln_syn film
+NORM_DIR   := $(OBJ)/tb_st_norm
+EXTRA_tb_st_norm := $(ST_ENG)
+
+tb_st_norm:
+	@mkdir -p $(NORM_DIR)
+	$(call build,$@,$@,$@,)
+	@for c in $(NORM_CASES); do \
+	  cd $(ROOT) && tools/st_norm_vectors.py --case $$c --out $(NORM_DIR)/$$c \
+	    || exit 1; \
+	  cd $(ROOT) && $(NORM_DIR)/Vtb_st_norm +verilator+seed+$(SEED) +verilator+rand+reset+2 \
+	    +CASE_DIR=$(NORM_DIR)/$$c || exit 1; \
 	done
 
 # Pass 0 (pre) and pass 14 (post) against tools/st_prepost_vectors.py: a
