@@ -113,7 +113,8 @@ module requant
       valid_s4 <= valid_s3;
       if (valid_s3) begin
         for (int i = 0; i < MAC_ROWS; i++) begin
-          automatic logic signed [7:0] sat = saturate_i8(shifted_s3[i]);
+          logic signed [7:0] sat;
+          sat = saturate_i8(shifted_s3[i]);
           case (act_s3)
             ACT_RELU:  out_s4[i] <= relu(sat);
             ACT_RELU6: out_s4[i] <= relu6(sat, 8'd48);

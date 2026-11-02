@@ -1,68 +1,72 @@
 // pw_conv1x1.sv — Pointwise 1×1 Convolution
-// 使用mac_array做输入通道×输出通道的矩阵乘法
-// 输入：流式像素 [in_c]，输出：[out_c]
-// in_c必须是MAC_COLS的倍数，out_c必须是MAC_ROWS的倍数
+// Uses mac_array for an in_c × out_c matrix multiply.
+// Channel counts are runtime-configurable up to MAX_IN_C / MAX_OUT_C.
+// Weights, bias, and per-channel requant multipliers are preloaded by the
+// caller into the array ports before frame_start.
 
 module pw_conv1x1
   import st_accel_pkg::*;
 #(
-  parameter int IN_CHANNELS  = 16,   // 输入通道
-  parameter int OUT_CHANNELS = 16    // 输出通道
+  parameter int MAX_IN_C  = 32,
+  parameter int MAX_OUT_C = 32
 )(
   input  logic clk,
   input  logic rst_n,
 
-  // 配置
-  input  logic        frame_start,
-  input  logic [31:0] num_pixels,     // 这一层的像素总数
+  // Runtime channel counts (must be multiples of MAC_COLS / MAC_ROWS)
+  input  logic [15:0]  in_c,
+  input  logic [15:0]  out_c,
 
-  // 输入流：每周期1个像素 × IN_CHANNELS
-  input  logic                  valid_in,
-  input  logic signed [7:0]     pixel_in [IN_CHANNELS],
+  // One-shot start and per-frame total pixel count
+  input  logic         frame_start,
+  input  logic [31:0]  num_pixels,
 
-  // 权重：[OUT_CHANNELS][IN_CHANNELS] (从BRAM加载，分tile复用mac_array)
-  input  logic signed [7:0]     weight [OUT_CHANNELS][IN_CHANNELS],
+  // Input stream: one pixel per cycle, MAX_IN_C channels (unused channels 0)
+  input  logic                    valid_in,
+  input  logic signed [7:0]       pixel_in [MAX_IN_C],
 
-  // Bias + requant参数
-  input  logic signed [31:0]    bias [OUT_CHANNELS],
-  input  activation_t           activation,
-  input  logic [5:0]            requant_shift,
+  // Weight: [MAX_OUT_C][MAX_IN_C] row-major, preloaded at layer start
+  input  logic signed [7:0]       weight [MAX_OUT_C][MAX_IN_C],
 
-  // 输出：量化后的int8
-  output logic                  valid_out,
-  output logic signed [7:0]     pixel_out [OUT_CHANNELS]
+  // Bias and requant multiplier (per output channel)
+  input  logic signed [31:0]      bias   [MAX_OUT_C],
+  input  logic [15:0]             mult   [MAX_OUT_C],
+  input  activation_t             activation,
+
+  // Output: quantised int8, out_c channels per pixel
+  output logic                    valid_out,
+  output logic signed [7:0]       pixel_out [MAX_OUT_C]
 );
 
-  // ==========================================================================
-  // Tile参数
-  // ==========================================================================
+  localparam int MAX_IN_TILES  = MAX_IN_C  / MAC_COLS;  // 4
+  localparam int MAX_OUT_TILES = MAX_OUT_C / MAC_ROWS;  // 4
 
-  localparam int IN_TILES  = (IN_CHANNELS + MAC_COLS - 1) / MAC_COLS;
-  localparam int OUT_TILES = (OUT_CHANNELS + MAC_ROWS - 1) / MAC_ROWS;
+  // Rounded-up tile counts driven by runtime in_c / out_c
+  logic [7:0] in_tiles;
+  logic [7:0] out_tiles;
+  always_comb begin
+    in_tiles  = (in_c  + MAC_COLS - 1) / MAC_COLS;
+    out_tiles = (out_c + MAC_ROWS - 1) / MAC_ROWS;
+  end
 
-  // ==========================================================================
-  // 输入通道tile循环
-  // ==========================================================================
-
-  logic [7:0] in_tile_id;
-  logic [7:0] out_tile_id;
+  // ─── Tile counters ────────────────────────────────────────────────────────
+  logic [7:0]  in_tile_id;
+  logic [7:0]  out_tile_id;
   logic [31:0] pixel_cnt;
 
-  logic signed [7:0]  mac_act [MAC_COLS];
+  logic signed [7:0]  mac_act    [MAC_COLS];
   logic signed [7:0]  mac_weight [MAC_ROWS][MAC_COLS];
   logic               mac_valid_in;
   logic               mac_acc_clear;
 
-  // 每个像素分IN_TILES次喂入mac_array（累加输入通道）
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      in_tile_id    <= '0;
-      out_tile_id   <= '0;
-      pixel_cnt     <= '0;
-      mac_valid_in  <= 1'b0;
-      mac_acc_clear <= 1'b0;
+      in_tile_id   <= '0;
+      out_tile_id  <= '0;
+      pixel_cnt    <= '0;
+      mac_valid_in <= 1'b0;
+      mac_acc_clear<= 1'b0;
     end else begin
-
       mac_valid_in  <= 1'b0;
       mac_acc_clear <= 1'b0;
 
@@ -70,58 +74,41 @@ module pw_conv1x1
         in_tile_id  <= '0;
         out_tile_id <= '0;
         pixel_cnt   <= '0;
-      end
-
-      else if (valid_in) begin
-
-        // 当前tile的输入通道切片
+      end else if (valid_in) begin
+        // Select input channel slice for this in_tile
         for (int i = 0; i < MAC_COLS; i++) begin
-          int idx = in_tile_id * MAC_COLS + i;
-          if (idx < IN_CHANNELS)
-            mac_act[i] <= pixel_in[idx];
-          else
-            mac_act[i] <= 8'sd0;  // padding
+          mac_act[i] <= ((in_tile_id * MAC_COLS + i) < MAX_IN_C)
+                        ? pixel_in[in_tile_id * MAC_COLS + i] : 8'sd0;
         end
-
-        // 当前tile的权重切片
+        // Select weight slice for current out_tile × in_tile
         for (int r = 0; r < MAC_ROWS; r++) begin
           for (int c = 0; c < MAC_COLS; c++) begin
-            int out_idx = out_tile_id * MAC_ROWS + r;
-            int in_idx  = in_tile_id * MAC_COLS + c;
-
-            if (out_idx < OUT_CHANNELS && in_idx < IN_CHANNELS)
-              mac_weight[r][c] <= weight[out_idx][in_idx];
-            else
-              mac_weight[r][c] <= 8'sd0;
+            mac_weight[r][c] <= ((out_tile_id * MAC_ROWS + r) < MAX_OUT_C &&
+                                 (in_tile_id  * MAC_COLS + c) < MAX_IN_C)
+                                 ? weight[out_tile_id * MAC_ROWS + r]
+                                         [in_tile_id  * MAC_COLS + c]
+                                 : 8'sd0;
           end
         end
-
         mac_valid_in  <= 1'b1;
-        mac_acc_clear <= (in_tile_id == 0);  // 第一个输入tile时清累加器
+        mac_acc_clear <= (in_tile_id == 0);
 
-        // Tile循环
-        if (in_tile_id == IN_TILES - 1) begin
+        if (in_tile_id == in_tiles - 1) begin
           in_tile_id <= '0;
-
-          if (out_tile_id == OUT_TILES - 1) begin
+          if (out_tile_id == out_tiles - 1) begin
             out_tile_id <= '0;
             pixel_cnt   <= pixel_cnt + 1;
           end else begin
             out_tile_id <= out_tile_id + 1;
           end
-
         end else begin
           in_tile_id <= in_tile_id + 1;
         end
-
       end
     end
   end
 
-  // ==========================================================================
-  // MAC Array
-  // ==========================================================================
-
+  // ─── MAC array ────────────────────────────────────────────────────────────
   logic               mac_valid_out;
   logic signed [31:0] mac_acc [MAC_ROWS];
 
@@ -136,91 +123,96 @@ module pw_conv1x1
     .acc_out   (mac_acc)
   );
 
-  // ==========================================================================
-  // Requant（输入通道累加完成后）
-  // ==========================================================================
+  // ─── Requant: fire when the last in_tile of an out_tile completes ─────────
+  // in_tile_id has already wrapped back to 0 when mac_valid_out arrives for
+  // the last in-tile of a given out-tile.  Track out_tile_id through the
+  // 3-cycle mac pipeline to pick the right bias/mult slice.
+  logic [7:0] ot_delay [3];   // out_tile_id delayed 3 cycles (mac latency)
+  logic       last_in  [3];   // whether this was the last in_tile
 
-  logic                   rq_valid_in;
-  logic signed [31:0]     rq_bias [MAC_ROWS];
-  logic signed [7:0]      rq_out [MAC_ROWS];
-  logic                   rq_valid_out;
-
-  // 只有最后一个输入tile完成时才送入requant
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      rq_valid_in <= 1'b0;
+      for (int i = 0; i < 3; i++) begin
+        ot_delay[i] <= '0;
+        last_in[i]  <= 1'b0;
+      end
     end else begin
-      rq_valid_in <= mac_valid_out && (in_tile_id == 0);  // in_tile刚回卷
+      ot_delay[0] <= out_tile_id;
+      last_in[0]  <= mac_valid_in && mac_acc_clear; // acc_clear delayed 0→1
+      for (int i = 1; i < 3; i++) begin
+        ot_delay[i] <= ot_delay[i-1];
+        last_in[i]  <= last_in[i-1];
+      end
     end
   end
 
-  // Bias切片
+  // Requant fires only when the last in_tile output emerges from mac_array.
+  // acc_clear marks the FIRST in_tile of a new out_tile; the last in_tile
+  // is the beat just before the next acc_clear (or before next pixel).
+  // Simpler: fire requant every time in_tile_id wrapped back to 0 and
+  // mac_valid_out is high — detected by last_in[2] delayed pipeline.
+  logic               rq_valid_in;
+  logic signed [31:0] rq_bias [MAC_ROWS];
+  logic [15:0]        rq_mult [MAC_ROWS];
+  logic signed [7:0]  rq_out  [MAC_ROWS];
+  logic               rq_valid_out;
+
+  assign rq_valid_in = mac_valid_out && last_in[2];
+
   always_comb begin
     for (int r = 0; r < MAC_ROWS; r++) begin
-      int out_idx = out_tile_id * MAC_ROWS + r;
-      if (out_idx < OUT_CHANNELS)
-        rq_bias[r] = bias[out_idx];
-      else
-        rq_bias[r] = 32'sd0;
+      rq_bias[r] = ((ot_delay[2] * MAC_ROWS + r) < MAX_OUT_C)
+                   ? bias[ot_delay[2] * MAC_ROWS + r] : 32'sd0;
+      rq_mult[r] = ((ot_delay[2] * MAC_ROWS + r) < MAX_OUT_C)
+                   ? mult[ot_delay[2] * MAC_ROWS + r] : 16'd0;
     end
   end
 
   requant u_requant (
-    .clk          (clk),
-    .rst_n        (rst_n),
-    .valid_in     (rq_valid_in),
-    .activation   (activation),
-    .right_shift  (requant_shift),
-    .valid_out    (rq_valid_out),
-    .acc_in       (mac_acc),
-    .bias         (rq_bias),
-    .data_out     (rq_out)
+    .clk       (clk),
+    .rst_n     (rst_n),
+    .valid_in  (rq_valid_in),
+    .activation(activation),
+    .valid_out (rq_valid_out),
+    .acc_in    (mac_acc),
+    .bias      (rq_bias),
+    .mult      (rq_mult),
+    .data_out  (rq_out)
   );
 
-  // ==========================================================================
-  // 输出收集（OUT_TILES个tile拼接）
-  // ==========================================================================
-
-  logic signed [7:0] output_buf [OUT_CHANNELS];
-  logic [7:0]        out_tile_done;
+  // ─── Output collect: accumulate out_tiles into pixel_out ─────────────────
+  logic signed [7:0] out_buf [MAX_OUT_C];
+  logic [7:0]        tiles_done;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      valid_out     <= 1'b0;
-      out_tile_done <= '0;
-      for (int i = 0; i < OUT_CHANNELS; i++)
-        output_buf[i] <= 8'sd0;
+      valid_out  <= 1'b0;
+      tiles_done <= '0;
+      for (int i = 0; i < MAX_OUT_C; i++)
+        out_buf[i] <= 8'sd0;
     end else begin
-
       valid_out <= 1'b0;
 
       if (frame_start) begin
-        out_tile_done <= '0;
-      end
-
-      else if (rq_valid_out) begin
-        // 写入当前output tile
+        tiles_done <= '0;
+      end else if (rq_valid_out) begin
         for (int r = 0; r < MAC_ROWS; r++) begin
-          int out_idx = out_tile_id * MAC_ROWS + r;
-          if (out_idx < OUT_CHANNELS)
-            output_buf[out_idx] <= rq_out[r];
+          if ((ot_delay[2] * MAC_ROWS + r) < MAX_OUT_C)
+            out_buf[ot_delay[2] * MAC_ROWS + r] <= rq_out[r];
         end
-
-        out_tile_done <= out_tile_done + 1;
-
-        // 所有output tile完成
-        if (out_tile_done == OUT_TILES - 1) begin
-          valid_out     <= 1'b1;
-          out_tile_done <= '0;
+        tiles_done <= tiles_done + 1;
+        if (tiles_done == out_tiles - 1) begin
+          valid_out  <= 1'b1;
+          tiles_done <= '0;
         end
       end
-
     end
   end
 
   always_comb begin
-    for (int i = 0; i < OUT_CHANNELS; i++)
-      pixel_out[i] = output_buf[i];
+    for (int i = 0; i < MAX_OUT_C; i++)
+      pixel_out[i] = out_buf[i];
   end
+
 
 endmodule

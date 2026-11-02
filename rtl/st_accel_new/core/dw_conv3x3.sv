@@ -110,7 +110,8 @@ module dw_conv3x3 #(
 
       if (lb_valid && stride_enable) begin
         for (int ch = 0; ch < CHANNELS; ch++) begin
-          automatic logic signed [15:0] sum = 16'sd0;
+          logic signed [15:0] sum;
+          sum = 16'sd0;
 
           // 累加3×3窗口
           for (int r = 0; r < 3; r++) begin

@@ -70,7 +70,8 @@ module mac_array
 
       if (valid_s1) begin
         for (int r = 0; r < MAC_ROWS; r++) begin
-          automatic logic signed [19:0] tmp = 20'sd0;
+          logic signed [19:0] tmp;
+          tmp = 20'sd0;
           for (int c = 0; c < MAC_COLS; c++)
             tmp += prod[r][c];
           sum_s2[r] <= tmp;
