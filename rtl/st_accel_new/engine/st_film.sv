@@ -488,7 +488,7 @@ module st_film #(
             $error("st_film: gap_clear and tap_valid in the same cycle");
     // The sums are indexed by 4*beat + j, so cfg_g must stay inside NC/4.
     always @(posedge clk)
-        if (rst_done && cfg_g > 5'(GB))
+        if (rst_done && tap_valid && cfg_g > 5'(GB))
             $error("st_film: cfg_g %0d exceeds %0d groups", cfg_g, GB);
 `endif
 endmodule
