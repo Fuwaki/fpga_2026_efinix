@@ -35,17 +35,17 @@
 //
 // ------------------------------------------------------------- structure
 // collect   the beats of pixel p go into a pixel buffer (four slots by pixel
-//           mod 4, 20 beats x 40 bit, one block RAM) while S and Q accumulate
-//           over the four lanes; the lane squares are mul_nodsp, not DSP.
-// compute   once per pixel, three cycles after its last beat: S^2 on one DSP,
+//           mod 4, 20 beats x 43 bit with their flags, one block RAM) while S
+//           and Q accumulate over the four lanes; the lane squares are
+//           mul_nodsp, not DSP.
+// compute   once per pixel, four cycles after its last beat: S^2 on one DSP,
 //           N*Q = (G*Q) << 2 by shift-add, D, a leading-one detector for e,
 //           a barrel shift for m and the LUT ROM for R.  The parameters go
 //           to the pixel's slot of four, so the compute of pixel p runs while
 //           p+1 collects and p-1 emits.
-// emit      reads the pixel's beats back, u = N*x - S (one 5x10 mul_nodsp
-//           per lane: x enters as its 10-bit pattern x+1024, so
-//           G*x = G*x_u - (G << 10) and N*x = (G*x) << 2), p1 = u*R on four
-//           DSP, t, then the shared affine.  R, e and S travel in the emit
+// emit      reads the pixel's beats back, u = N*x - S (one 5x9 mul_nodsp per
+//           lane on |x|, negated for a negative lane), p1 = u*R on four DSP,
+//           t, then the shared affine.  R, e and S travel in the emit
 //           pipeline; the per-pixel registers are free for the next pixel.
 // affine    p2 = t*G_c + B_c + 2^21, y = clamp(p2 >>> 22) in LN; in FILM
 //           t = x with (mul_c, off_c, 15) instead: p2 = x*mul_c + off_c +
@@ -54,11 +54,11 @@
 //           fixed-latency pipeline is ever back-pressured.  In FILM the
 //           credit also gates the input, which has no buffer of its own.
 //
-// DSP: 4 u*R, 4 affine, 1 S^2 = 9.  RAM10: LN coefficient ROM 4 banks x 32 x
-// 48 bit (20), FiLM coefficient banks 4 x 32 x 48 (20), R LUT 768 x 17 (2),
-// pixel buffer 128 x 40 (4), output FIFO 16 x 43 (5).  The two coefficient
-// tables are separate because one is a constant ROM and the other is
-// written through the coefficient port; the banks cannot be shared.
+// DSP: 4 u*R, 4 affine, 1 S^2 = 9.  RAM10: coefficient store 4 lanes x
+// 256 x 48 (2 each, 8), R LUT 768 x 17 (2), pixel buffer 128 x 43 (2),
+// output FIFO 16 x 43 (2) -- 14 in all.  One array per lane is what gives
+// the four simultaneous coefficient reads a beat needs; the LN and FiLM
+// words share each array because a pass is one mode.
 //
 // Pipelining.  Pixel p collects in cycles C..C+G-1 and emits in
 // C+G+3..C+2G+2, so the collect of p+1 (C+G..C+2G-1) overlaps the compute of
@@ -139,48 +139,48 @@ module st_norm #(
 
     wire ln_mode = (mode_r == 2'(MODE_LN));
 
-    // ---------------------------------------------------- coefficient ROMs
-    // One 48-bit word per channel: [44:18] B_c / off_c (27-bit signed),
-    // [17:0] G_c / mul_c (18-bit signed).  Bank b word a holds channel
-    // 4a + b, so one read returns the four channels of a group beat.  The LN
-    // image is loaded once from LN_HEX; the FiLM banks are written through
-    // the coefficient port.
-    logic [CW-1:0] ln_img [NB*BW];
-    logic [CW-1:0] ln_bank [NB][BW];
-    logic [CW-1:0] fm_bank [NB][BW];
-    logic [CW-1:0] ln_q [NB];
-    logic [CW-1:0] fm_q [NB];
-    logic [GBITS-1:0] coef_addr;
+    // --------------------------------------------------- coefficient store
+    // One array per lane, 256 words of 48 bit: [44:18] B_c / off_c (27-bit
+    // signed), [17:0] G_c / mul_c (18-bit signed).  Lane b word a holds
+    // channel 4a + b, so one read returns the four channels of a group beat.
+    // Words 0..19 of a lane are the LN image (loaded from LN_HEX); words
+    // 128..147 are the FiLM coefficients, written through the coefficient
+    // port while idle.  A pass is one mode, so the two regions never meet,
+    // and one array per lane is the smallest form that gives four
+    // simultaneous reads: 256 x 48 = one 256x40 and one 256x10 RAM10.
+    localparam int CBASE_FILM = 128;
 
-    initial begin
+    logic [CW-1:0] coef_ram [NB][2*CBASE_FILM];
+    logic [CW-1:0] coef_q [NB];
+    logic [7:0]    coef_addr;
+    logic [CW-1:0] ln_img [NB*BW];      // the file, in its own order
+
+    // load() is the one place the image is installed; the initial block calls
+    // it with LN_HEX and a testbench may call it again with a per-case file.
+    task automatic load(input string path);
         for (int i = 0; i < NB * BW; i++) ln_img[i] = '0;
-        $readmemh(LN_HEX, ln_img);
-        for (int b = 0; b < NB; b++) begin
-            for (int a = 0; a < BW; a++) begin
-                ln_bank[b][a] = (a < GMAX) ? ln_img[NB*a + b] : '0;
-                fm_bank[b][a] = '0;
-            end
-        end
-    end
+        $readmemh(path, ln_img);
+        for (int b = 0; b < NB; b++)
+            for (int a = 0; a < 2 * CBASE_FILM; a++)
+                coef_ram[b][a] = (a < GMAX) ? ln_img[NB*a + b] : '0;
+    endtask
+
+    initial load(LN_HEX);
 
     always_ff @(posedge clk) begin
         for (int b = 0; b < NB; b++) begin
             if (coef_we && (coef_idx[1:0] == 2'(b)))
-                fm_bank[b][coef_idx[6:2]] <= {3'b000,
-                                              {3{coef_off[23]}}, coef_off,
-                                              coef_mul};
-            ln_q[b] <= ln_bank[b][coef_addr];
-            fm_q[b] <= fm_bank[b][coef_addr];
+                coef_ram[b][8'(CBASE_FILM) + {3'd0, coef_idx[6:2]}]
+                    <= {3'b000, {3{coef_off[23]}}, coef_off, coef_mul};
+            coef_q[b] <= coef_ram[b][coef_addr];
         end
     end
 
-    logic [CW-1:0]      coef_q [NB];
     logic signed [17:0] coef_mul_q [NB];
     logic signed [26:0] coef_off_q [NB];
 
     always_comb
         for (int b = 0; b < NB; b++) begin
-            coef_q[b]     = ln_mode ? ln_q[b] : fm_q[b];
             coef_mul_q[b] = $signed(coef_q[b][17:0]);
             coef_off_q[b] = $signed(coef_q[b][44:18]);
         end
@@ -452,7 +452,7 @@ module st_norm #(
     // s5  affine product; the FIFO write is in this cycle
     logic             s1_v, s2_v, s3_v, s4_v, s5_v;
     logic [2:0]       s2_f, s3_f, s4_f, s5_f;
-    logic [GBITS-1:0] s1_g, s2_g, s3_g;
+    logic [GBITS-1:0] s1_g, s2_g;
     logic signed [16:0] s1_s, s1_r, s2_r;
     logic [4:0]       s1_e, s2_e, s3_e, s4_sh, s5_sh;
     logic signed [17:0] s2_u [4];
@@ -551,7 +551,6 @@ module st_norm #(
         if (!rst_n) begin
             s3_v <= 1'b0;
             s3_e <= '0;
-            s3_g <= '0;
             s3_f <= '0;
             for (int j = 0; j < 4; j++) s3_pq[j] <= '0;
         end else if (start) begin
@@ -560,7 +559,6 @@ module st_norm #(
             s3_v <= s2_v;
             if (s2_v) begin
                 s3_e <= s2_e;
-                s3_g <= s2_g;
                 s3_f <= s2_f;
                 for (int j = 0; j < 4; j++)
                     s3_pq[j] <= s2_u[j] * $signed({1'b0, s2_r});
@@ -587,7 +585,12 @@ module st_norm #(
     // read out in the next one.  The affine operands of a beat are taken one
     // cycle after its s2 (LN) / f1 (FILM) stage, so the address is s2_g in LN
     // and the incoming beat's group in FILM.
-    assign coef_addr = ln_mode ? s2_g : beat_cnt;
+    // LN: the beat's group one stage ahead of the affine (the operand
+    // registers take it when it reaches s3).  FILM: the group of the beat
+    // being accepted, since its coefficients are read the cycle it is
+    // registered in f1.
+    assign coef_addr = (ln_mode ? 8'd0 : 8'(CBASE_FILM))
+                     + (ln_mode ? {3'd0, s2_g} : {3'd0, beat_cnt});
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
