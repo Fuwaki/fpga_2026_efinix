@@ -1,4 +1,4 @@
-// st_engine.sv -- the ST block engine: the guided style network as 12 DDR
+// st_engine.sv -- the ST block engine: the guided style network as 13 DDR
 // passes through one programmable datapath (docs/st-guided-adr.md).
 //
 //   rd_main ─┬─ st_pre ─────┐ (src_isp)                    ┌─ (pool: n_layers = 0) ─┐
@@ -87,12 +87,11 @@ module st_engine
     logic [17:0]       in_npix;
 
     logic [17:0]       pw_npix;
-    logic [1:0]        pw_n;
     logic              pw_wide;
-    logic [6:0]        pw_cin0, pw_cin1, pw_cout0, pw_cout1;
-    logic [9:0]        pw_base0, pw_base1;
-    logic [10:0]       pw_rq0, pw_rq1;
-    logic [9:0]        pw_lo0, pw_lo1, pw_hi0, pw_hi1;
+    logic [6:0]        pw_cin, pw_cout;
+    logic [9:0]        pw_base;
+    logic [10:0]       pw_rq;
+    logic [9:0]        pw_lo, pw_hi;
 
     logic [6:0]        pk_c;
     logic              pk_e2;
@@ -264,12 +263,10 @@ module st_engine
         .out_valid(pw_v), .out_ready(pw_r), .out_data(pw_d),
         .out_last(pw_l), .out_eol(pw_e), .out_sof(pw_s),
         .start(go && !no_layers), .busy(pw_busy),
-        .cfg_npix(pw_npix), .cfg_n(pw_n), .cfg_wide(pw_wide),
-        .cfg_cin0(pw_cin0), .cfg_cin1(pw_cin1),
-        .cfg_cout0(pw_cout0), .cfg_cout1(pw_cout1),
-        .cfg_pw_base0(pw_base0), .cfg_pw_base1(pw_base1),
-        .cfg_rq_base0(pw_rq0), .cfg_rq_base1(pw_rq1),
-        .cfg_lo0(pw_lo0), .cfg_lo1(pw_lo1), .cfg_hi0(pw_hi0), .cfg_hi1(pw_hi1));
+        .cfg_npix(pw_npix), .cfg_wide(pw_wide),
+        .cfg_cin(pw_cin), .cfg_cout(pw_cout),
+        .cfg_pw_base(pw_base), .cfg_rq_base(pw_rq),
+        .cfg_lo(pw_lo), .cfg_hi(pw_hi));
 
     // PW output: the add (OUT), st_post or st_pack
     assign pw_r = add_out ? at_r : is_post ? po_in_r : pk_in_r;
@@ -416,12 +413,10 @@ module st_engine
             automatic st_region_t ra = st_region(int'(p.aux_point));
             automatic st_region_t ro = st_region(int'(p.out_point));
             automatic st_layer_t  l0 = st_layer(int'(p.first_layer));
-            // PW layers: after the DW layer, or from the first layer (im2col, bypass)
+            // the PW layer: after the DW layer, or the first layer (im2col, bypass)
             automatic int         pf = (l0.kind == ST_KIND_DW) ? int'(p.first_layer) + 1
                                                                : int'(p.first_layer);
-            automatic int         pn = int'(p.n_layers) - ((l0.kind == ST_KIND_DW) ? 1 : 0);
             automatic st_layer_t  la = st_layer(pf);
-            automatic st_layer_t  lb = st_layer(pf + 1);
             automatic st_add_factor_t af = st_add_factor(int'(p.add_rq));
 
             src_isp    <= p.src_isp;
@@ -496,14 +491,13 @@ module st_engine
 
             // PW stage: 1x1 layers keep the DW output grid
             pw_npix  <= 18'(p.out_w) * 18'(p.out_h);
-            pw_n     <= 2'(pn);
             pw_wide  <= (l0.kind == ST_KIND_IM2COL);
-            pw_cin0  <= la.cin;   pw_cin1  <= lb.cin;
-            pw_cout0 <= la.cout;  pw_cout1 <= lb.cout;
-            pw_base0 <= la.pw_base; pw_base1 <= lb.pw_base;
-            pw_rq0   <= la.rq_base; pw_rq1   <= lb.rq_base;
-            pw_lo0   <= la.lo;    pw_lo1   <= lb.lo;
-            pw_hi0   <= la.hi;    pw_hi1   <= lb.hi;
+            pw_cin   <= la.cin;
+            pw_cout  <= la.cout;
+            pw_base  <= la.pw_base;
+            pw_rq    <= la.rq_base;
+            pw_lo    <= la.lo;
+            pw_hi    <= la.hi;
 
             // pack
             pk_c  <= p.out_c;
@@ -519,7 +513,7 @@ module st_engine
             automatic st_pass_t  p  = st_pass(int'(pass));
             automatic st_layer_t l0 = st_layer(int'(p.first_layer));
             automatic int        pn = int'(p.n_layers) - ((l0.kind == ST_KIND_DW) ? 1 : 0);
-            if (p.n_layers != 0 && (pn < 1 || pn > 2))
+            if (p.n_layers != 0 && pn != 1)
                 $error("st_engine: pass %0d has %0d PW layers", pass, pn);
             if (p.n_layers == 0 && !(p.src_isp && p.pre_pool))
                 $error("st_engine: pass %0d has no layers but is not the pool pass", pass);

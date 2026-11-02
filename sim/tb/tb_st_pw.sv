@@ -11,10 +11,10 @@
 //            the cycles from the start pulse to the last accepted output beat
 //            are divided by the pixel count (the clean cycles per pixel).
 //
-// cfg.txt is "<npix> <nin> <nout> <nlay> <wide>" followed by one
-// "<cin> <cout> <pw_base> <rq_base> <lo> <hi>" line per layer.  A wide case
-// (wide = 1) drives in_wide[127:0], 16 int8 values per beat; a narrow case
-// drives in_data, four 10-bit lanes.  in.hex lines are
+// cfg.txt is "<npix> <nin> <nout> <wide>" followed by one
+// "<cin> <cout> <pw_base> <rq_base> <lo> <hi>" line; the stage runs one layer
+// per pass.  A wide case (wide = 1) drives in_wide[127:0], 16 int8 values per
+// beat; a narrow case drives in_data, four 10-bit lanes.  in.hex lines are
 // "<128-bit hex> <last> <eol> <sof>"; out.hex lines are
 // "<40-bit hex> <last> <eol> <sof>".
 //
@@ -24,8 +24,8 @@
 // $fatal(1, ...).
 module tb_st_pw #(
     parameter int TILE_DEPTH = 8,
-    parameter int OUT_DEPTH  = 64,
-    parameter int PW_DEPTH   = 256,
+    parameter int OUT_DEPTH  = 512,
+    parameter int PW_DEPTH   = 512,
     parameter int RQ_DEPTH   = 512
 );
     localparam int MAXB    = 1 << 19;    // beats a case may hold
@@ -45,11 +45,10 @@ module tb_st_pw #(
     logic         start, busy;
     logic [17:0]  cfg_npix;
     logic         cfg_wide;
-    logic [1:0]   cfg_n;
-    logic [6:0]   cfg_cin0, cfg_cin1, cfg_cout0, cfg_cout1;
-    logic [9:0]   cfg_pw_base0, cfg_pw_base1;
-    logic [10:0]  cfg_rq_base0, cfg_rq_base1;
-    logic signed [9:0] cfg_lo0, cfg_lo1, cfg_hi0, cfg_hi1;
+    logic [6:0]   cfg_cin, cfg_cout;
+    logic [9:0]   cfg_pw_base;
+    logic [10:0]  cfg_rq_base;
+    logic signed [9:0] cfg_lo, cfg_hi;
 
     st_pw #(.TILE_DEPTH(TILE_DEPTH), .OUT_DEPTH(OUT_DEPTH),
             .PW_DEPTH(PW_DEPTH), .RQ_DEPTH(RQ_DEPTH)) dut (
@@ -72,19 +71,12 @@ module tb_st_pw #(
         .busy         (busy),
         .cfg_npix     (cfg_npix),
         .cfg_wide     (cfg_wide),
-        .cfg_n         (cfg_n),
-        .cfg_cin0     (cfg_cin0),
-        .cfg_cin1     (cfg_cin1),
-        .cfg_cout0    (cfg_cout0),
-        .cfg_cout1    (cfg_cout1),
-        .cfg_pw_base0 (cfg_pw_base0),
-        .cfg_pw_base1 (cfg_pw_base1),
-        .cfg_rq_base0 (cfg_rq_base0),
-        .cfg_rq_base1 (cfg_rq_base1),
-        .cfg_lo0      (cfg_lo0),
-        .cfg_lo1      (cfg_lo1),
-        .cfg_hi0      (cfg_hi0),
-        .cfg_hi1      (cfg_hi1)
+        .cfg_cin      (cfg_cin),
+        .cfg_cout     (cfg_cout),
+        .cfg_pw_base  (cfg_pw_base),
+        .cfg_rq_base  (cfg_rq_base),
+        .cfg_lo       (cfg_lo),
+        .cfg_hi       (cfg_hi)
     );
 
     // ------------------------------------------------------------ vectors
@@ -93,9 +85,9 @@ module tb_st_pw #(
     logic [39:0]  odat [MAXB];
     logic         olst [MAXB], oel [MAXB], osf [MAXB];
 
-    int npix = 0, nin = 0, nout = 0, nlay = 1, wide = 0;
-    int cin_v [2], cout_v [2], pw_v [2], rq_v [2];
-    int lo_v [2], hi_v [2];
+    int npix = 0, nin = 0, nout = 0, wide = 0;
+    int cin_v, cout_v, pw_v, rq_v;
+    int lo_v, hi_v;
     string case_dir, case_name;
 
     initial begin
@@ -108,17 +100,17 @@ module tb_st_pw #(
             if (case_dir[i] == "/") case_name = case_dir.substr(i + 1, case_dir.len() - 1);
         fd = $fopen({case_dir, "/cfg.txt"}, "r");
         if (fd == 0) $fatal(1, "tb_st_pw: cannot open %s/cfg.txt", case_dir);
-        r = $fscanf(fd, "%d %d %d %d %d\n", npix, nin, nout, nlay, wide);
-        if (r != 5) $fatal(1, "tb_st_pw: bad cfg.txt header");
-        for (int k = 0; k < 2; k++) begin
-            r = $fscanf(fd, "%d %d %d %d %d %d\n", cin_v[k], cout_v[k], pw_v[k],
-                        rq_v[k], lo_v[k], hi_v[k]);
-            if (r != 6) $fatal(1, "tb_st_pw: bad cfg.txt layer %0d", k);
-        end
+        r = $fscanf(fd, "%d %d %d %d\n", npix, nin, nout, wide);
+        if (r != 4) $fatal(1, "tb_st_pw: bad cfg.txt header");
+        r = $fscanf(fd, "%d %d %d %d %d %d\n", cin_v, cout_v, pw_v, rq_v,
+                    lo_v, hi_v);
+        if (r != 6) $fatal(1, "tb_st_pw: bad cfg.txt layer");
         $fclose(fd);
-        if (npix <= 0 || nin <= 0 || nout <= 0 || nlay < 1 || nlay > 2)
-            $fatal(1, "tb_st_pw: bad cfg %0d %0d %0d %0d", npix, nin, nout, nlay);
+        if (npix <= 0 || nin <= 0 || nout <= 0)
+            $fatal(1, "tb_st_pw: bad cfg %0d %0d %0d", npix, nin, nout);
         if (nin > MAXB || nout > MAXB) $fatal(1, "tb_st_pw: vectors exceed MAXB");
+        // pixels come in pairs
+        if (npix % 2 != 0) $fatal(1, "tb_st_pw: npix %0d is odd", npix);
 
         fd = $fopen({case_dir, "/in.hex"}, "r");
         if (fd == 0) $fatal(1, "tb_st_pw: cannot open %s/in.hex", case_dir);
@@ -149,8 +141,8 @@ module tb_st_pw #(
         $fclose(fd);
         dut.u_rq_rom.load({case_dir, "/rq.hex"});
 
-        $display("tb_st_pw: %s: %0d pixels, %0d in beats, %0d out beats, %0d layer(s), %s",
-                 case_name, npix, nin, nout, nlay, wide ? "wide" : "narrow");
+        $display("tb_st_pw: %s: %0d pixels, %0d in beats, %0d out beats, %0d -> %0d, %s",
+                 case_name, npix, nin, nout, cin_v, cout_v, wide ? "wide" : "narrow");
     end
 
     // ------------------------------------------------------------- clocks
@@ -225,21 +217,14 @@ module tb_st_pw #(
 
     task automatic pulse_start();
         @(negedge clk);
-        cfg_n        = 2'(nlay);
-        cfg_wide     = (wide != 0);
-        cfg_cin0     = 7'(cin_v[0]);
-        cfg_cin1     = 7'(cin_v[1]);
-        cfg_cout0    = 7'(cout_v[0]);
-        cfg_cout1    = 7'(cout_v[1]);
-        cfg_pw_base0 = 10'(pw_v[0]);
-        cfg_pw_base1 = 10'(pw_v[1]);
-        cfg_rq_base0 = 11'(rq_v[0]);
-        cfg_rq_base1 = 11'(rq_v[1]);
-        cfg_lo0      = 10'(lo_v[0]);
-        cfg_hi0      = 10'(hi_v[0]);
-        cfg_lo1      = 10'(lo_v[1]);
-        cfg_hi1      = 10'(hi_v[1]);
-        cfg_npix     = 18'(npix);
+        cfg_wide    = (wide != 0);
+        cfg_cin     = 7'(cin_v);
+        cfg_cout    = 7'(cout_v);
+        cfg_pw_base = 10'(pw_v);
+        cfg_rq_base = 11'(rq_v);
+        cfg_lo      = 10'(lo_v);
+        cfg_hi      = 10'(hi_v);
+        cfg_npix    = 18'(npix);
         start = 1'b1;
         @(negedge clk);
         start = 1'b0;
@@ -278,13 +263,11 @@ module tb_st_pw #(
         start    = 1'b0;
         cfg_npix = 18'd0;
         cfg_wide = 1'b0;
-        cfg_n = 2'd1;
-        cfg_cin0 = 7'd1; cfg_cin1 = 7'd1;
-        cfg_cout0 = 7'd1; cfg_cout1 = 7'd1;
-        cfg_pw_base0 = 10'd0; cfg_pw_base1 = 10'd0;
-        cfg_rq_base0 = 11'd0; cfg_rq_base1 = 11'd0;
-        cfg_lo0 = 10'sd0; cfg_hi0 = 10'sd127;
-        cfg_lo1 = 10'sd0; cfg_hi1 = 10'sd127;
+        cfg_cin  = 7'd1;
+        cfg_cout = 7'd1;
+        cfg_pw_base = 10'd0;
+        cfg_rq_base = 11'd0;
+        cfg_lo = 10'sd0; cfg_hi = 10'sd127;
 
         repeat (3) @(posedge clk);
         rst_n = 1;

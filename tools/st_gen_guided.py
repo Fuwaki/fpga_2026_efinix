@@ -170,7 +170,7 @@ def build(mdir: Path):
         if lnames:
             l0 = lt_by_name[lnames[0]]
             pn = len(lnames) - (1 if l0["kind"] == KIND_DW else 0)
-            assert 1 <= pn <= 2, f"{name}: {pn} PW layers"
+            assert pn == 1, f"{name}: {pn} PW layers (st_pw runs one per pass)"
             assert l0["kind"] != KIND_IM2COL or in_c == 3, f"{name}: im2col needs 3 channels"
             for ln in lnames[1:]:
                 assert lt_by_name[ln]["kind"] == KIND_PW, f"{name}: {ln} must be 1x1"
@@ -205,6 +205,7 @@ def build(mdir: Path):
         regions.append(dict(point=pt, base=base, w=w, h=h, c=c, elem=elem, pb=pb, bytes=w * h * pb))
         cursor = base + w * h * pb
 
+    assert all(p["out_w"] * p["out_h"] % 2 == 0 for p in ptbl), "st_pw needs even npix"
     assert len(pw_words) <= PW_BUDGET and len(dw_words) <= DW_BUDGET and len(rq_words) <= RQ_BUDGET
     net = dict(
         format="st-net-guided-v1", source=str(mdir), arch=m["arch"],
@@ -218,9 +219,19 @@ def build(mdir: Path):
     return net, pw_words, dw_words, rq_words, wts, m
 
 
+def pw_lines(words: list[bytes]) -> list[bytes]:
+    """st_pw_rom's image: 512-bit lines, line 2a = bytes 0..63 of word a
+    (output lanes 0..3), line 2a+1 = bytes 64..127 (lanes 4..7)."""
+    out = []
+    for w in words:
+        out += [w[:len(w) // 2], w[len(w) // 2:]]
+    return out
+
+
 def self_check(net, out: Path, wts, m):
     L = {l["name"]: l for l in m["layers"]}
-    pw = parse_hex((out / "st_pw.hex").read_text())
+    lines = parse_hex((out / "st_pw.hex").read_text())
+    pw = [lines[2 * a] + lines[2 * a + 1] for a in range(len(lines) // 2)]
     dw = parse_hex((out / "st_dw.hex").read_text())
     rq = parse_hex((out / "st_rq.hex").read_text())
     for lt in net["layers"]:
@@ -394,7 +405,7 @@ def main() -> int:
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     net, pw_words, dw_words, rq_words, wts, m = build(a.manifest)
-    (a.out / "st_pw.hex").write_text(hex_lines(pw_words))
+    (a.out / "st_pw.hex").write_text(hex_lines(pw_lines(pw_words)))
     (a.out / "st_dw.hex").write_text(hex_lines(dw_words))
     (a.out / "st_rq.hex").write_text(hex_lines(rq_words))
     (a.out / "st_net.json").write_text(json.dumps(net, indent=1) + "\n")
