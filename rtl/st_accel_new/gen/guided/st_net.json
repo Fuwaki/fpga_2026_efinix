@@ -2,7 +2,7 @@
  "format": "st-net-guided-v1",
  "source": "/data/competition/2026fpga/st_work/board_w8a8",
  "arch": "tiny_dw_guided",
- "manifest_sha256": "71df1f9e213e81487fd56d5b02262a75e145196bf39105fc0cfae5e55be1b392",
+ "manifest_sha256": "f65eadf1339c518b58e3e495f5a343aef05dd4295da8d26f274d6653982d4a06",
  "img_w": 640,
  "img_h": 360,
  "cam_w": 1280,
@@ -645,16 +645,16 @@
    "dst_point": 17,
    "src_point": 16,
    "rq_index": 856,
-   "factor": 0.5063797831535339,
-   "mant": 8495643,
-   "k": 24
+   "factor": 0.4263527989387512,
+   "mant": 14306026,
+   "k": 25
   },
   {
    "dst_point": 19,
    "src_point": 20,
    "rq_index": 857,
-   "factor": 0.3369172215461731,
-   "mant": 11305066,
+   "factor": 0.48135805130004883,
+   "mant": 16151696,
    "k": 25
   }
  ],
@@ -796,9 +796,9 @@
  "styles": 3,
  "film": {
   "sz": 25,
-  "sg": 24,
-  "sb": 20,
-  "c0": 8391,
+  "sg": 23,
+  "sb": 19,
+  "c0": 13468,
   "kb": 900
  }
 }

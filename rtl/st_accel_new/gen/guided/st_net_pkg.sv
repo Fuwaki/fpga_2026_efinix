@@ -33,9 +33,9 @@ package st_net_pkg;
   localparam int ST_STYLES = 3;
   // st_film constants, shared by every style (st_gen_film.py --params)
   localparam int ST_FILM_SZ = 25;   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
-  localparam int ST_FILM_SG = 24;   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
-  localparam int ST_FILM_SB = 20;   // off = (Bb*Mb + 2**(SB-1)) >>> SB
-  localparam int ST_FILM_C0 = 8391;   // affine offset, 19-bit signed
+  localparam int ST_FILM_SG = 23;   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
+  localparam int ST_FILM_SB = 19;   // off = (Bb*Mb + 2**(SB-1)) >>> SB
+  localparam int ST_FILM_C0 = 13468;   // affine offset, 19-bit signed
   localparam int ST_FILM_KB = 900;   // reduce bias scale, br_o * KB
   localparam int ST_ADD_RQ_BASE = 855;
   localparam int ST_RQ_STRIDE = 8;   // per-style requant block, 0: none
@@ -221,8 +221,8 @@ package st_net_pkg;
   function automatic st_add_factor_t st_add_factor(input int i);
     case (i)
       855: st_add_factor = '{mant: 24'h8fd8b9, k: 6'd25};
-      856: st_add_factor = '{mant: 24'h81a21b, k: 6'd24};
-      857: st_add_factor = '{mant: 24'hac806a, k: 6'd25};
+      856: st_add_factor = '{mant: 24'hda4aea, k: 6'd25};
+      857: st_add_factor = '{mant: 24'hf67490, k: 6'd25};
       default: st_add_factor = '0;
     endcase
   endfunction

@@ -84,9 +84,8 @@ def build(mdir: Path):
     packets = style_packets(m)
     styled = {n: [{**L[n], **p["layer_overrides"][n]} for p in packets]
               for n in packets[0].get("layer_overrides", {})}
-    rq_stride = {align_up(L[n]["out_channels"], 4) for n in styled}
-    assert len(rq_stride) <= 1, f"styled layers {list(styled)}: one rq stride for all"
-    rq_stride = rq_stride.pop() if rq_stride else 0
+    # one stride for all of them (the engine adds style * ST_RQ_STRIDE)
+    rq_stride = max((align_up(L[n]["out_channels"], 4) for n in styled), default=0)
 
     pw_words, dw_words, rq_words, ltbl = [], [], [], []
     for l in layers:
@@ -112,8 +111,8 @@ def build(mdir: Path):
         while len(rq_words) % 4:
             rq_words.append(rq_word(0, 1 << 23, 24))
         rq_base = len(rq_words)
-        for ls in styled.get(l["name"], [l]):
-            while len(rq_words) % 4:
+        for s, ls in enumerate(styled.get(l["name"], [l])):
+            while len(rq_words) < rq_base + s * rq_stride:
                 rq_words.append(rq_word(0, 1 << 23, 24))
             for oc in range(cout):
                 mant, exp = f32_parts(ls["requant"][oc])
