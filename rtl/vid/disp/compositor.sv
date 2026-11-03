@@ -56,7 +56,8 @@ module compositor
     input logic             single_sel = 1'b1,
     input logic             cursor     = 1'b0,
     input logic [1:0]       style      = 2'd0,
-    input logic [6:0]       fps        = 7'd0
+    input logic [6:0]       fps        = 7'd0,
+    input logic [1:0]       wb         = 2'd0
 );
     localparam int X0 = (H_ACTIVE - CAM_W) / 2;
     localparam int Y0 = (V_ACTIVE - CAM_H) / 2;
@@ -181,7 +182,7 @@ module compositor
             // Same cycle as ras_de/ras_x/ras_y: the registers above delay the
             // video pixel and the glyph together.  Unlit cells keep video.
             if (ras_de && osd_en &&
-                osd_font::lit(ras_x, ras_y, view_full, cursor, style, fps)) begin
+                osd_font::lit(ras_x, ras_y, view_full, cursor, style, fps, wb)) begin
                 {r, g, b} <= osd_font::yellow(ras_x, ras_y, cursor)
                            ? 24'hFFFF00 : 24'hFFFFFF;
             end

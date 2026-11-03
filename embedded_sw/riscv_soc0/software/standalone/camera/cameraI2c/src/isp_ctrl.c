@@ -31,6 +31,7 @@
 #include "isp_ctrl.h"
 
 #define UI32(off)       (*(volatile uint32_t *)(IO_APB_SLAVE_0_INPUT + (off)))
+#define REG_CTRL        0x8000u     /* bit 0 OSD, bits [2:1] OSD 上的白平衡状态 */
 #define REG_GAIN_RG     0x8008u
 #define REG_GAIN_B      0x800Cu
 #define REG_SUM(k)      (0x8010u + 4u * (k))
@@ -86,6 +87,13 @@ static uint32_t cal_left;           /* 白纸标定还要累加的帧数, 0: 不
 static uint32_t cal_r, cal_g, cal_b;
 static uint32_t key_frames;         /* KEY1 按住了几帧, 0: 没按 */
 
+/* OSD 第 4 行: 0 WB AUTO, 1 WB CAL, 2 WB LOCK */
+static void osd_wb(void)
+{
+    uint32_t st = cal_left ? 1u : (wb_lock ? 2u : 0u);
+    UI32(REG_CTRL) = 1u | (st << 1);
+}
+
 static void gains_write(void)
 {
     UI32(REG_GAIN_RG) = (g_q8[1] << 16) | g_q8[0];
@@ -128,6 +136,7 @@ void isp_ctrl_init(void)
     wb_lock = 0u;
     cal_left = 0u;
     key_frames = 0u;
+    osd_wb();
 }
 
 /* KEY1 每个新帧采样一次, 松开时按按住的帧数区分短按和长按. */
@@ -148,6 +157,7 @@ static void key1_frame(void)
         cal_r = cal_g = cal_b = 0u;
     }
     key_frames = 0u;
+    osd_wb();
 }
 
 /* 新曝光: 按 G 均值和目标的比例缩放, 每步最多 2 倍; >= 10 ms 时取 10 ms 整数倍. */
@@ -226,6 +236,7 @@ void isp_ctrl_poll(void)
             rg_q8 = clampu(cal_r / (cal_g >> 8), CAL_MIN, CAL_MAX);
             bg_q8 = clampu(cal_b / (cal_g >> 8), CAL_MIN, CAL_MAX);
             wb_lock = 1u;
+            osd_wb();
             bsp_printf("[awb] white rg=%d bg=%d (/256), locked\r\n", rg_q8, bg_q8);
         }
     }

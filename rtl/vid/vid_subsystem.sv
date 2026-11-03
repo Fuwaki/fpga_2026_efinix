@@ -178,6 +178,7 @@ module vid_subsystem
     input  logic                  ui_single_sel = 1'b1,
     input  logic                  ui_cursor     = 1'b0,
     input  logic [1:0]            ui_style      = 2'd0,
+    input  logic [1:0]            ui_wb         = 2'd0,
     input  logic                  ui_live       = 1'b0,
     // ISP per-colour gain (firmware AWB/AE), core clock.  Defaults to the
     // compile-time white balance of ISP_CFG.
@@ -543,6 +544,7 @@ module vid_subsystem
         (* async_reg = "true" *) logic [1:0] sty_s0, sty_s1;
         (* async_reg = "true" *) logic       live_s0, live_s1;
         (* async_reg = "true" *) logic [6:0] fps_s0, fps_s1;
+        (* async_reg = "true" *) logic [1:0] wb_s0, wb_s1;
         always_ff @(posedge pix_clk or negedge pix_rst_n) begin
             if (!pix_rst_n) begin
                 osd_s0 <= 1'b0; osd_s1 <= 1'b0;
@@ -550,6 +552,7 @@ module vid_subsystem
                 sel_s0 <= 1'b0; sel_s1 <= 1'b0;
                 cur_s0 <= 1'b0; cur_s1 <= 1'b0;
                 sty_s0 <= '0; sty_s1 <= '0;
+                wb_s0 <= '0; wb_s1 <= '0;
                 live_s0 <= 1'b0; live_s1 <= 1'b0;
                 fps_s0 <= '0; fps_s1 <= '0;
             end else begin
@@ -558,6 +561,7 @@ module vid_subsystem
                 sel_s0 <= ui_single_sel; sel_s1 <= sel_s0;
                 cur_s0 <= ui_cursor;    cur_s1 <= cur_s0;
                 sty_s0 <= ui_style;     sty_s1 <= sty_s0;
+                wb_s0 <= ui_wb;         wb_s1 <= wb_s0;
                 live_s0 <= ui_live;     live_s1 <= live_s0;
                 fps_s0 <= fps_core;     fps_s1 <= fps_s0;
             end
@@ -570,7 +574,8 @@ module vid_subsystem
             .st_bad_lines(cp_bad), .st_resyncs(cp_rs),
             .st_frame_sum(status.cp_frame_sum), .st_jumps(status.cp_jumps),
             .live(live_s1), .osd_en(osd_s1), .view_full(full_s1),
-            .single_sel(sel_s1), .cursor(cur_s1), .style(sty_s1), .fps(fps_s1));
+            .single_sel(sel_s1), .cursor(cur_s1), .style(sty_s1), .fps(fps_s1),
+            .wb(wb_s1));
         assign status.cp_bad_lines  = cp_bad[0];
         assign status.cp1_bad_lines = cp_bad[1];
         assign status.cp_resyncs    = cp_rs[0];

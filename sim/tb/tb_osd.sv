@@ -30,6 +30,7 @@ module tb_osd;
     logic       live, osd_en, view_full, single_sel, cursor;
     logic [1:0] style;
     logic [6:0] fps;
+    logic [1:0] wb;
 
     logic [7:0] r, g, b;
     logic       de, hs, vs;
@@ -45,7 +46,13 @@ module tb_osd;
         .st_bad_lines(st_bad_lines), .st_resyncs(st_resyncs),
         .st_frame_sum(st_frame_sum), .st_jumps(st_jumps),
         .live(live), .osd_en(osd_en), .view_full(view_full),
-        .single_sel(single_sel), .cursor(cursor), .style(style), .fps(fps));
+        .single_sel(single_sel), .cursor(cursor), .style(style), .fps(fps),
+        .wb(wb));
+
+    localparam logic [4:0] WB_WANT [3][7] = '{
+        '{5'd20, 5'd21, 5'd0, 5'd22, 5'd18, 5'd17, 5'd23},   // WB AUTO
+        '{5'd20, 5'd21, 5'd0, 5'd24, 5'd22, 5'd15, 5'd0},    // WB CAL
+        '{5'd20, 5'd21, 5'd0, 5'd15, 5'd23, 5'd24, 5'd25}};  // WB LOCK
 
     task automatic expect_row(
         input int row,
@@ -71,6 +78,18 @@ module tb_osd;
         cursor = 1'b0;
         style = 2'd0;
         fps = 7'd22;
+        wb = 2'd0;
+        // Row 3: WB AUTO / WB CAL / WB LOCK; column 6 is blank on rows 0-2.
+        foreach (WB_WANT[k])
+            for (int c = 0; c < 7; c++)
+                if (cell_code(c, 3, 0, 1, 0, 22, 2'(k)) !== WB_WANT[k][c])
+                    $fatal(1, "wb %0d cell %0d code %0d want %0d", k, c,
+                           cell_code(c, 3, 0, 1, 0, 22, 2'(k)), WB_WANT[k][c]);
+        for (int r = 0; r < 3; r++)
+            if (cell_code(6, r, 1, 1, 3, 99, 2'd2) !== 5'd0)
+                $fatal(1, "row %0d column 6 must be blank", r);
+        if (yellow(13'(OSD_X0), 13'(OSD_Y0 + 3 * OSD_PITCH), 1))
+            $fatal(1, "row 3 is never yellow");
         // Frame 1 text: FPS 22, cursor on SPLIT, STY 0.
         expect_row(0, 0, 0, 0, 22, 5'd12, 5'd13, 5'd14, 5'd0, 5'd4, 5'd4);
         expect_row(1, 0, 0, 0, 22, 5'd1,  5'd14, 5'd13, 5'd15, 5'd16, 5'd17);
@@ -107,7 +126,7 @@ module tb_osd;
             vs_d <= vs;
             if (de && frames_done < 2) begin
                 logic [23:0] expc;
-                expc = lit(13'(ox), 13'(oy), view_full, cursor, style, fps)
+                expc = lit(13'(ox), 13'(oy), view_full, cursor, style, fps, wb)
                      ? (yellow(13'(ox), 13'(oy), cursor) ? 24'hFFFF00 : 24'hFFFFFF)
                      : 24'h000000;
                 if ({r, g, b} !== expc)
@@ -127,6 +146,7 @@ module tb_osd;
                     view_full <= 1'b1;
                     style     <= 2'd3;
                     fps       <= 7'd100;
+                    wb        <= 2'd2;
                 end else if (frames_done == 1) begin
                     $display("tb_osd PASS");
                     $finish;

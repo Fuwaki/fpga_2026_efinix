@@ -537,6 +537,7 @@ wire        ui_hit = (w_soc_apb_paddr[15:6] == 10'h200);   // 0x8000-0x803F: ui_
 wire [31:0] ui_prdata, accel_prdata;
 wire        ui_pready, accel_pready, ui_pslverr, accel_pslverr;
 wire        ui_osd_en, ui_view_full, ui_single_sel, ui_cursor;
+wire [1:0]  ui_wb;
 wire [1:0]  ui_style;
 vid_pkg::isp_gain_t ui_isp_gain;       // firmware AWB/AE -> ISP
 vid_pkg::vid_status_t w_vid_status;
@@ -732,6 +733,7 @@ ui_regs u_ui_regs (
 	.single_sel (ui_single_sel),
 	.cursor     (ui_cursor),
 	.style      (ui_style),
+	.wb         (ui_wb),
 	.isp_gain   (ui_isp_gain),
 	.raw_sum    (vid_st_s2.raw_sum),
 	.raw_clip   (vid_st_s2.raw_clip),
@@ -902,6 +904,7 @@ vid_subsystem #(
     .ui_single_sel (ui_single_sel),
     .ui_cursor     (ui_cursor_live),
     .ui_style      (ui_style),
+    .ui_wb         (ui_wb),
     .ui_live       (1'b1),
     .isp_gain      (ui_isp_gain)
 );

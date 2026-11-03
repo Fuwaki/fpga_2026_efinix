@@ -9,8 +9,8 @@
 package osd_font;
     localparam int OSD_X0    = 16;
     localparam int OSD_Y0    = 16;
-    localparam int OSD_COLS  = 6;
-    localparam int OSD_ROWS  = 3;
+    localparam int OSD_COLS  = 7;
+    localparam int OSD_ROWS  = 4;
     localparam int OSD_GW    = 8;
     localparam int OSD_GH    = 16;
     localparam int OSD_PITCH = 20;
@@ -287,18 +287,99 @@ package osd_font;
                     default: row8 = 8'h00;
                 endcase
             end
+            5'd20: begin // W
+                case (y)
+                    3'd0: row8 = 8'h63;
+                    3'd1: row8 = 8'h63;
+                    3'd2: row8 = 8'h63;
+                    3'd3: row8 = 8'h6B;
+                    3'd4: row8 = 8'h7F;
+                    3'd5: row8 = 8'h77;
+                    3'd6: row8 = 8'h63;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
+            5'd21: begin // B
+                case (y)
+                    3'd0: row8 = 8'h7C;
+                    3'd1: row8 = 8'h66;
+                    3'd2: row8 = 8'h66;
+                    3'd3: row8 = 8'h7C;
+                    3'd4: row8 = 8'h66;
+                    3'd5: row8 = 8'h66;
+                    3'd6: row8 = 8'h7C;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
+            5'd22: begin // A
+                case (y)
+                    3'd0: row8 = 8'h18;
+                    3'd1: row8 = 8'h3C;
+                    3'd2: row8 = 8'h66;
+                    3'd3: row8 = 8'h66;
+                    3'd4: row8 = 8'h7E;
+                    3'd5: row8 = 8'h66;
+                    3'd6: row8 = 8'h66;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
+            5'd23: begin // O
+                case (y)
+                    3'd0: row8 = 8'h3C;
+                    3'd1: row8 = 8'h66;
+                    3'd2: row8 = 8'h66;
+                    3'd3: row8 = 8'h66;
+                    3'd4: row8 = 8'h66;
+                    3'd5: row8 = 8'h66;
+                    3'd6: row8 = 8'h3C;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
+            5'd24: begin // C
+                case (y)
+                    3'd0: row8 = 8'h3C;
+                    3'd1: row8 = 8'h66;
+                    3'd2: row8 = 8'h60;
+                    3'd3: row8 = 8'h60;
+                    3'd4: row8 = 8'h60;
+                    3'd5: row8 = 8'h66;
+                    3'd6: row8 = 8'h3C;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
+            5'd25: begin // K
+                case (y)
+                    3'd0: row8 = 8'h66;
+                    3'd1: row8 = 8'h6C;
+                    3'd2: row8 = 8'h78;
+                    3'd3: row8 = 8'h70;
+                    3'd4: row8 = 8'h78;
+                    3'd5: row8 = 8'h6C;
+                    3'd6: row8 = 8'h66;
+                    3'd7: row8 = 8'h00;
+                    default: row8 = 8'h00;
+                endcase
+            end
             default: row8 = 8'h00;
         endcase
     endfunction
 
-    // Six columns.  Digits are codes 2..11.  fps above 99 is shown as 99.
+    // Seven columns (the seventh is only used by row 3).  Digits are codes
+    // 2..11.  fps above 99 is shown as 99.  Row 3 is the white balance state
+    // from the firmware: wb 0 "WB AUTO", 1 "WB CAL", 2 "WB LOCK".
     function automatic logic [4:0] cell_code(
         input int          col,
         input int          row,
         input logic        view_full,
         input logic        cursor,
         input logic [1:0]  style,
-        input logic [6:0]  fps
+        input logic [6:0]  fps,
+        input logic [1:0]  wb = 2'd0
     );
         logic [6:0] f;
         logic [3:0] tens, ones;
@@ -340,6 +421,16 @@ package osd_font;
                     default: cell_code = 5'd0;
                 endcase
             end
+        end else if (row == 3) begin
+            case (col)
+                0: cell_code = 5'd20;                 // W
+                1: cell_code = 5'd21;                 // B
+                3: cell_code = (wb == 2'd0) ? 5'd22 : (wb == 2'd1) ? 5'd24 : 5'd15;  // A C L
+                4: cell_code = (wb == 2'd0) ? 5'd18 : (wb == 2'd1) ? 5'd22 : 5'd23;  // U A O
+                5: cell_code = (wb == 2'd0) ? 5'd17 : (wb == 2'd1) ? 5'd15 : 5'd24;  // T L C
+                6: cell_code = (wb == 2'd0) ? 5'd23 : (wb == 2'd1) ? 5'd0  : 5'd25;  // O - K
+                default: cell_code = 5'd0;
+            endcase
         end else begin
             case (col)
                 0: cell_code = (cursor == 1'b1) ? 5'd1 : 5'd0;
@@ -380,9 +471,12 @@ package osd_font;
                 end else if (dy < 13'(2 * OSD_PITCH)) begin
                     row = 2'd1;
                     gy  = 5'(dy - 13'(OSD_PITCH));
-                end else begin
+                end else if (dy < 13'(3 * OSD_PITCH)) begin
                     row = 2'd2;
                     gy  = 5'(dy - 13'(2 * OSD_PITCH));
+                end else begin
+                    row = 2'd3;
+                    gy  = 5'(dy - 13'(3 * OSD_PITCH));
                 end
             end
         end
@@ -394,7 +488,8 @@ package osd_font;
         input logic        view_full,
         input logic        cursor,
         input logic [1:0]  style,
-        input logic [6:0]  fps
+        input logic [6:0]  fps,
+        input logic [1:0]  wb = 2'd0
     );
         logic [2:0] col;
         logic [1:0] row;
@@ -403,12 +498,12 @@ package osd_font;
         logic [7:0] bits;
         lit = 1'b0;
         if (in_cell(x, y, col, row, gx, gy) && gy < 5'(OSD_GH)) begin
-            bits = row8(cell_code(int'(col), int'(row), view_full, cursor, style, fps), gy[3:1]);
+            bits = row8(cell_code(int'(col), int'(row), view_full, cursor, style, fps, wb), gy[3:1]);
             lit  = bits[~gx];
         end
     endfunction
 
-    // Row 0 is never yellow.  Row 1 is yellow while it is selected (cursor 0),
+    // Rows 0 and 3 are never yellow.  Row 1 is yellow while it is selected (cursor 0),
     // row 2 while cursor is 1.  Gaps stay unlit, so this only colours ink.
     function automatic logic yellow(
         input logic [12:0] x,
@@ -427,8 +522,10 @@ package osd_font;
                     row = 2'd0;
                 else if (dy < 13'(2 * OSD_PITCH))
                     row = 2'd1;
-                else
+                else if (dy < 13'(3 * OSD_PITCH))
                     row = 2'd2;
+                else
+                    row = 2'd3;
                 if (row == 2'd1 && cursor == 1'b0)
                     yellow = 1'b1;
                 else if (row == 2'd2 && cursor == 1'b1)

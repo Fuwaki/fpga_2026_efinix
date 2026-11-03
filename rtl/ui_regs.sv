@@ -2,7 +2,8 @@
 //
 // Sapphire presents a byte address.  The top gates PSEL to 0x8000-0x803F, so
 // the accelerator's low window (0x34-0x54) is left alone.
-//   0x8000 CTRL    bit 0 osd_en, reset 1.  Other bits read 0.
+//   0x8000 CTRL    bit 0 osd_en, reset 1.  Bits [2:1] wb: white balance state
+//                  shown by the OSD (0 auto, 1 calibrating, 2 locked), reset 0.
 //   0x8004 MENU    bit 0 view_full (reset 0), bit 1 single_sel (reset 1),
 //                  bit 2 cursor (reset 0), bits [4:3] style (reset 0).
 //   0x8008 GAIN_RG ISP gain Q4.8: [11:0] R, [27:16] G   } reset: the compile-time
@@ -32,6 +33,7 @@ module ui_regs
     output logic        single_sel,
     output logic        cursor,
     output logic [1:0]  style,
+    output logic [1:0]  wb,
 
     output isp_gain_t   isp_gain,
     input  logic [3:0][31:0] raw_sum,
@@ -48,6 +50,7 @@ module ui_regs
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             osd_en     <= 1'b1;
+            wb         <= 2'd0;
             view_full  <= 1'b0;
             single_sel <= 1'b1;
             cursor     <= 1'b0;
@@ -55,7 +58,10 @@ module ui_regs
             isp_gain   <= GAIN_RST;
         end else if (wr) begin
             case (reg_a)
-                4'd0: osd_en <= pwdata[0];
+                4'd0: begin
+                    osd_en <= pwdata[0];
+                    wb     <= pwdata[2:1];
+                end
                 4'd1: begin
                     view_full  <= pwdata[0];
                     single_sel <= pwdata[1];
@@ -74,7 +80,7 @@ module ui_regs
 
     always_comb begin
         case (reg_a)
-            4'd0:    prdata = {31'd0, osd_en};
+            4'd0:    prdata = {29'd0, wb, osd_en};
             4'd1:    prdata = {27'd0, style, cursor, single_sel, view_full};
             4'd2:    prdata = {4'd0, isp_gain[1], 4'd0, isp_gain[0]};
             4'd3:    prdata = {20'd0, isp_gain[2]};
