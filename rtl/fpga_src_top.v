@@ -336,8 +336,8 @@ wire					io_systemReset;
 //===================================================================================================
 
 assign w_arstn  		       = i_pll_locked & pll_locked & user_pll_locked;
-// KEY1 (i_arstn) used to reset the PLLs, CSI RX and DSI pins.  It is now a
-// user key read by the firmware (ui_regs 0x8024); these see it released.
+// KEY1 (i_arstn) used to reset the PLLs, CSI RX and DSI pins.  It no longer
+// resets anything; its debounced state is only in the UART telemetry byte 47.
 assign pll_inst1_RSTN  		= 1'b1;
 assign USER_PLL_RSTN      		= 1'b1;
 assign mipi_dsi_tx_pll_RSTN 	= 1'b1;
@@ -737,7 +737,7 @@ ui_regs u_ui_regs (
 	.isp_gain   (ui_isp_gain),
 	.raw_sum    (vid_st_s2.raw_sum),
 	.raw_clip   (vid_st_s2.raw_clip),
-	.key1       (key1_pressed),
+	.wb_key     (key0_pressed),
 	.raw_frames (vid_st_s2.raw_frames),
 	.gray_sum   (vid_st_s2.gray_sum)
 );
@@ -749,9 +749,9 @@ key_debounce u_key0 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key0), .pre
 key_debounce u_key1 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(i_arstn), .pressed(key1_pressed));
 key_debounce u_key2 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key2), .pressed(key2_pressed));
 key_debounce u_key3 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key3), .pressed(key3_pressed));
-// Hold KEY2 and the style row highlights immediately; hold KEY0 and the
-// view row does.  Firmware still latches the choice into ui_cursor.
-wire ui_cursor_live = key2_pressed | (ui_cursor & ~key0_pressed);
+// KEY2 toggles the menu row in firmware; KEY0 is the white balance key
+// (ui_regs 0x8024), so the cursor comes from the register alone.
+wire ui_cursor_live = ui_cursor;
 
 riscv_soc0 u_riscv_soc0
 (
@@ -1394,7 +1394,7 @@ always @(*) begin
 	dbg_crc = 8'd0;
 	for (dbg_i=0; dbg_i<46; dbg_i=dbg_i+1) dbg_crc = dbg_crc ^ dbg_msg[dbg_i];
 	dbg_msg[46] = dbg_crc;
-	dbg_msg[47] = {5'd0, key3_pressed, key2_pressed, key0_pressed};
+	dbg_msg[47] = {4'd0, key1_pressed, key3_pressed, key2_pressed, key0_pressed};
 end
 
 // --- 115200 8N1 发送器（sys_clk 域） ---------------------------------------

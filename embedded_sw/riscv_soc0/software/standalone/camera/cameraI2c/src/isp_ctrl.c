@@ -19,7 +19,7 @@
  *   固定白平衡同一个工作点.  曝光 >= 10 ms 时取 10 ms 的整数倍 (50 Hz 灯光
  *   不出条纹), 最长 40 ms.  剩下的亮度误差由上面的数字增益吸收.
  *   改曝光后等 3 帧再看, 传感器要 1-2 帧才生效.
- * 白纸标定 (KEY1): 短按 = 对着占满画面的白纸, 取 4 帧整帧原始统计的 R/G、B/G
+ * 白纸标定 (KEY0): 短按 = 对着占满画面的白纸, 取 4 帧整帧原始统计的 R/G、B/G
  *   直接作为光源估计, 并锁定 (不再用灰像素更新).  长按约 1 秒 = 回到自动.
  *   过曝超过 2% 的帧不用, 等 AE 先把曝光降下来.  锁定时 AE 和亮度照常.
  ******************************************************************************/
@@ -36,7 +36,7 @@
 #define REG_GAIN_B      0x800Cu
 #define REG_SUM(k)      (0x8010u + 4u * (k))
 #define REG_CLIP        0x8020u
-#define REG_KEY1        0x8024u
+#define REG_WBKEY        0x8024u
 #define REG_FRAMES      0x8028u
 #define REG_GRAY(k)     (0x802Cu + 4u * (k))  /* R, G, B (各取高 8 位) 之和 */
 
@@ -73,9 +73,10 @@
 #define AE_SETTLE      3u           /* 改曝光后跳过的帧数 */
 
 #define CAL_FRAMES     4u           /* 白纸标定累加的帧数 */
-#define LONG_FRAMES    20u          /* KEY1 按住这么多帧 (约 1 s) 算长按 */
+#define LONG_FRAMES    20u          /* KEY0 按住这么多帧 (约 1 s) 算长按 */
 #define CAL_MIN        64u          /* 白纸标定的光源范围, Q8, 比自动的范围宽 */
 #define CAL_MAX        512u
+#define CAL_TIMEOUT    40u          /* 约 2 s 还没取够 4 帧不过曝的就放弃 */
 
 static uint32_t g_q8[3];            /* 当前增益 R, G, B */
 static uint32_t rg_q8, bg_q8;       /* 光源估计 */
@@ -85,7 +86,8 @@ static uint32_t ae_wait;
 static uint32_t wb_lock;            /* 1: 白纸标定后锁定 */
 static uint32_t cal_left;           /* 白纸标定还要累加的帧数, 0: 不在标定 */
 static uint32_t cal_r, cal_g, cal_b;
-static uint32_t key_frames;         /* KEY1 按住了几帧, 0: 没按 */
+static uint32_t cal_wait;           /* 标定最多再等几帧 (一直过曝时放弃) */
+static uint32_t key_frames;         /* KEY0 按住了几帧, 0: 没按 */
 
 /* OSD 第 4 行: 0 WB AUTO, 1 WB CAL, 2 WB LOCK */
 static void osd_wb(void)
@@ -139,10 +141,10 @@ void isp_ctrl_init(void)
     osd_wb();
 }
 
-/* KEY1 每个新帧采样一次, 松开时按按住的帧数区分短按和长按. */
-static void key1_frame(void)
+/* KEY0 每个新帧采样一次, 松开时按按住的帧数区分短按和长按. */
+static void wbkey_frame(void)
 {
-    if (UI32(REG_KEY1) & 1u) {
+    if (UI32(REG_WBKEY) & 1u) {
         if (key_frames < 255u) key_frames++;
         return;
     }
@@ -154,6 +156,7 @@ static void key1_frame(void)
         bsp_printf("[awb] auto\r\n");
     } else {
         cal_left = CAL_FRAMES;
+        cal_wait = CAL_TIMEOUT;
         cal_r = cal_g = cal_b = 0u;
     }
     key_frames = 0u;
@@ -197,7 +200,7 @@ void isp_ctrl_poll(void)
     if ((UI32(REG_FRAMES) & 0xFFu) != f0)           /* 读的时候换了帧, 下次再来 */
         return;
     frames_seen = f0;
-    key1_frame();
+    wbkey_frame();
 
     /* 减黑电平后的均值 */
     uint32_t m[3];
@@ -226,6 +229,11 @@ void isp_ctrl_poll(void)
 
     /* 白纸标定: 整帧都是白纸, 减黑电平后的 R/G、B/G 就是光源颜色.
      * 每帧的和 < 2^28, 右移 4 位再累加 4 帧不会溢出. */
+    if (cal_left && cal_wait && --cal_wait == 0u) {
+        cal_left = 0u;                              /* 过曝太久, 回到原来的状态 */
+        osd_wb();
+        bsp_printf("[awb] white paper clipped, give up\r\n");
+    }
     if (cal_left && clip * 50u <= PIX_ALL) {
         uint32_t blc = BLC * PIX_PER_PHASE;
         uint32_t sg = s[PH_G0] / 2u + s[PH_G1] / 2u;

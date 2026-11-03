@@ -103,8 +103,9 @@ void main(void)
 
     /* The debug print plus the 5e6-nop delay used to sample the keys once
      * per loop, so a press that rose and fell between samples was lost.
-     * Poll throughout that delay.  KEY0 selects the view row, KEY2 the
-     * style row, KEY3 confirms.  Bit 0 is the camera LED, not a key. */
+     * Poll throughout that delay.  KEY2 toggles between the view row and
+     * the style row, KEY3 confirms.  KEY0 is the white balance key, read by
+     * isp_ctrl.c through ui_regs.  Bit 0 is the camera LED, not a key. */
     while (1) {
         for (volatile uint32_t delay = 0; delay < 5000000u; ++delay) {
             if ((delay & 1023u) == 0u) {
@@ -113,11 +114,9 @@ void main(void)
                 uint32_t rose = keys & ~keys_prev;
                 uint32_t changed = 0u;
                 keys_prev = keys;
-                if (rose & 0x2u) {
-                    if (cursor != 0u) { cursor = 0u; changed = 1u; }
-                }
                 if (rose & 0x4u) {
-                    if (cursor != 1u) { cursor = 1u; changed = 1u; }
+                    cursor ^= 1u;
+                    changed = 1u;
                 }
                 if (rose & 0x8u) {
                     if (cursor == 0u)
