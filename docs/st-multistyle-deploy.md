@@ -240,7 +240,7 @@ python3 fpga_src-st-fmax/tools/st_merge_styles.py --out $W/w8a8 $W/w8a8_s0 $W/w8
 ln -sfn s3b/w8a8 st_work/board_w8a8
 ```
 
-然后在 `fpga_src-st-fmax` 里重跑第 4 节的 4 个生成命令，跑下面的仿真，最后 `tools/build_all.sh --no-ip`（固件也要重编），JTAG 加载，跑 `tools/board_smoke_test.py --vid --json --seconds 10 --clk-mhz 125`。
+然后在 `fpga_src-st-fmax` 里重跑第 4 节的 4 个生成命令，跑下面的仿真，最后 `tools/build_all.sh`（全流程：固件要重新嵌入 SoC IP），JTAG 加载，跑 `tools/board_smoke_test.py --vid --json --seconds 10 --clk-mhz 125`。
 确认无误后 `tools/build_all.sh --no-fpga --flash` 写入 Flash。
 
 **packet_guide**：每个风格的 guide 输出是 `relu(guide_conv(x)·g_s + b_s)`。拆分时它已经折进 guide 卷积，权重是 W·g、偏置是 b·g + b_s，g > 0。

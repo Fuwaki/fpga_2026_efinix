@@ -8,7 +8,7 @@
 #
 # 用法:
 #   tools/build_all.sh              # 全流程
-#   tools/build_all.sh --no-ip      # 只重编固件+FPGA (没改 SoC 配置时更快)
+#   (没有 --no-ip: 固件只能通过重新生成 SoC IP 进 bitstream, 见下面的检查)
 #   tools/build_all.sh --fpga-only  # 只重跑 FPGA 流程 (改 RTL 时最快)
 #   tools/build_all.sh --fpga-only --program  # 编译后通过 JTAG 临时下载
 #   tools/build_all.sh --no-fpga --flash      # 把现有 outflow/fpga_src.hex 写入 SPI Flash
@@ -59,7 +59,13 @@ DO_FLASH=0
 for a in "$@"; do
   case "$a" in
     --fpga-only|--rtl-only) DO_FW=0; DO_IP=0 ;;
-    --no-ip)     DO_IP=0 ;;
+    --no-ip)
+      # The firmware reaches the bitstream only as the SoC IP's RAM init
+      # (ip/riscv_soc0/*ram_symbol*.bin, written by gen_ip.py).  Rebuilding the
+      # firmware without regenerating the IP silently ships the old firmware;
+      # three board builds on 2026-11-03 did exactly that.
+      echo "--no-ip 已取消：改了固件必须跑全流程 tools/build_all.sh；只改 RTL 用 --fpga-only" >&2
+      exit 2 ;;
     --no-fpga)   DO_FPGA=0 ;;
     --program)   DO_PROGRAM=1 ;;
     --flash)     DO_FLASH=1; DO_FW=0; DO_IP=0 ;;

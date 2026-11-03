@@ -151,9 +151,10 @@ tools/build_all.sh
 # 要求 ip/riscv_soc0/riscv_soc0.v 已存在；干净 clone 先跑一次全流程
 tools/build_all.sh --fpga-only
 
-# 改了固件但没改 SoC 配置（仍需要已有 IP）
-tools/build_all.sh --no-ip
 ```
+
+> **改了固件一定要跑全流程。** 固件是作为 SoC IP 的片上 RAM 初值（`ip/riscv_soc0/*ram_symbol*.bin`）进 bitstream 的，
+> 只有重新生成 IP 才会更新。以前的 `--no-ip` 会重编固件却不更新 IP，板上跑的还是旧固件，现在这个选项会直接报错。
 
 只跑 FPGA 时等价于：
 
