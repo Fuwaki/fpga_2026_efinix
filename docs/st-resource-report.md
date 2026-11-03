@@ -1,6 +1,6 @@
 # 硬件资源使用报告
 
-2026-11-03，feat/st-fmax（91514ca 的数据；最终写入 Flash 的是 a8ff3b2，它把 KEY1 改成白纸标定白平衡键，XLR 60,525（99.55%，+183），sys_clk fmax 134.5 MHz，RAM/DSP 不变，下面各表仍是 91514ca 的逐模块数据）：最终版 3 风格网络 `s3d`（bright、gouache、comic，带 packet_guide，训练端修正了偏黄），用户逻辑跑在 125 MHz。
+2026-11-03，feat/st-fmax（91514ca 的数据；最终写入 Flash 的是 a83d75c：KEY1 改成白纸标定白平衡键，OSD 加一行显示白平衡状态，XLR 60,318（99.21%），sys_clk fmax 142.1 MHz，RAM/DSP 不变；XLR 比 91514ca 还少，是布局结果的波动，下面各表仍是 91514ca 的逐模块数据）：最终版 3 风格网络 `s3d`（bright、gouache、comic，带 packet_guide，训练端修正了偏黄），用户逻辑跑在 125 MHz。
 这一版 ISP 的白平衡和曝光改成固件闭环控制（ISP 增益运行时可写，新增灰像素统计），见 docs/video_architecture.md。
 
 - **器件**：Efinix Titanium Ti60F225，速度等级 I3，Efinity 2026.1。

@@ -1,10 +1,10 @@
 # fpga_src — Ti60F225 + SC431HAI 摄像头 → HDMI
 
-> **当前版本（最终版，2026-11-03）**：分支 feat/st-fmax a8ff3b2，已写入 SPI Flash。
+> **当前版本（最终版，2026-11-03）**：分支 feat/st-fmax a83d75c，已写入 SPI Flash。
 > - 摄像头 1280×720 → ISP（固件 AE/AWB）→ 3 风格风格迁移加速器（模型 s3d：bright / gouache / comic，按键切换）→ HDMI。
 > - 用户逻辑 125 MHz，板上约 16.8 fps，`errors 0`。
-> - 按键：KEY0 选视图行，KEY2 选风格行，KEY3 确认；KEY1 短按 = 对白纸标定白平衡并锁定，长按约 1 秒 = 回到自动（KEY1 不再是复位键）。
-> - 资源：XLR 60525/60800（99.55%），RAM10 256/256，DSP 159/160；sys_clk fmax 134.5 MHz。
+> - 按键：KEY0 选视图行，KEY2 选风格行，KEY3 确认；KEY1 短按 = 对白纸标定白平衡并锁定，长按约 1 秒 = 回到自动（KEY1 不再是复位键）。OSD 第 4 行显示 `WB AUTO` / `WB CAL` / `WB LOCK`。
+> - 资源：XLR 60318/60800（99.21%），RAM10 256/256，DSP 159/160；sys_clk fmax 142.1 MHz。
 > - 文档：docs/st-resource-report.md（资源）、docs/st-network-architecture.md（网络和对比）、docs/st-multistyle-deploy.md（模型部署）、docs/video_architecture.md（视频通路、ISP、AE/AWB 寄存器）、docs/st-engineering-notes.md（工程经验）。
 > - 下面第 1–13 节有不少是早期移植阶段的记录，数字以上面这些文档为准。
 
@@ -269,7 +269,7 @@ APB 的其余地址目前没有从机，读 0。
 - **不是上个电就能看的成品**：本次交付到"综合/布局布线/bitstream 全过 + 时序收敛 +
   固件编译并嵌入"为止，**没有上板验证**（本机 `lsusb` 里没有 Efinix 下载器，
   也无法接摄像头/显示器）。
-- 板上资源（最终版 a8ff3b2）：XLR 99.55%（60525/60800）、Memory Block 256/256、DSP 159/160，几乎没有余量，见 docs/st-resource-report.md。
+- 板上资源（最终版 a83d75c）：XLR 99.21%（60318/60800）、Memory Block 256/256、DSP 159/160，几乎没有余量，见 docs/st-resource-report.md。
 - 自动白平衡在部分场景下仍容易偏绿（docs/video_architecture.md 第 8 节）；演示时用 KEY1 对白纸标定锁定。
 - UART0 已在 SoC 里使能但**未接引脚**（`rxd` 固定 1），所以固件里的
   `CAM_I2C_VERBOSE` 打开也看不到输出。

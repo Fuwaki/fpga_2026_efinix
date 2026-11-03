@@ -1,6 +1,6 @@
 # 风格迁移加速器工程笔记（写技术报告用的素材）
 
-2026-11-03。最早写于分支 feat/st-guided（板上版本 cfb1faa）；现在的最终版本是 feat/st-fmax a8ff3b2（见第 0 节）。
+2026-11-03。最早写于分支 feat/st-guided（板上版本 cfb1faa）；现在的最终版本是 feat/st-fmax a83d75c（见第 0 节）。
 这里记录从视频通路改造到 guided 网络上板过程中，值得写进报告的发现、坑和数据。
 每条都标了对应的提交或文档，方便回查细节。
 
@@ -18,7 +18,8 @@
 | 11-03 | 0f2a1b7 | ISP 增益改成运行时寄存器，固件做 AWB/AE | 16.8 fps | XLR 60183 |
 | 11-03 | 8776b5e | 换成 s3d（修正偏黄的 3 风格模型，结构不变） | 16.8 fps | 加速器资源不变 |
 | 11-03 | 91514ca（feat/st-fmax） | s3d + 灰像素白平衡统计 | 16.7–17.0 fps（每帧 7.36M–7.50M 周期） | XLR 60342（99.25%），RAM 256/256，DSP 159/160，sys_clk fmax 134.8 MHz |
-| 11-03 | **a8ff3b2（feat/st-fmax，已写入 Flash，最终版）** | **KEY1 改成白纸标定白平衡（短按标定锁定，长按回自动）** | **16.8 fps** | XLR 60525（99.55%），RAM 256/256，DSP 159/160，sys_clk fmax 134.5 MHz |
+| 11-03 | a8ff3b2 | KEY1 改成白纸标定白平衡（短按标定锁定，长按回自动） | 16.8 fps | XLR 60525（99.55%），sys_clk fmax 134.5 MHz |
+| 11-03 | **a83d75c（feat/st-fmax，已写入 Flash，最终版）** | **OSD 第 4 行显示白平衡状态（WB AUTO / CAL / LOCK）** | **16.9 fps** | XLR 60318（99.21%），RAM 256/256，DSP 159/160，sys_clk fmax 142.1 MHz |
 
 guided 版的数值精度：在 6 张 640×360 测试图上，整数化定义（LN、FiLM 的整数算法）相对 fp32 最多损失 0.08 dB。
 硬件与 Python golden（`tools/st_guided.py`）逐位一致。

@@ -74,7 +74,7 @@ R/G/B 增益从 0f2a1b7 起是运行时输入 `isp_gain`（`vid_pkg::isp_gain_t`
 
 | 地址 | 内容 |
 |---|---|
-| 0x8000 | CTRL |
+| 0x8000 | CTRL：bit 0 OSD 开关，bits [2:1] OSD 显示的白平衡状态（0 AUTO、1 CAL、2 LOCK，固件写） |
 | 0x8004 | MENU（bits[4:3] 风格） |
 | 0x8008 | GAIN_RG：[11:0] R，[27:16] G（Q4.8） |
 | 0x800C | GAIN_B：[11:0] B |
@@ -92,6 +92,7 @@ R/G/B 增益从 0f2a1b7 起是运行时输入 `isp_gain`（`vid_pkg::isp_gain_t`
 - 灰像素：去马赛克后的偶数列，G ≥ 64，R/G/B < 1000，|R−G| 和 |B−G| < 3/16·G。
 - 白纸标定（a8ff3b2）：KEY1 短按时取 4 帧整帧原始统计（过曝超过 2% 的帧不用），减黑电平后的 R/G、B/G 直接作为光源估计并锁定，不再用灰像素更新；长按约 1 秒回到自动。锁定时 AE 和亮度照常。
   KEY1 原来是 PLL/CSI 的异步复位，现在不再复位任何东西。
+  OSD 第 4 行显示状态（a83d75c）：`WB AUTO`、`WB CAL`（采样中）、`WB LOCK`。
 - 固件总共约 7.2 KB（text 4,104 + data 1,018 + bss 2,100），OCR 16 KB 不用改。
 
 ## 5. 接入一个加速器
