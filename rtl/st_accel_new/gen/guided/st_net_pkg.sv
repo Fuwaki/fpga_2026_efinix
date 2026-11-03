@@ -32,7 +32,7 @@ package st_net_pkg;
   localparam int ST_FILM_SZ = 26;   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
   localparam int ST_FILM_SG = 24;   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
   localparam int ST_FILM_SB = 20;   // off = (Bb*Mb + 2**(SB-1)) >>> SB
-  localparam int ST_FILM_C0 = 21922;   // affine offset, 19-bit signed
+  localparam int ST_FILM_C0 = 19846;   // affine offset, 19-bit signed
   localparam int ST_FILM_KB = 900;   // reduce bias scale, br_o * KB
   localparam int ST_ADD_RQ_BASE = 839;
   localparam int ST_NET_W = 640;
@@ -212,7 +212,7 @@ package st_net_pkg;
     case (i)
       839: st_add_factor = '{mant: 24'h8fd8b9, k: 6'd25};
       840: st_add_factor = '{mant: 24'hb1eb01, k: 6'd24};
-      841: st_add_factor = '{mant: 24'ha959fa, k: 6'd24};
+      841: st_add_factor = '{mant: 24'h92d0ee, k: 6'd24};
       default: st_add_factor = '0;
     endcase
   endfunction

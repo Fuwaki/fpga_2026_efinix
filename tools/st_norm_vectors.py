@@ -35,6 +35,7 @@ Usage: st_norm_vectors.py --case NAME --out DIR [--manifest DIR]
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -79,7 +80,9 @@ def groups(t: np.ndarray) -> list[str]:
 def golden(img: Path, cache: Path, manifest: Path) -> Path:
     """Run the golden model once; the DDR dumps land in cache."""
     stamp = cache / "stamp.json"
-    key = {"image": str(img), "exists": img.exists(), "manifest": str(manifest)}
+    # keyed on the manifest's content: board_w8a8 is a symlink that moves
+    digest = hashlib.sha256((manifest / "manifest.json").read_bytes()).hexdigest()
+    key = {"image": str(img), "exists": img.exists(), "manifest": digest}
     if stamp.exists() and json.loads(stamp.read_text()) == key:
         return cache
     cache.mkdir(parents=True, exist_ok=True)
@@ -210,10 +213,12 @@ def case_film(out: Path, cache: Path) -> None:
     plane = x.shape[1] * x.shape[2]
     if plane != FILM_PLANE:
         sys.exit(f"st_norm_vectors: FAIL plane {plane} != {FILM_PLANE}")
-    mul, off, _ = G.film_coeffs(spec, x.sum((1, 2)), plane)
+    # the hardware's shifts are shared by every style (st_net_pkg::ST_FILM_*)
+    sh = G.film_shifts([p["film_layers"][0] for p in G.style_packets(SPEC)], FILM_PLANE)
+    mul, off, _ = G.film_coeffs(spec, x.sum((1, 2)), plane, sh)
     # the golden's own film_int, and the same affine computed from the
     # coefficients the testbench will write through the port: they must agree
-    exp = G.film_int(x, spec, QMAX)
+    exp = G.film_int(x, spec, QMAX, sh)
     y = (x * mul[:, None, None] + off[:, None, None]
          + (1 << (G.FILM_P - 1))) >> G.FILM_P
     y = np.clip(y, -QMAX, QMAX)

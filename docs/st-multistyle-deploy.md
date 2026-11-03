@@ -3,6 +3,11 @@
 2026-11-03，feat/st-guided（82f4c34）。第一次部署的是 2 个风格：whitebox 和 sky。
 模型来自 `fpga_st_train/experiments/tiny_dw_whitebox_sky_480p`。
 
+**当前上板的模型**是 `fpga_st_train/runs/codex_fix`：在上面那个模型的基础上做了权重空间编辑，见它的 README。
+导出在 `st_work/cf`，`st_work/board_w8a8` 指向 `cf/w8a8`；第一版的导出还留在 `st_work/ms2`。
+这版的 FiLM 共享常数是 sz26 sg24 sb20、c0 19846、kb900，联合校准时 scale 最多放大 1.3 倍。
+板上 14.6 fps，`errors 0`。
+
 方案选择见 docs/st-multistyle-packets.md。实际走的是方案 B：所有风格都放在片上，按 `ui_style` 选基址。
 扩 FiLM ROM 需要的 RAM 不是靠缩小 OCR 换来的，而是把两个小 FIFO 改成 SRL 实现腾出来的（见第 4 节）。
 
@@ -152,6 +157,9 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 3. 编译，JTAG 加载，跑 `tools/board_smoke_test.py --vid --json --seconds 10`。
 
 只要网络结构和通道数不变，RTL 不用改。
+
+`board_w8a8` 换目标以后测试向量必须跟着重新生成。`st_norm_vectors.py` 的 golden 缓存按 manifest 内容做 key，`st_io_vec` 在 make 里依赖 manifest，其余的向量每次运行都会重新生成。
+以前缓存按路径做 key，换模型后会误用旧缓存。
 
 **4 个风格**：
 

@@ -2,7 +2,7 @@
  "format": "st-net-guided-v1",
  "source": "/data/competition/2026fpga/st_work/board_w8a8",
  "arch": "tiny_dw_guided",
- "manifest_sha256": "0516210e003f68539e94ea0fcc597e3f6232023a14e119aaf1f78e7dbcff2b6c",
+ "manifest_sha256": "1f84f935088fee14f10e73aaa3ee171cab782208f16b5e222cdb9f4088267042",
  "img_w": 640,
  "img_h": 360,
  "cam_w": 1280,
@@ -633,8 +633,8 @@
    "dst_point": 19,
    "src_point": 20,
    "rq_index": 841,
-   "factor": 0.6615291833877563,
-   "mant": 11098618,
+   "factor": 0.5735005140304565,
+   "mant": 9621742,
    "k": 24
   }
  ],
@@ -778,7 +778,7 @@
   "sz": 26,
   "sg": 24,
   "sb": 20,
-  "c0": 21922,
+  "c0": 19846,
   "kb": 900
  }
 }

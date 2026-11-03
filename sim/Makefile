@@ -221,8 +221,9 @@ IO_CASES  := unpack_p10 unpack_p17 unpack_p13_hrep unpack_p19_hrep unpack_p1 \
 ADD_CASES := add_res add_h2 add_head
 EXTRA_tb_st_io  := $(ST_ENG)
 EXTRA_tb_st_add := $(ST_ENG)
+# the manifest is a dependency: board_w8a8 is a symlink that moves
 $(OBJ)/st_io_vec/stamp: $(ROOT)/tools/st_io_vectors.py $(ROOT)/tools/st_golden.py \
-                        $(ROOT)/tools/st_guided.py
+                        $(ROOT)/tools/st_guided.py $(ROOT)/../st_work/board_w8a8/manifest.json
 	@mkdir -p $(OBJ)/st_io_vec
 	$(ROOT)/tools/st_io_vectors.py --out $(OBJ)/st_io_vec
 	@touch $@
