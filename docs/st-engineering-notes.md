@@ -171,20 +171,19 @@ docs/st-guided-adr.md 有完整的 pass 表。要点如下：
   - 训练端 guided.rs 的 `input_quant="rgb565"` 和硬件量化公式要一致。
   - 输入偏置修正以后，565 输入感知训练的收益已经不大。输出抖动则完全在训练之外。
 
-## 7. 多风格的准备
+## 7. 多风格
 
-docs/st-multistyle-packets.md 有完整方案。这里只记要点：
+方案对比见 docs/st-multistyle-packets.md，实际部署见 docs/st-multistyle-deploy.md。要点：
 
 - 卷积全部共享。每个风格只换 LN 的 γ、β（80 通道）和 FiLM MLP，每个风格约 2.3 KB。
-- 推荐方案 B：
-  - LN 系数按 `style × 20` 行偏移存在 coef_ram 的空闲区。
-  - FiLM ROM 按风格扩深。
+- 走方案 B：
+  - LN 系数按 `style × 20` 行偏移存在 coef_ram 的空闲区；
+  - FiLM ROM 每个风格 512 行；
   - `ui_style` 在每帧开始时锁存。
-- RAM 已经用满，扩 FiLM ROM 的那几块 RAM 要从别处换出来。候选：
-  - OCR 从 16 KB 降到 8 KB，固件只有约 4.7 KB；
-  - fifo_sync_core 按 40 位切片，还没上板验证。
-- st_film 的移位参数（SZ/SG/SB/C0/KB）目前是按 p90 单风格拟合的模块参数。多风格要联合拟合，或者每个风格各一套。
-- 训练端的整数导出目前拒绝 styles > 1，需要先补上风格包的导出。
+- 2 个风格（whitebox + sky）已上板（82f4c34），14.8 fps。
+- 多出来的 2 个 RAM10 靠 `fifo_srl_core` 腾出：st_add、st_norm 的 16 深 FIFO 改用 SRL，省 4 块。fifo_sync_core 按 40 位切片不省 RAM。
+- FiLM 的移位常数所有风格共用，取各风格的最小值；C0/KB 由联合校准的 scale 决定，所有风格相同。
+- 训练端的整数导出仍然拒绝 styles > 1，所以在外部先拆成单风格、联合校准、分别导出，再合并。
 
 ## 8. 开发方法
 

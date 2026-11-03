@@ -2,6 +2,8 @@
 
 2026-11-03，基于 feat/st-guided（e615df3）的实际资源和代码。
 
+> 已按方案 B 部署了 2 个风格，见 docs/st-multistyle-deploy.md。RAM 不是靠缩小 OCR 换的，而是把两个小 FIFO 改成 SRL 实现腾出来的。
+
 ## 前提
 
 做法和 `fns-prune/runs/multistyle-44355` 一样：卷积主干共享，每个风格只换一小包参数。
