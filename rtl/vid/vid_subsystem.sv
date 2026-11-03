@@ -25,6 +25,7 @@
 module vid_subsystem
     import vid_pkg::*;
 #(
+    parameter int CLK_HZ          = 100_000_000,   // clk, for the 1 s OSD fps window
     parameter bit ENABLE_SELFTEST = 1,
     // External AXI master (ext_*, the ST accelerator today; a frame
     // accelerator that is not a proc_engine later).  0 = it gets no DDR
@@ -507,8 +508,8 @@ module vid_subsystem
             if (!rst_n)                          status.seq_gap <= '0;
             else if (rd_tok.valid && rd1_tok.valid) status.seq_gap <= rd_tok.src_seq - rd1_tok.src_seq;
 
-        // Processed-frame completions in the last 1 s of core_clk.  Stays 0
-        // while PROC_EN is off (pr_frames never moves).  Clamped at 99.
+        // Processed-frame completions in the last 1 s (CLK_HZ cycles of clk).
+        // Stays 0 while PROC_EN is off (pr_frames never moves).  Clamped at 99.
         logic [26:0]          fps_div;
         logic [SEQ_W-1:0]     pr_prev;
         logic [6:0]           fps_core;
@@ -518,7 +519,7 @@ module vid_subsystem
                 fps_div  <= '0;
                 pr_prev  <= '0;
                 fps_core <= '0;
-            end else if (fps_div == 27'd99_999_999) begin
+            end else if (fps_div == 27'(CLK_HZ - 1)) begin
                 fps_div  <= '0;
                 pr_prev  <= status.pr_frames;
                 fps_core <= (fps_delta > SEQ_W'(99)) ? 7'd99 : fps_delta[6:0];

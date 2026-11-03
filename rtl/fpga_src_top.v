@@ -829,6 +829,7 @@ localparam vid_pkg::comp_cfg_t VID_COMP = '{
     split_col:  VID_SPLIT_COL};
 
 vid_subsystem #(
+    .CLK_HZ          (SYS_HZ),
     // The DDR self-test is off: its two VDMA FIFOs (14 RAM10) and its DDR
     // bandwidth go to the ST block engine.  Its telemetry reads 0.
     .ENABLE_SELFTEST (0),

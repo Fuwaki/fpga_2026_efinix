@@ -1,7 +1,7 @@
 // key_debounce.sv -- synchronise an active-low key and debounce it.
 //
 // pressed becomes 1 only after the synchronised pin has been 0 for
-// 2_000_000 clocks (~20 ms at 100 MHz), and 0 after it has been 1 for the
+// 2_000_000 clocks (20 ms at 100 MHz, 16 ms at 125 MHz), and 0 after it has been 1 for the
 // same count.  pressed resets to 0.
 module key_debounce (
     input  logic clk,
