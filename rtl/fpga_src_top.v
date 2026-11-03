@@ -336,10 +336,12 @@ wire					io_systemReset;
 //===================================================================================================
 
 assign w_arstn  		       = i_pll_locked & pll_locked & user_pll_locked;
-assign pll_inst1_RSTN  		= i_arstn;
-assign USER_PLL_RSTN      		= i_arstn;
-assign mipi_dsi_tx_pll_RSTN 	= i_arstn;
-assign DDR3_PLL_RSTN 		= i_arstn;
+// KEY1 (i_arstn) used to reset the PLLs, CSI RX and DSI pins.  It is now a
+// user key read by the firmware (ui_regs 0x8024); these see it released.
+assign pll_inst1_RSTN  		= 1'b1;
+assign USER_PLL_RSTN      		= 1'b1;
+assign mipi_dsi_tx_pll_RSTN 	= 1'b1;
+assign DDR3_PLL_RSTN 		= 1'b1;
 reset_ctrl
 #(
 	.NUM_RST		(2),
@@ -379,9 +381,9 @@ wire [15:0] mipi_debug_out;
 
 		csi_rx_controller inst_efx_csi2_rx
 		(
-              .reset_n			(i_arstn),
+              .reset_n			(1'b1),
               .clk				(i_mipi_clk),
-              .reset_byte_HS_n	(i_arstn),
+              .reset_byte_HS_n	(1'b1),
               .clk_byte_HS		  (i_cam_ck_CLKOUT),
               .reset_pixel_n		(w_mipi_rx_pclk_arstn),
               .clk_pixel			  (i_mipi_rx_pclk),
@@ -539,7 +541,7 @@ wire [1:0]  ui_style;
 vid_pkg::isp_gain_t ui_isp_gain;       // firmware AWB/AE -> ISP
 vid_pkg::vid_status_t w_vid_status;
 vid_pkg::vid_status_t vid_st_s2;       // w_vid_status, registered in sys_clk
-wire        key0_pressed, key2_pressed, key3_pressed;
+wire        key0_pressed, key1_pressed, key2_pressed, key3_pressed;
 wire        w_st_irq;
 
 // Phase-2 ST conv PE: EFX_DSP24 x16 + HW layer sequencer + on-chip X/W/Y (no DDR AXI yet).
@@ -733,7 +735,7 @@ ui_regs u_ui_regs (
 	.isp_gain   (ui_isp_gain),
 	.raw_sum    (vid_st_s2.raw_sum),
 	.raw_clip   (vid_st_s2.raw_clip),
-	.raw_dark   (vid_st_s2.raw_dark),
+	.key1       (key1_pressed),
 	.raw_frames (vid_st_s2.raw_frames),
 	.gray_sum   (vid_st_s2.gray_sum)
 );
@@ -742,6 +744,7 @@ assign w_soc_apb_pready    = ui_hit ? ui_pready  : accel_pready;
 assign w_soc_apb_pslverror = ui_hit ? ui_pslverr : accel_pslverr;
 
 key_debounce u_key0 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key0), .pressed(key0_pressed));
+key_debounce u_key1 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(i_arstn), .pressed(key1_pressed));
 key_debounce u_key2 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key2), .pressed(key2_pressed));
 key_debounce u_key3 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key3), .pressed(key3_pressed));
 // Hold KEY2 and the style row highlights immediately; hold KEY0 and the
@@ -1030,13 +1033,13 @@ wire			w_axi_rready;
 wire			w_confdone;
 assign w_confdone = 1'b1;
 
-assign  LCD_POWER 			= i_arstn;
+assign  LCD_POWER 			= 1'b1;
 assign	LCD_RST_P	      = ~w_arstn;//~r_rst_cnt[23]; LCD复位先释放，然后再释放MIPI 的复位
-assign	mipi_dp_clk_RST		= ~i_arstn;
-assign	mipi_dp_data0_RST	= ~i_arstn;
-assign	mipi_dp_data1_RST	= ~i_arstn;
-assign	mipi_dp_data2_RST	= ~i_arstn;
-assign	mipi_dp_data3_RST	= ~i_arstn;
+assign	mipi_dp_clk_RST		= 1'b0;
+assign	mipi_dp_data0_RST	= 1'b0;
+assign	mipi_dp_data1_RST	= 1'b0;
+assign	mipi_dp_data2_RST	= 1'b0;
+assign	mipi_dp_data3_RST	= 1'b0;
 ////////////////////////////////////////////////////////////////
 always@(posedge i_mipi_clk or  negedge w_arstn )
 begin

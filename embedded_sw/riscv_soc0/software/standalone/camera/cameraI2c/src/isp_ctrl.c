@@ -19,6 +19,9 @@
  *   固定白平衡同一个工作点.  曝光 >= 10 ms 时取 10 ms 的整数倍 (50 Hz 灯光
  *   不出条纹), 最长 40 ms.  剩下的亮度误差由上面的数字增益吸收.
  *   改曝光后等 3 帧再看, 传感器要 1-2 帧才生效.
+ * 白纸标定 (KEY1): 短按 = 对着占满画面的白纸, 取 4 帧整帧原始统计的 R/G、B/G
+ *   直接作为光源估计, 并锁定 (不再用灰像素更新).  长按约 1 秒 = 回到自动.
+ *   过曝超过 2% 的帧不用, 等 AE 先把曝光降下来.  锁定时 AE 和亮度照常.
  ******************************************************************************/
 #include <stdint.h>
 #include "bsp.h"
@@ -32,6 +35,7 @@
 #define REG_GAIN_B      0x800Cu
 #define REG_SUM(k)      (0x8010u + 4u * (k))
 #define REG_CLIP        0x8020u
+#define REG_KEY1        0x8024u
 #define REG_FRAMES      0x8028u
 #define REG_GRAY(k)     (0x802Cu + 4u * (k))  /* R, G, B (各取高 8 位) 之和 */
 
@@ -67,11 +71,20 @@
 #define EXP_MIN        8u
 #define AE_SETTLE      3u           /* 改曝光后跳过的帧数 */
 
+#define CAL_FRAMES     4u           /* 白纸标定累加的帧数 */
+#define LONG_FRAMES    20u          /* KEY1 按住这么多帧 (约 1 s) 算长按 */
+#define CAL_MIN        64u          /* 白纸标定的光源范围, Q8, 比自动的范围宽 */
+#define CAL_MAX        512u
+
 static uint32_t g_q8[3];            /* 当前增益 R, G, B */
 static uint32_t rg_q8, bg_q8;       /* 光源估计 */
 static uint32_t exp_hl = EXP_40MS;  /* 当前曝光, 半行 */
 static uint32_t frames_seen;
 static uint32_t ae_wait;
+static uint32_t wb_lock;            /* 1: 白纸标定后锁定 */
+static uint32_t cal_left;           /* 白纸标定还要累加的帧数, 0: 不在标定 */
+static uint32_t cal_r, cal_g, cal_b;
+static uint32_t key_frames;         /* KEY1 按住了几帧, 0: 没按 */
 
 static void gains_write(void)
 {
@@ -112,6 +125,29 @@ void isp_ctrl_init(void)
     exp_hl = EXP_40MS;
     frames_seen = UI32(REG_FRAMES) & 0xFFu;
     ae_wait = AE_SETTLE;
+    wb_lock = 0u;
+    cal_left = 0u;
+    key_frames = 0u;
+}
+
+/* KEY1 每个新帧采样一次, 松开时按按住的帧数区分短按和长按. */
+static void key1_frame(void)
+{
+    if (UI32(REG_KEY1) & 1u) {
+        if (key_frames < 255u) key_frames++;
+        return;
+    }
+    if (key_frames == 0u)
+        return;
+    if (key_frames >= LONG_FRAMES) {
+        wb_lock = 0u;
+        cal_left = 0u;
+        bsp_printf("[awb] auto\r\n");
+    } else {
+        cal_left = CAL_FRAMES;
+        cal_r = cal_g = cal_b = 0u;
+    }
+    key_frames = 0u;
 }
 
 /* 新曝光: 按 G 均值和目标的比例缩放, 每步最多 2 倍; >= 10 ms 时取 10 ms 整数倍. */
@@ -151,6 +187,7 @@ void isp_ctrl_poll(void)
     if ((UI32(REG_FRAMES) & 0xFFu) != f0)           /* 读的时候换了帧, 下次再来 */
         return;
     frames_seen = f0;
+    key1_frame();
 
     /* 减黑电平后的均值 */
     uint32_t m[3];
@@ -177,8 +214,24 @@ void isp_ctrl_poll(void)
     if (m[0] < 4u || m[1] < 4u || m[2] < 4u)
         return;
 
+    /* 白纸标定: 整帧都是白纸, 减黑电平后的 R/G、B/G 就是光源颜色.
+     * 每帧的和 < 2^28, 右移 4 位再累加 4 帧不会溢出. */
+    if (cal_left && clip * 50u <= PIX_ALL) {
+        uint32_t blc = BLC * PIX_PER_PHASE;
+        uint32_t sg = s[PH_G0] / 2u + s[PH_G1] / 2u;
+        cal_r += (s[PH_R] > blc ? s[PH_R] - blc : 0u) >> 4;
+        cal_g += (sg > blc ? sg - blc : 0u) >> 4;
+        cal_b += (s[PH_B] > blc ? s[PH_B] - blc : 0u) >> 4;
+        if (--cal_left == 0u && (cal_g >> 8) > 0u) {
+            rg_q8 = clampu(cal_r / (cal_g >> 8), CAL_MIN, CAL_MAX);
+            bg_q8 = clampu(cal_b / (cal_g >> 8), CAL_MIN, CAL_MAX);
+            wb_lock = 1u;
+            bsp_printf("[awb] white rg=%d bg=%d (/256), locked\r\n", rg_q8, bg_q8);
+        }
+    }
+
     /* 光源估计: 近灰像素的剩余偏色 (Q8) 乘到估计上.  gs < 2^27, gs[1] >> 8 >= 250 */
-    if (gs[1] >= GRAY_G_MIN) {
+    if (!wb_lock && !cal_left && gs[1] >= GRAY_G_MIN) {
         uint32_t res_r = gs[0] / (gs[1] >> 8);
         uint32_t res_b = gs[2] / (gs[1] >> 8);
         rg_q8 = step(rg_q8, clampu((rg_q8 * res_r) >> 8, RG_MIN, RG_MAX));
