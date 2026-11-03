@@ -14,7 +14,7 @@ camera frame:
                  lanes 0..2 = R, G, B, 0..255);
              exp = the 1280x720 PROC slot from st_guided.post(): 160 beats per
                  line, 720 lines, every pixel 2x2.
-  post43:    the same input through st_golden.post (the tiny_dw replication,
+  post43:    the same input through st_guided.post_rep(4, 3) (the tiny_dw replication,
              REP_X = 4, REP_Y = 3): 320 beats per line, 1080 lines, every
              pixel 4x3.  st_post is parameterised for it.
 
@@ -39,8 +39,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_golden import CAM_H, CAM_W, post as post43, to565  # noqa: E402
-from st_guided import NET_H, NET_W, Guided, pool_int, post, pre  # noqa: E402
+from st_golden import CAM_H, CAM_W  # noqa: E402
+from st_guided import NET_H, NET_W, Guided, isp565, pool_int, post, post_rep, pre  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
@@ -97,7 +97,7 @@ def main() -> int:
     assert frame.shape[:2] == (CAM_H, CAM_W), \
         f"--frame must be {CAM_W}x{CAM_H}, got {frame.shape[1]}x{frame.shape[0]}"
 
-    f565 = to565(frame)                                 # 720x1280
+    f565 = isp565(frame)                                # 720x1280
     rgb = pre(f565)                                     # 360x640x3, net input
     assert rgb.shape == (NET_H, NET_W, 3), rgb.shape
 
@@ -125,9 +125,9 @@ def main() -> int:
     write(d / "in.hex", group_lines(head.transpose(2, 0, 1).astype(np.int64)))
     write(d / "exp.hex", ddr_lines(proc.astype("<u2").tobytes(), PROC_BPL))
 
-    # -------- post43: the same input through st_golden.post, the tiny_dw
+    # -------- post43: the same input through post_rep(4, 3), the tiny_dw
     # 4x3 replication (BOX_W = 4, BOX_H = 3 in st_golden.py)
-    proc43 = post43(head)
+    proc43 = post_rep(head, 4, 3)
     assert proc43.shape == (3 * NET_H, 4 * NET_W), proc43.shape
     assert proc43.shape == (3 * NET_H, 4 * NET_W), proc43.shape
     d = out / "post43"

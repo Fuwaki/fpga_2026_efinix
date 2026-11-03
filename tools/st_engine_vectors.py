@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_guided import CAM_H, CAM_W, Guided, post, pre, to565  # noqa: E402
+from st_guided import CAM_H, CAM_W, Guided, isp565, post, pre  # noqa: E402
 
 MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
 
@@ -60,7 +60,7 @@ def main() -> int:
 
     cam = (np.asarray(Image.open(a.frame).convert("RGB")) if a.frame else synth_frame())
     assert cam.shape[:2] == (CAM_H, CAM_W), f"frame must be {CAM_W}x{CAM_H}"
-    f565 = to565(cam)
+    f565 = isp565(cam)
     rgb = pre(f565)
     dump = a.out / "npy"
     dump.mkdir(exist_ok=True)

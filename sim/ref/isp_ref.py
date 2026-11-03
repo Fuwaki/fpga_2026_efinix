@@ -21,7 +21,7 @@ Stages:
   sat        Y = (77 R + 150 G + 29 B) >> 8, per channel
              u = C + 256 - Y, p = (sat * u) >> 8, C' = clamp(Y + p - sat, 0, 255)
   dither565  2x2 ordered, t = [[0, 2], [3, 1]][y & 1][x & 1];
-             r5 = min(R + 2t + 1, 255) >> 3, g6 = min(G + t, 255) >> 2, b5 like r5
+             r5 = (31 R + 32 + 64t) >> 8, g6 = (63 G + 32 + 64t) >> 8, b5 like r5
   bypass_all gray = raw >> 2 into all three channels, plain truncation to 565
 
 Signature (vdma_wr st_sig): over the frame's 32-bit words in raster order,
@@ -145,9 +145,9 @@ def dither565(rgb8, cfg):
         tm = np.array([[0, 2], [3, 1]], dtype=np.int64)
         yy, xx = np.mgrid[0:h, 0:w]
         t = tm[yy & 1, xx & 1]
-        r5 = np.minimum(rgb8[..., 0] + 2 * t + 1, 255) >> 3
-        g6 = np.minimum(rgb8[..., 1] + t, 255) >> 2
-        b5 = np.minimum(rgb8[..., 2] + 2 * t + 1, 255) >> 3
+        r5 = (31 * rgb8[..., 0] + 32 + 64 * t) >> 8
+        g6 = (63 * rgb8[..., 1] + 32 + 64 * t) >> 8
+        b5 = (31 * rgb8[..., 2] + 32 + 64 * t) >> 8
     else:
         r5, g6, b5 = rgb8[..., 0] >> 3, rgb8[..., 1] >> 2, rgb8[..., 2] >> 3
     return (r5 << 11) | (g6 << 5) | b5

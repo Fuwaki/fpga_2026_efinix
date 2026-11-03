@@ -2,7 +2,13 @@
 // gray ramps and skies do not band.
 //
 //   t = [[0, 2], [3, 1]][y & 1][x & 1]
-//   r5 = min(R + 2t + 1, 255) >> 3,  g6 = min(G + t, 255) >> 2,  b5 like r5
+//   r5 = (31 R + 32 + 64t) >> 8,  g6 = (63 G + 32 + 64t) >> 8,  b5 like r5
+//
+// The codes are scaled by 31/255 (63/255), not shifted, so the readers'
+// bit-replicating unpack565 gets the level back: over a 2x2 cell the four
+// unpacked values average to within -2..+1 of the 8-bit input on every level.
+// The earlier min(R + 2t + 1, 255) >> 3 rounded up and then replicated the top
+// bits on top of that, a bias growing with the level to +6 at 192.
 //
 // y counts lines from sof, x parity is the element index.  Latency 1.
 module isp_dither565
@@ -21,19 +27,27 @@ module isp_dither565
         else if (i.valid && i.sof)   row_p <= 1'b0;
     wire p_now = i.sof ? 1'b0 : row_p;
 
-    function automatic logic [7:0] add_sat(input logic [7:0] v, input logic [2:0] t);
-        logic [8:0] s;
-        s = 9'(v) + 9'(t);
-        return s[8] ? 8'd255 : s[7:0];
+    // (31 v + 32 + 64t) >> 8 is at most (7905 + 224) >> 8 = 31, and the 63
+    // form at most 63: no saturation.  31 v = 32 v - v, 63 v = 64 v - v.
+    function automatic logic [4:0] q5(input logic [7:0] v, input logic [1:0] t);
+        logic [12:0] a;
+        a = {v, 5'd0} - 13'(v) + 13'd32 + {5'd0, t, 6'd0};
+        return a[12:8];
+    endfunction
+
+    function automatic logic [5:0] q6(input logic [7:0] v, input logic [1:0] t);
+        logic [13:0] a;
+        a = {v, 6'd0} - 14'(v) + 14'd32 + {6'd0, t, 6'd0};
+        return a[13:8];
     endfunction
 
     function automatic rgb565_t dither(input rgb888_t p, input logic [1:0] t, input logic en);
-        rgb888_t q;
+        rgb565_t q;
         if (!en) return pack565(p);
-        q.r = add_sat(p.r, {t, 1'b1});
-        q.g = add_sat(p.g, {1'b0, t});
-        q.b = add_sat(p.b, {t, 1'b1});
-        return pack565(q);
+        q.r = q5(p.r, t);
+        q.g = q6(p.g, t);
+        q.b = q5(p.b, t);
+        return q;
     endfunction
 
     // t for (row parity, column parity): [[0, 2], [3, 1]].

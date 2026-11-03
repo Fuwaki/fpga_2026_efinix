@@ -196,9 +196,40 @@ def pre(frame565):
     return ((s + 2) >> 2).astype(np.uint8)
 
 
+DITHER_T = np.array([[0, 2], [3, 1]], np.int64)   # t[y & 1][x & 1]
+
+
+def isp565(rgb):
+    """RGB8 -> RGB565 as rtl/vid/isp/isp_dither565 (sim/ref/isp_ref.dither565)."""
+    h, w = rgb.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    t = DITHER_T[yy & 1, xx & 1]
+    v = rgb.astype(np.int64)
+    r = (31 * v[..., 0] + 32 + 64 * t) >> 8
+    g = (63 * v[..., 1] + 32 + 64 * t) >> 8
+    b = (31 * v[..., 2] + 32 + 64 * t) >> 8
+    return (r << 11 | g << 5 | b).astype(np.uint16)
+
+
+def post_rep(rgb, rep_x, rep_y):
+    """RGB8 -> every pixel rep_x x rep_y, RGB565 with st_post's output dither.
+
+    t is that of the output pixel; R takes a quarter-step dither, G and B a
+    half-step one (st_post keeps 2, 1 and 1 fraction bits).
+    """
+    up = rgb.repeat(rep_y, axis=0).repeat(rep_x, axis=1).astype(np.int64)
+    h, w = up.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    t = DITHER_T[yy & 1, xx & 1]
+    r = (31 * up[..., 0] + 32 + 64 * t) >> 8
+    g = (63 * up[..., 1] + 64 + 128 * (t >> 1)) >> 8
+    b = (31 * up[..., 2] + 64 + 128 * (t >> 1)) >> 8
+    return (r << 11 | g << 5 | b).astype(np.uint16)
+
+
 def post(rgb):
-    """360x640 RGB8 -> the 720x1280 PROC slot, every pixel 2x2."""
-    return to565(rgb.repeat(BOX, axis=0).repeat(BOX, axis=1))
+    """360x640 RGB8 -> the 720x1280 PROC slot, every pixel 2x2, dithered."""
+    return post_rep(rgb, BOX, BOX)
 
 
 # ------------------------------------------------------------------- network
@@ -320,7 +351,7 @@ def main():
     if a.frame:
         cam = np.asarray(Image.open(a.frame).convert("RGB"))
         assert cam.shape[:2] == (CAM_H, CAM_W), f"--frame must be {CAM_W}x{CAM_H}"
-        f565 = to565(cam)
+        f565 = isp565(cam)
         rgb = pre(f565)
     else:
         rgb = np.asarray(Image.open(a.image).convert("RGB"))
