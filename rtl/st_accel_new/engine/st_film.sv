@@ -170,13 +170,20 @@ module st_film #(
     // SRLs (measured); the shift path costs none.
     logic fresh;                      // the next pixel's beats overwrite
 
+    // fresh is set by gap_clear on its own: the engine pulses it at the start
+    // of the pass, a cycle with no tap beat, so it must not wait for the
+    // array's shift enable (it once did, and every frame after the first
+    // added its plane to the last one's sums).
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n)                        fresh <= 1'b1;
+        else if (gap_clear)                fresh <= 1'b1;
+        else if (tap_valid && tap_last)    fresh <= 1'b0;
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gapv  <= '0;
-            fresh <= 1'b1;
         end else if (tap_valid || gap_rot) begin
-            if (gap_clear)                  fresh <= 1'b1;
-            else if (tap_valid && tap_last) fresh <= 1'b0;
             gapv <= {gapv[0], gapv[GB-1:1]};
             for (int j = 0; j < 4; j++)
                 gapv[GB - 1][j] <= fresh

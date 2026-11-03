@@ -4,8 +4,9 @@
 // ("<grp> <mul0..mul3:5 hex> <off0..off3:6 hex>" per group of four channels)
 // and meta.txt ("<nbeat> <npix> <cfg_g>").  The testbench:
 //
-//   * resets, pulses gap_clear once, then streams the whole plane into the
-//     tap with random valid gaps -- a beat is held until tap_ready accepts
+//   * resets, then ROUNDS times: pulses gap_clear alone (no tap beat in that
+//     cycle, as the engine does at the start of the GAP pass), then streams
+//     the whole plane into the tap with random valid gaps -- a beat is held until tap_ready accepts
 //     it, as the engine's stream rules require -- and checks that tap_ready
 //     stays high every cycle (the tap must never stall the pack stage);
 //   * checks the 40 GAP sums against the sums of the vector file;
@@ -14,6 +15,9 @@
 //     the start until the last write, then low with no further writes;
 //   * prints the MLP cycle count (mlp_start edge to the busy drop) and
 //     fails unless it is under the pass budget of 50k cycles.
+//
+// Round 2 onwards is the board's steady state: the sums must restart from
+// zero on gap_clear, not carry the previous frame's plane.
 //
 // Any mismatch prints the first ten and ends with $fatal(1, ...).
 module tb_st_film;
@@ -103,15 +107,22 @@ module tb_st_film;
     // The tap is a sniff of the pack stream: valid only when the pack stage
     // really transfers a beat, and a beat is held until tap_ready.  Random
     // gaps model the pack stage's own back-pressure.
+    localparam int ROUNDS = 3;
+    int streamed = 0;               // planes fully streamed
+    int mlp_done = 0;               // MLP runs finished
+
     initial begin
         tap_valid = 1'b0;
         wait (loaded);
         repeat (3) @(posedge clk);
         rst_n = 1;
+        for (int r = 0; r < ROUNDS; r++) begin
+        wait (mlp_done == r);
         @(negedge clk);
         gap_clear = 1'b1;           // zero the sums before the plane
         @(negedge clk);
         gap_clear = 1'b0;
+        ii = 0;
         while (ii < nbeat) begin
             tap_valid = 1'b1;
             tap_data  = vdata[ii];
@@ -131,6 +142,8 @@ module tb_st_film;
         end
         tap_valid = 1'b0;
         tap_last  = 1'b0;
+        streamed  = r + 1;
+        end
     end
 
     // tap_ready must never fall: the sniff must not stall the pack stage.
@@ -189,13 +202,13 @@ module tb_st_film;
             if (mlp_start && t_start < 0) t_start = cyc;
             if (mlp_busy) busy_seen = 1;
             if (coef_we) begin
-                if (oi >= NG) begin
+                if (oi >= ROUNDS * NG) begin
                     errs++;
                     if (errs <= 10)
                         $display("MISMATCH: write %0d beyond the %0d groups (grp %0d)",
                                  oi, NG, coef_grp);
                 end else begin
-                    check_grp(oi);
+                    check_grp(oi % NG);
                 end
                 oi++;
             end
@@ -207,26 +220,34 @@ module tb_st_film;
     initial begin
         int mcyc, t0;
         @(posedge rst_n);
-        while (ii < nbeat) @(posedge clk);
-        repeat (4) @(posedge clk);
-        check_gap();
-        @(negedge clk);
-        mlp_start = 1'b1;
-        @(negedge clk);
-        mlp_start = 1'b0;
-        t0 = cyc;
-        while (t_end < 0 && (cyc - t0) < 2 * BUDGET) @(posedge clk);
-        repeat (20) @(posedge clk);
+        for (int r = 0; r < ROUNDS; r++) begin
+            while (streamed <= r) @(posedge clk);
+            repeat (4) @(posedge clk);
+            check_gap();
+            t_start = -1;
+            t_end = -1;
+            busy_seen = 0;
+            @(negedge clk);
+            mlp_start = 1'b1;
+            @(negedge clk);
+            mlp_start = 1'b0;
+            t0 = cyc;
+            while (t_end < 0 && (cyc - t0) < 2 * BUDGET) @(posedge clk);
+            repeat (20) @(posedge clk);
+            if (!busy_seen) $fatal(1, "tb_st_film: mlp_busy never went high");
+            if (t_end < 0) $fatal(1, "tb_st_film: mlp_busy never dropped");
+            if (oi != (r + 1) * NG)
+                $fatal(1, "tb_st_film: round %0d ended with %0d writes", r, oi);
+            mlp_done = r + 1;
+        end
         mcyc = t_end - t_start;
-        if (!busy_seen) $fatal(1, "tb_st_film: mlp_busy never went high");
-        if (t_end < 0) $fatal(1, "tb_st_film: mlp_busy never dropped");
         if (tap_stalls != 0) $fatal(1, "tb_st_film: tap_ready fell %0d times", tap_stalls);
         if (mcyc > BUDGET) $fatal(1, "tb_st_film: MLP took %0d cycles, budget %0d", mcyc, BUDGET);
-        if (gap_errs != 0 || errs != 0 || oi != NG)
+        if (gap_errs != 0 || errs != 0 || oi != ROUNDS * NG)
             $fatal(1, "tb_st_film FAIL %0d GAP and %0d coef errors, %0d of %0d writes",
-                   gap_errs, errs, oi, NG);
-        $display("tb_st_film PASS %0d pixels, %0d group writes, MLP %0d cycles (%0d gaps, %0d tap cycles)",
-                 npix, oi, mcyc, gaps, cyc);
+                   gap_errs, errs, oi, ROUNDS * NG);
+        $display("tb_st_film PASS %0d rounds of %0d pixels, %0d group writes, MLP %0d cycles (%0d gaps, %0d tap cycles)",
+                 ROUNDS, npix, oi, mcyc, gaps, cyc);
         $finish;
     end
 endmodule
