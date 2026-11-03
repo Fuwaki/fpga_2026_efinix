@@ -33,7 +33,7 @@
 // rf = a[7:6] for a = 31 R + 32, g6, gf = a >> 8, a[7] for a = 63 G + 64,
 // b5, bf likewise.  The emitter adds one where rf + t >= 4 (R) or the
 // fraction is set and t >= 2 (G, B): the same codes as the formula above,
-// without carrying the 8-bit pixel (80 bits is two 256x40 RAM10, as 64 was).  An output beat carries SPB =
+// without carrying the 8-bit pixel.  An output beat carries SPB =
 // 8/REP_X source pixels, each REP_X times: SPB = 4 (REP_X = 2) is one whole
 // word, SPB = 2 (REP_X = 4) is half a word.  Line sy fills buffer sy mod 2
 // while line sy-1 is emitted REP_Y times.
@@ -109,13 +109,13 @@ module st_post
 
     // ---------------------------------------------------------- line buffer
     localparam int PB = 20;                       // buffer bits per pixel
-    logic [4*PB-1:0] lbuf [2][PW4];
     logic [HW-1:0] e_sy;                // source line being emitted
     logic [OW-1:0] e_beat;              // beat within the output line
     wire           rd_bank = e_sy[0];
     wire [WB-1:0]  rd_addr = WB'(e_beat >> LB);
     wire [0:0]     e_off   = (BPW == 2) ? e_beat[0] : 1'b0;  // beat in the word
     logic [4*PB-1:0] rd_word;
+    logic [4*PB-1:0] lb_q;              // the line buffers at rd_bank, rd_addr
 
     // ------------------------------------------------------------- control
     typedef enum logic { ST_IDLE, ST_RUN } state_e;
@@ -148,7 +148,7 @@ module st_post
     // after a line's last beat would latch the next line's word 0 instead of
     // the beat's own.
     always_ff @(posedge clk)
-        if (issue) rd_word <= lbuf[rd_bank][rd_addr];
+        if (issue) rd_word <= lb_q;
 
     // --------------------------------------------------------------- fill
     // At most one source line ahead of the emitter.
@@ -208,8 +208,15 @@ module st_post
         end
     end
 
-    always_ff @(posedge clk)
-        if (wr_en) lbuf[wr_bank][wr_addr] <= wr_word;
+    // One 20-bit memory per pixel of the word: Efinity maps a single 80-bit
+    // array onto the RAM10's 512x16 shape (5 blocks), four 20-bit ones onto
+    // its 512x20 shape (4 blocks).
+    for (genvar k = 0; k < 4; k++) begin : g_lb
+        logic [PB-1:0] mem [2][PW4];
+        always_ff @(posedge clk)
+            if (wr_en) mem[wr_bank][wr_addr] <= wr_word[PB*k +: PB];
+        assign lb_q[PB*k +: PB] = mem[rd_bank][rd_addr];
+    end
 
     // --------------------------------------------------------------- emit
     // Emission pipeline: stage 1 carries the tags of the beat being issued
