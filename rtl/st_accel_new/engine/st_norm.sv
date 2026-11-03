@@ -31,6 +31,7 @@
 //   per channel: u = N*x - S
 //                t = (u*R + 2^(e+2)) >>> (e+3)
 //                y = clamp((t*G_c + B_c + 2^21) >>> 22, -127, 127)
+//   B_c is even (ln_consts, LN_BSH): the word keeps B_c >> 1, 27 bit.
 //
 // G_c and B_c come from st_ln.hex, one 180-bit word per group of four
 // channels: word a holds channels 4a..4a+3, lane j of the word being channel
@@ -119,7 +120,7 @@ module st_norm #(
     localparam int GMAX      = 20;          // groups per pixel
     localparam int GBITS     = 5;           // 0 .. 19
     localparam int BW        = 32;          // beats per pixel buffer slot
-    localparam int CW        = 45;          // one lane: {B/off[26:0], G/mul[17:0]}
+    localparam int CW        = 45;          // one lane: {B[27:1]/off[26:0], G/mul[17:0]}
     localparam int GW        = 4 * CW;      // one group: 4 lanes, 180 bits
     localparam int COEF_DEPTH = 256;        // coefficient words (groups)
     localparam int PB_AW     = 7;           // 4 slots x 32 beats
@@ -149,7 +150,7 @@ module st_norm #(
 
     // --------------------------------------------------- coefficient store
     // One array of 256 words of 180 bit, a whole group of four channels per
-    // word: lane j of word a is {B_c/off_c[26:0], G_c/mul_c[17:0]} (45 bit
+    // word: lane j of word a is {B_c[27:1]/off_c[26:0], G_c/mul_c[17:0]} (45 bit
     // signed) of channel 4a + j, so one read returns the four channels of a
     // group beat and one write stores a group.  Words 0..19 are the LN image;
     // words 128..147 are the FiLM coefficients, written through the
@@ -482,9 +483,9 @@ module st_norm #(
     logic signed [35:0] s3_pq [4];
     logic signed [17:0] s4_t [4];
     logic signed [17:0] s4_c [4];
-    logic signed [26:0] s4_o [4];
+    logic signed [27:0] s4_o [4];
     logic signed [35:0] s5_p [4];
-    logic signed [26:0] s5_o [4];
+    logic signed [27:0] s5_o [4];
     logic signed [17:0] f1_x [4];
     logic             f1_v;
     logic [2:0]       f1_f;
@@ -637,7 +638,7 @@ module st_norm #(
                 for (int j = 0; j < 4; j++) begin
                     s4_t[j] <= ln_mode ? t_w[j] : f1_x[j];
                     s4_c[j] <= coef_mul_q[j];
-                    s4_o[j] <= coef_off_q[j];
+                    s4_o[j] <= ln_mode ? {coef_off_q[j], 1'b0} : 28'(coef_off_q[j]);
                 end
             end
         end

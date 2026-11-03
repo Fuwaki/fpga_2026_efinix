@@ -43,7 +43,7 @@ module st_engine
     input  logic [AXI_AW-1:0]  proc_base,   // PROC slot to write
     input  logic [3:0]         first_pass,  // passes run: first_pass..last_pass;
     input  logic [3:0]         last_pass,   // 0 and ST_N_PASSES-1 except in tests
-    input  logic [1:0]         style,       // style packet, taken modulo ST_STYLES
+    input  logic [1:0]         style,       // style packet, modulo ST_STYLES (3 styles: 3 is 0)
     output logic               busy,
     output logic               pre_done,    // isp_last pass complete: ISP slot no longer read
     output logic               err,         // sticky for the run
@@ -359,7 +359,9 @@ module st_engine
                     isp_q    <= isp_base;
                     proc_q   <= proc_base;
                     last_q   <= last_pass;
-                    style_q  <= style & 2'(ST_STYLES - 1);  // ST_STYLES is 1, 2 or 4
+                    // a power of two takes style modulo ST_STYLES; 3 styles map 3 to 0
+                    style_q  <= (ST_STYLES == 3) ? ((style == 2'd3) ? 2'd0 : style)
+                                                 : (style & 2'(ST_STYLES - 1));
                     pass     <= first_pass;
                     pre_done <= 1'b0;
                     err      <= 1'b0;
@@ -492,7 +494,7 @@ module st_engine
             dw_g      <= 5'((p.in_c + 7'd3) >> 2);
             dw_stride <= l0.stride;
             dw_base   <= l0.dw_base;
-            dw_rq     <= l0.rq_base;
+            dw_rq     <= st_rq_base(int'(p.first_layer), style_q);
             dw_lo     <= l0.lo;
             dw_hi     <= l0.hi;
             in_npix   <= 18'(p.in_w) * 18'(p.in_h);
@@ -503,7 +505,7 @@ module st_engine
             pw_cin   <= la.cin;
             pw_cout  <= la.cout;
             pw_base  <= la.pw_base;
-            pw_rq    <= la.rq_base;
+            pw_rq    <= st_rq_base(pf, style_q);
             pw_lo    <= la.lo;
             pw_hi    <= la.hi;
 

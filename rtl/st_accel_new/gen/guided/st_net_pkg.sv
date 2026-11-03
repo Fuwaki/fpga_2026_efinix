@@ -3,9 +3,12 @@
 //
 // The network runs at 640x360: 13 passes, 19 conv layers, 3 adds.
 // Requant ROM: one word per output channel of every conv layer in manifest order
-// (every layer starts on a multiple of 4), then one word per add.
+// (every layer starts on a multiple of 4), then one word per add.  A layer
+// with a per-style affine folded in has one block per style, style s at
+// rq_base + s * ST_RQ_STRIDE: st_rq_base(i, style) gives it.
 //
 //   st_layer(i)   layer i in manifest order
+//   st_rq_base(i, s) requant base of layer i for style s
 //   st_pass(i)    pass i (st_gen_guided.PASSES)
 //   st_region(pt) DDR region of point pt; all-zero for a non-DDR point
 //   st_region_point(i) i-th point that has a DDR region, for iteration
@@ -20,21 +23,22 @@ package st_net_pkg;
 
   localparam int PW_DEPTH = 204;   // 1024-bit words
   localparam int DW_DEPTH = 92;   // 288-bit words
-  localparam int RQ_DEPTH = 842;  // 64-bit words
+  localparam int RQ_DEPTH = 858;  // 64-bit words
   localparam int ST_N_LAYERS  = 19;
   localparam int ST_N_PASSES  = 13;
   localparam int ST_N_REGIONS = 12;
 
   // Style packets (LN coefficients and FiLM MLP, st_gen_norm / st_gen_film):
-  // st_norm's LN image of style k at words 20k.., st_film's ROM at 512k..
-  localparam int ST_STYLES = 2;
+  // st_norm's LN image of style k at words 20k.., st_film's ROM at 384k..
+  localparam int ST_STYLES = 3;
   // st_film constants, shared by every style (st_gen_film.py --params)
-  localparam int ST_FILM_SZ = 26;   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
+  localparam int ST_FILM_SZ = 25;   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
   localparam int ST_FILM_SG = 24;   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
   localparam int ST_FILM_SB = 20;   // off = (Bb*Mb + 2**(SB-1)) >>> SB
-  localparam int ST_FILM_C0 = 19846;   // affine offset, 19-bit signed
+  localparam int ST_FILM_C0 = 8391;   // affine offset, 19-bit signed
   localparam int ST_FILM_KB = 900;   // reduce bias scale, br_o * KB
-  localparam int ST_ADD_RQ_BASE = 839;
+  localparam int ST_ADD_RQ_BASE = 855;
+  localparam int ST_RQ_STRIDE = 8;   // per-style requant block, 0: none
   localparam int ST_NET_W = 640;
   localparam int ST_NET_H = 360;
 
@@ -108,10 +112,16 @@ package st_net_pkg;
       14: st_layer = '{kind: 2'd0, cin: 7'd10, cout: 7'd40, stride: 2'd1, pw_base: 10'd193, dw_base: 10'd0, rq_base: 11'd772, lo: 10'h381, hi: 10'h07f};   // h2_proj
       15: st_layer = '{kind: 2'd0, cin: 7'd40, cout: 7'd8, stride: 2'd1, pw_base: 10'd198, dw_base: 10'd0, rq_base: 11'd812, lo: 10'h000, hi: 10'h07f};   // to_guide
       16: st_layer = '{kind: 2'd2, cin: 7'd27, cout: 7'd8, stride: 2'd1, pw_base: 10'd201, dw_base: 10'd0, rq_base: 11'd820, lo: 10'h000, hi: 10'h07f};   // guide
-      17: st_layer = '{kind: 2'd1, cin: 7'd8, cout: 7'd8, stride: 2'd1, pw_base: 10'd0, dw_base: 10'd90, rq_base: 11'd828, lo: 10'h000, hi: 10'h07f};   // head.dw
-      18: st_layer = '{kind: 2'd0, cin: 7'd8, cout: 7'd3, stride: 2'd1, pw_base: 10'd203, dw_base: 10'd0, rq_base: 11'd836, lo: 10'h000, hi: 10'h0ff};   // head.pw
+      17: st_layer = '{kind: 2'd1, cin: 7'd8, cout: 7'd8, stride: 2'd1, pw_base: 10'd0, dw_base: 10'd90, rq_base: 11'd844, lo: 10'h000, hi: 10'h07f};   // head.dw
+      18: st_layer = '{kind: 2'd0, cin: 7'd8, cout: 7'd3, stride: 2'd1, pw_base: 10'd203, dw_base: 10'd0, rq_base: 11'd852, lo: 10'h000, hi: 10'h0ff};   // head.pw
       default: st_layer = '0;
     endcase
+  endfunction
+
+  function automatic logic [10:0] st_rq_base(input int i, input logic [1:0] style);
+    st_rq_base = st_layer(i).rq_base;
+    if (i == 16)
+      st_rq_base = st_rq_base + 11'(style) * 11'd8;
   endfunction
 
   function automatic st_pass_t st_pass(input int i);
@@ -149,7 +159,7 @@ package st_net_pkg;
                    in_w: 12'd160, in_h: 12'd90, in_c: 7'd80, out_w: 12'd160, out_h: 12'd90, out_c: 7'd80,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b0, norm: 2'd0};
       8: st_pass = '{in_point: 6'd8, aux_point: 6'd6, out_point: 6'd10, upsample: 1'b0,   // res_b
-                   add_mode: 2'd2, add_rq: 11'd839, first_layer: 5'd7, n_layers: 5'd2,
+                   add_mode: 2'd2, add_rq: 11'd855, first_layer: 5'd7, n_layers: 5'd2,
                    in_w: 12'd160, in_h: 12'd90, in_c: 7'd80, out_w: 12'd160, out_h: 12'd90, out_c: 7'd80,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b0, norm: 2'd0};
       9: st_pass = '{in_point: 6'd10, aux_point: 6'd63, out_point: 6'd13, upsample: 1'b0,   // dec_h4
@@ -157,7 +167,7 @@ package st_net_pkg;
                    in_w: 12'd160, in_h: 12'd90, in_c: 7'd80, out_w: 12'd160, out_h: 12'd90, out_c: 7'd24,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b0, norm: 2'd1};
       10: st_pass = '{in_point: 6'd13, aux_point: 6'd16, out_point: 6'd17, upsample: 1'b1,   // dec_h2
-                   add_mode: 2'd2, add_rq: 11'd840, first_layer: 5'd11, n_layers: 5'd2,
+                   add_mode: 2'd2, add_rq: 11'd856, first_layer: 5'd11, n_layers: 5'd2,
                    in_w: 12'd320, in_h: 12'd180, in_c: 7'd24, out_w: 12'd320, out_h: 12'd180, out_c: 7'd40,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b1, post: 1'b0, norm: 2'd0};
       11: st_pass = '{in_point: 6'd17, aux_point: 6'd63, out_point: 6'd19, upsample: 1'b0,   // film
@@ -165,7 +175,7 @@ package st_net_pkg;
                    in_w: 12'd320, in_h: 12'd180, in_c: 7'd40, out_w: 12'd320, out_h: 12'd180, out_c: 7'd8,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b0, norm: 2'd2};
       12: st_pass = '{in_point: 6'd19, aux_point: 6'd20, out_point: 6'd22, upsample: 1'b1,   // head
-                   add_mode: 2'd1, add_rq: 11'd841, first_layer: 5'd17, n_layers: 5'd2,
+                   add_mode: 2'd1, add_rq: 11'd857, first_layer: 5'd17, n_layers: 5'd2,
                    in_w: 12'd640, in_h: 12'd360, in_c: 7'd8, out_w: 12'd640, out_h: 12'd360, out_c: 7'd3,
                    src_isp: 1'b0, pre_pool: 1'b0, isp_last: 1'b0, gap: 1'b0, post: 1'b1, norm: 2'd0};
       default: st_pass = '0;
@@ -210,9 +220,9 @@ package st_net_pkg;
 
   function automatic st_add_factor_t st_add_factor(input int i);
     case (i)
-      839: st_add_factor = '{mant: 24'h8fd8b9, k: 6'd25};
-      840: st_add_factor = '{mant: 24'hb1eb01, k: 6'd24};
-      841: st_add_factor = '{mant: 24'h92d0ee, k: 6'd24};
+      855: st_add_factor = '{mant: 24'h8fd8b9, k: 6'd25};
+      856: st_add_factor = '{mant: 24'h81a21b, k: 6'd24};
+      857: st_add_factor = '{mant: 24'hac806a, k: 6'd25};
       default: st_add_factor = '0;
     endcase
   endfunction

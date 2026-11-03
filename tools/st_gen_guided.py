@@ -79,6 +79,15 @@ def build(mdir: Path):
     scales = m["point_scales"]
     gold = Guided(mdir)
 
+    # a layer with a per-style affine folded in (style_packets layer_overrides)
+    # has one block of requant words per style, style s at rq_base + s * stride
+    packets = style_packets(m)
+    styled = {n: [{**L[n], **p["layer_overrides"][n]} for p in packets]
+              for n in packets[0].get("layer_overrides", {})}
+    rq_stride = {align_up(L[n]["out_channels"], 4) for n in styled}
+    assert len(rq_stride) <= 1, f"styled layers {list(styled)}: one rq stride for all"
+    rq_stride = rq_stride.pop() if rq_stride else 0
+
     pw_words, dw_words, rq_words, ltbl = [], [], [], []
     for l in layers:
         kind = layer_kind(l)
@@ -103,15 +112,19 @@ def build(mdir: Path):
         while len(rq_words) % 4:
             rq_words.append(rq_word(0, 1 << 23, 24))
         rq_base = len(rq_words)
-        for oc in range(cout):
-            mant, exp = f32_parts(l["requant"][oc])
-            k = 24 - exp
-            assert 16 <= k <= 47, f"{l['name']}[{oc}]: k={k} outside the lane's 16..47"
-            rq_words.append(rq_word(int(l["bias_int32"][oc]), mant, k))
+        for ls in styled.get(l["name"], [l]):
+            while len(rq_words) % 4:
+                rq_words.append(rq_word(0, 1 << 23, 24))
+            for oc in range(cout):
+                mant, exp = f32_parts(ls["requant"][oc])
+                k = 24 - exp
+                assert 16 <= k <= 47, f"{l['name']}[{oc}]: k={k} outside the lane's 16..47"
+                rq_words.append(rq_word(int(ls["bias_int32"][oc]), mant, k))
         assert cin < (1 << W_CIN) and cout < (1 << W_COUT), f"{l['name']}: channels"
         ltbl.append(dict(index=layers.index(l), name=l["name"], kind=kind, cin=cin, cout=cout,
                          stride=l["stride"][0], pw_base=pw_base, dw_base=dw_base,
-                         rq_base=rq_base, lo=lo, hi=hi, n_pw_words=n_pw,
+                         rq_base=rq_base, rq_styled=l["name"] in styled,
+                         lo=lo, hi=hi, n_pw_words=n_pw,
                          n_dw_words=ceil_div(cout, DW_LANES) if kind == KIND_DW else 0))
     lt_by_name = {lt["name"]: lt for lt in ltbl}
 
@@ -211,7 +224,7 @@ def build(mdir: Path):
         manifest_sha256=hashlib.sha256((mdir / "manifest.json").read_bytes()).hexdigest(),
         img_w=NET_W, img_h=NET_H, cam_w=CAM_W, cam_h=CAM_H,
         pw_depth=len(pw_words), dw_depth=len(dw_words), rq_depth=len(rq_words),
-        add_rq_base=add_rq_base, layers=ltbl, passes=ptbl, adds=list(add_tbl.values()),
+        add_rq_base=add_rq_base, rq_stride=rq_stride, layers=ltbl, passes=ptbl, adds=list(add_tbl.values()),
         regions=[dict(r, base_hex=f"0x{r['base']:08x}") for r in regions],
         region_bytes=cursor - DDR_BASE,
         styles=len(style_packets(m)),
@@ -249,6 +262,7 @@ def rq_lines(words: list[bytes]) -> str:
 
 def self_check(net, out: Path, wts, m):
     L = {l["name"]: l for l in m["layers"]}
+    packets = style_packets(m)
     lines = parse_hex((out / "st_pw.hex").read_text())
     pw = [lines[2 * a] + lines[2 * a + 1] for a in range(len(lines) // 2)]
     dw = parse_hex((out / "st_dw.hex").read_text())
@@ -263,13 +277,16 @@ def self_check(net, out: Path, wts, m):
             assert all(got[(o, i)] == int(want[o, i])
                        for o in range(lt["cout"]) for i in range(lt["cin"]))
         assert lt["rq_base"] % 4 == 0, lt["name"]
-        for oc in range(lt["cout"]):
-            w = int.from_bytes(rq[lt["rq_base"] + oc], "little")
-            bias = w & 0xFFFF_FFFF
-            bias = bias - 2**32 if bias >= 2**31 else bias
-            mant, exp = f32_parts(l["requant"][oc])
-            assert bias == l["bias_int32"][oc] and (w >> 32) & 0xFF_FFFF == mant \
-                and (w >> 56) & 0x3F == 24 - exp, f"{lt['name']}[{oc}] rq word"
+        for s, p in enumerate(packets if lt["rq_styled"] else packets[:1]):
+            ls = {**l, **p.get("layer_overrides", {}).get(lt["name"], {})}
+            base = lt["rq_base"] + s * net["rq_stride"]
+            for oc in range(lt["cout"]):
+                w = int.from_bytes(rq[base + oc], "little")
+                bias = w & 0xFFFF_FFFF
+                bias = bias - 2**32 if bias >= 2**31 else bias
+                mant, exp = f32_parts(ls["requant"][oc])
+                assert bias == ls["bias_int32"][oc] and (w >> 32) & 0xFF_FFFF == mant \
+                    and (w >> 56) & 0x3F == 24 - exp, f"{lt['name']}[{oc}] style {s} rq word"
 
 
 def sv_pkg(net) -> str:
@@ -281,9 +298,12 @@ def sv_pkg(net) -> str:
     a(f"// The network runs at {net['img_w']}x{net['img_h']}: {len(net['passes'])} passes, "
       f"{len(net['layers'])} conv layers, {len(net['adds'])} adds.")
     a("// Requant ROM: one word per output channel of every conv layer in manifest order")
-    a("// (every layer starts on a multiple of 4), then one word per add.")
+    a("// (every layer starts on a multiple of 4), then one word per add.  A layer")
+    a("// with a per-style affine folded in has one block per style, style s at")
+    a("// rq_base + s * ST_RQ_STRIDE: st_rq_base(i, style) gives it.")
     a("//")
     a("//   st_layer(i)   layer i in manifest order")
+    a("//   st_rq_base(i, s) requant base of layer i for style s")
     a("//   st_pass(i)    pass i (st_gen_guided.PASSES)")
     a("//   st_region(pt) DDR region of point pt; all-zero for a non-DDR point")
     a("//   st_region_point(i) i-th point that has a DDR region, for iteration")
@@ -304,7 +324,7 @@ def sv_pkg(net) -> str:
     a(f"  localparam int ST_N_REGIONS = {len(net['regions'])};")
     a("")
     a(f"  // Style packets (LN coefficients and FiLM MLP, st_gen_norm / st_gen_film):")
-    a(f"  // st_norm's LN image of style k at words 20k.., st_film's ROM at 512k..")
+    a(f"  // st_norm's LN image of style k at words 20k.., st_film's ROM at 384k..")
     a(f"  localparam int ST_STYLES = {net['styles']};")
     f = net["film"]
     a(f"  // st_film constants, shared by every style (st_gen_film.py --params)")
@@ -314,6 +334,7 @@ def sv_pkg(net) -> str:
     a(f"  localparam int ST_FILM_C0 = {f['c0']};   // affine offset, 19-bit signed")
     a(f"  localparam int ST_FILM_KB = {f['kb']};   // reduce bias scale, br_o * KB")
     a(f"  localparam int ST_ADD_RQ_BASE = {net['add_rq_base']};")
+    a(f"  localparam int ST_RQ_STRIDE = {net['rq_stride']};   // per-style requant block, 0: none")
     a(f"  localparam int ST_NET_W = {net['img_w']};")
     a(f"  localparam int ST_NET_H = {net['img_h']};")
     a("")
@@ -377,6 +398,14 @@ def sv_pkg(net) -> str:
           f"lo: 10'h{lt['lo'] & 0x3FF:03x}, hi: 10'h{lt['hi'] & 0x3FF:03x}}};   // {lt['name']}")
     a("      default: st_layer = '0;")
     a("    endcase")
+    a("  endfunction")
+    a("")
+    a("  function automatic logic [10:0] st_rq_base(input int i, input logic [1:0] style);")
+    a("    st_rq_base = st_layer(i).rq_base;")
+    sl = [lt["index"] for lt in net["layers"] if lt["rq_styled"]]
+    if sl:
+        a(f"    if ({' || '.join(f'i == {x}' for x in sl)})")
+        a(f"      st_rq_base = st_rq_base + 11'(style) * 11'd{net['rq_stride']};")
     a("  endfunction")
     a("")
     a("  function automatic st_pass_t st_pass(input int i);")

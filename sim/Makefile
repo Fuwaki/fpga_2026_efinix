@@ -146,8 +146,8 @@ tb_st_pw:
 # pixels whose statistics hit the ends of the datapath, and the real FiLM of
 # the net with its coefficients written through the port.  Each case runs with
 # random gaps and back-pressure, then clean for the cycles/pixel figure.
-# ln_s1 is the real LN through style 1's packet (+STYLE=1).
-NORM_CASES := ln ln_syn ln_min film ln_s1
+# ln_s1, ln_s2 are the real LN through style 1's and 2's packets (+STYLE=k).
+NORM_CASES := ln ln_syn ln_min film ln_s1 ln_s2
 NORM_DIR   := $(OBJ)/tb_st_norm
 EXTRA_tb_st_norm := $(ST_ENG)
 
@@ -158,7 +158,7 @@ tb_st_norm:
 	  cd $(ROOT) && tools/st_norm_vectors.py --case $$c --out $(NORM_DIR)/$$c \
 	    || exit 1; \
 	  cd $(ROOT) && $(NORM_DIR)/Vtb_st_norm +verilator+seed+$(SEED) +verilator+rand+reset+2 \
-	    +CASE_DIR=$(NORM_DIR)/$$c +STYLE=$$(case $$c in *_s1) echo 1;; *) echo 0;; esac) || exit 1; \
+	    +CASE_DIR=$(NORM_DIR)/$$c +STYLE=$$(case $$c in *_s1) echo 1;; *_s2) echo 2;; *) echo 0;; esac) || exit 1; \
 	done
 
 # Pass 0 (pre, FULL and POOL) and the head pass (post) against
@@ -186,7 +186,7 @@ tb_st_prepost:
 # and -254, and a random plane.  Each case is a whole 320x180 plane (576000
 # tap beats) plus the 40 coefficient writes.
 FILM_CASES := real max min rand
-FILM_STYLES ?= 0 1
+FILM_STYLES ?= 0 1 2
 FILM_DIR   := $(OBJ)/tb_st_film
 EXTRA_tb_st_film := $(ST_ENG)
 tb_st_film:

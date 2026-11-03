@@ -3,7 +3,9 @@
 2026-11-03，feat/st-guided（82f4c34）。第一次部署的是 2 个风格：whitebox 和 sky。
 模型来自 `fpga_st_train/experiments/tiny_dw_whitebox_sky_480p`。
 
-**当前上板的模型**是 `fpga_st_train/runs/codex_fix`：在上面那个模型的基础上做了权重空间编辑，见它的 README。
+**当前上板的模型**（feat/st-fmax，125 MHz）是 `fpga_st_train/runs/astra2/final_s3b`：3 个风格（0 bright、1 gouache、2 comic），带 packet_guide 结构，见第 8 节。
+
+之前上板的是 `fpga_st_train/runs/codex_fix`：在上面那个模型的基础上做了权重空间编辑，见它的 README。
 导出在 `st_work/cf`，`st_work/board_w8a8` 指向 `cf/w8a8`；第一版的导出还留在 `st_work/ms2`。
 这版的 FiLM 共享常数是 sz26 sg24 sb20、c0 19846、kb900，联合校准时 scale 最多放大 1.3 倍。
 板上 14.6 fps，`errors 0`。
@@ -184,3 +186,45 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 | `tools/st_gen_norm.py`、`tools/st_gen_film.py` | 按风格生成 LN、FiLM 的 hex |
 | `rtl/st_accel_new/engine/st_norm.sv`、`st_film.sv`、`st_engine.sv` | 按风格选址、锁存 |
 | `rtl/vid/common/fifo_srl_core.sv` | SRL 实现的小 FIFO |
+
+## 8. 最终版：3 个风格和 packet_guide（final_s3b）
+
+2026-11-03，feat/st-fmax。导出在 `st_work/s3b`，`board_w8a8` 指向 `s3b/w8a8`。
+
+| 项目 | 数值 |
+|---|---|
+| 风格 | 0 bright、1 gouache、2 comic；菜单在 1–3 之间循环 |
+| 每帧周期（仿真） | 6,413,390，3 个风格相同 |
+| 板上 | 125 MHz 时 16.8 fps，`errors 0`，摄像头不丢帧 |
+| RAM10 | 256/256 |
+| XLR | 59804/60800（98.36%） |
+| DSP | 159/160 |
+| 时序 | setup 和 hold 都满足；sys_clk 最差 slack +0.63 ns |
+| hw 对 fp32 | bright 34.9–38.6 dB，gouache 36.4–39.1 dB，comic 31.8–37.0 dB，和训练端 int 推理一致 |
+
+**拆分**：训练端已经把风格拆成单风格模型（`runs/astra2/split/{bright,gouache,comic}`），不需要 `st_split_styles.py`。
+之后的校准、联合校准、导出和合并跟第 3 节一样，只是有 3 个风格。
+
+**packet_guide**：每个风格的 guide 输出是 `relu(guide_conv(x)·g_s + b_s)`。拆分时它已经折进 guide 卷积，权重是 W·g、偏置是 b·g + b_s，g > 0。
+所以各风格 int8 权重码完全一样，`weights.bin` 仍然共享。不同的只有 guide 层的 `weight_scale`、`bias`、`bias_int32` 和 `requant`。
+
+- `st_merge_styles.py` 只允许这四个字段按层不同，并把它们写进每个风格包的 `layer_overrides`；其他字段不一致还是报错。
+- `st_guided.Guided(style=k)` 用风格 k 的 `layer_overrides` 覆盖层参数。
+- `st_gen_guided.py` 给这类层在 rq ROM 里每个风格放一块（风格 s 在 `rq_base + s × ST_RQ_STRIDE`，这里 stride 是 8）。
+  `st_net_pkg::st_rq_base(层, style)` 给出基址，`st_engine` 用它给 DW 和 PW 取 rq 基址。rq ROM 从 842 字增加到 858 字，RAM 不变。
+
+**3 个风格的存储**：
+
+- LN：3 × 20 行，不变。
+- FiLM ROM：每个风格的步长从 512 改成 384（380 字已用），地址是 `style×256 + style×128 + addr`。
+  Efinity 会把一个数组的深度向上取到 2 的幂，1152 × 40 放在一个数组里要 8 个 RAM10。所以拆成两个数组：
+  `st_film.hex` 放 0..1023 字（4 个 RAM10），`st_film_hi.hex` 放其余字（2 个 RAM10），读出寄存以后再按地址选。总共 6 个 RAM10，正好 256/256。
+- 选风格：`st_engine` 在 `ST_STYLES = 3` 时把 style 3 映射到 0，2 的幂时仍然取模。固件菜单在 0..2 之间循环（`ST_NUM_STYLES`）。
+
+**LN 偏置位宽**：gouache 有 8 个通道的 β 超过 16 个输出码，`B_c` 超出 27 位字段。
+现在 `ln_consts` 把 `B_c` 取成偶数（`LN_BSH = 1`），字段里存 `B_c >> 1`，`st_norm` 在 LN 模式下左移一位还原。
+精度损失只有 2^-22 个码，看不出差别；RAM 不变。
+
+**仿真**：`make -C sim tb_st_norm`（多了 ln_s2）、`make -C sim tb_st_film`（`FILM_STYLES` 默认是 `0 1 2`）、`make -C sim tb_st_engine ENGINE_STYLE=k`（k = 0、1、2 都要跑，整帧全部字节一致）。
+
+**余量**：RAM 已经用满。以后要加东西，就把 OCR 从 16 KB 降到 8 KB，能腾出 8 个 RAM10（见第 6 节）。

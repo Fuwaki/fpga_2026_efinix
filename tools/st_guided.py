@@ -49,6 +49,7 @@ LN_M0 = 1 << (LN_L - 2)
 LN_LUT = np.round(2.0 ** (LN_L / 2 + 15) / np.sqrt(np.arange(LN_M0, 1 << LN_L) + 0.5)).astype(np.int64)
 LN_T = 12           # t = u / sqrt(D) in Q12
 LN_S = 22           # affine shift
+LN_BSH = 1          # B_c is stored >> LN_BSH (st_norm's 27-bit field), so it is even
 
 
 def bitlen(v):
@@ -60,7 +61,7 @@ def ln_consts(spec):
     s_in, s_out = spec["in_scale"], spec["out_scale"]
     e_add = max(1, int(round(spec["eps"] * n * n / (s_in * s_in))))
     g = np.round(np.array(spec["gamma"], np.float64) / s_out * 2 ** (LN_S - LN_T)).astype(np.int64)
-    b = np.round(np.array(spec["beta"], np.float64) / s_out * 2 ** LN_S).astype(np.int64)
+    b = np.round(np.array(spec["beta"], np.float64) / s_out * 2 ** (LN_S - LN_BSH)).astype(np.int64) << LN_BSH
     return e_add, g, b
 
 
@@ -266,6 +267,9 @@ class Guided(Net):
         packets = style_packets(self.m)
         assert 0 <= style < len(packets), f"style {style}: the manifest has {len(packets)}"
         pk = packets[style]
+        # a per-style affine folded into a conv: that layer's per-channel numbers
+        for name, fields in pk.get("layer_overrides", {}).items():
+            self.L[name] = {**self.L[name], **fields}
         self.norm = {n["name"]: n for n in pk["norm_layers"]}
         self.film = {f["name"]: f for f in pk["film_layers"]}
         # one set of FiLM shifts for all styles, per film layer

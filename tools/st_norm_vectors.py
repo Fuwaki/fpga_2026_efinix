@@ -238,7 +238,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True,
-                    choices=["ln", "ln_s1", "ln_syn", "ln_min", "film"])
+                    choices=["ln", "ln_s1", "ln_s2", "ln_syn", "ln_min", "film"])
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--image", default=DEFAULT_IMAGE)
@@ -248,12 +248,12 @@ def main() -> int:
     SPEC = json.loads((a.manifest / "manifest.json").read_text())
     QMAX = int(SPEC["act_qmax"])
     cache = a.cache or (a.out.parent / "st_norm_golden")
-    if a.case in ("ln", "ln_s1", "film"):
+    if a.case in ("ln", "ln_s1", "ln_s2", "film"):
         cache = golden(Path(a.image), cache, a.manifest)
     if a.case == "ln":
         case_ln(a.out, cache)
-    elif a.case == "ln_s1":
-        case_ln_style(a.out, cache, 1)
+    elif a.case in ("ln_s1", "ln_s2"):
+        case_ln_style(a.out, cache, int(a.case[-1]))
     elif a.case == "ln_syn":
         case_ln_syn(a.out)
     elif a.case == "ln_min":

@@ -3,11 +3,12 @@
 
 Writes into --out:
 
-  st_film.hex   512 words of 40 bits per style (words 512k.. are style k),
+  st_film.hex   384 words of 40 bits per style (words 384k.. are style k;
+                words 1024.. go to st_film_hi.hex, st_film's second array),
                 one 10-digit hex word per line, MSB first: the biases and
                 multipliers of st_guided.film_consts and the three weight
                 matrices of the layer, arranged as the RTL header documents
-                (word offsets within a style's 512):
+                (word offsets within a style's 384):
 
                   word   0 + o         [31:0] br_o, signed        (o < 10)
                   word  10 + o         [16:0] Mz_o, < 2**17       (o < 10)
@@ -50,7 +51,7 @@ from st_guided import film_consts, film_shifts, style_packets  # noqa: E402
 
 NC, NO = 40, 10                 # channels and hidden units of the FiLM MLP
 WORD_BITS = 40
-DEPTH = 512
+DEPTH = 384                     # words per style: st_film's SDEPTH
 
 A_BR, A_MZ = 0, 10
 A_BG, A_BB, A_MM = 20, 60, 100
@@ -221,8 +222,13 @@ def main():
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    # st_film keeps words 0..1023 and 1024.. in two arrays, one file each
+    # (one zero word in st_film_hi.hex when there are none)
     with open(out / "st_film.hex", "w") as fh:
-        for w in words:
+        for w in words[:1024]:
+            fh.write(f"{w:010x}\n")
+    with open(out / "st_film_hi.hex", "w") as fh:
+        for w in words[1024:] or [0]:
             fh.write(f"{w:010x}\n")
     (out / "st_film.json").write_text(json.dumps(consts, indent=1) + "\n")
     print(f"st_gen_film: {out}/st_film.hex, {len(styles)} styles x {USED} of {DEPTH} words, "

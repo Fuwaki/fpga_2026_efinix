@@ -85,6 +85,12 @@ void main(void)
 
     camLed(chip_ok);
 
+    /* The style row cycles over the accelerator's style packets (ST_STYLES
+     * in st_net_pkg); the engine maps any other value to a valid one. */
+#ifndef ST_NUM_STYLES
+#define ST_NUM_STYLES 3u
+#endif
+
     /* OSD on.  MENU resets to SPLIT / cursor on the view row / style 0,
      * single_sel held at 1 (full screen is the processed layer). */
     ST_DBG32(0x8000) = 1u;
@@ -114,7 +120,7 @@ void main(void)
                     if (cursor == 0u)
                         view_full ^= 1u;
                     else
-                        style = (style + 1u) & 3u;
+                        style = (style + 1u < ST_NUM_STYLES) ? style + 1u : 0u;
                     changed = 1u;
                 }
                 if (changed) {
