@@ -1,5 +1,12 @@
 # fpga_src — Ti60F225 + SC431HAI 摄像头 → HDMI
 
+> **当前版本（最终版，2026-11-03）**：分支 feat/st-fmax 91514ca，已写入 SPI Flash。
+> - 摄像头 1280×720 → ISP（固件 AE/AWB）→ 3 风格风格迁移加速器（模型 s3d：bright / gouache / comic，按键切换）→ HDMI。
+> - 用户逻辑 125 MHz，板上约 16.8 fps，`errors 0`。
+> - 资源：XLR 60342/60800（99.25%），RAM10 256/256，DSP 159/160；sys_clk fmax 134.8 MHz。
+> - 文档：docs/st-resource-report.md（资源）、docs/st-network-architecture.md（网络和对比）、docs/st-multistyle-deploy.md（模型部署）、docs/video_architecture.md（视频通路、ISP、AE/AWB 寄存器）、docs/st-engineering-notes.md（工程经验）。
+> - 下面第 1–13 节有不少是早期移植阶段的记录，数字以上面这些文档为准。
+
 ## 快速执行
 
 从工作区根目录运行 `tools/fpga-flow.sh`，或在本目录运行：
@@ -220,6 +227,9 @@ assign io_cam_sda_OE  = ~w_soc_i2c_sda_write;
 - 报文格式：16-bit Sub Address（先高后低）+ 8-bit data，用 BSP 的
   `i2c_writeData_w()`。
 - 跑完 164 条后把 GPIO0[0] 置 1 → 点亮 `led[1]`。
+- `src/main.c`：主循环轮询按键（风格菜单、分屏等，写 `ui_regs`），并输出 UART 遥测。
+- `src/isp_ctrl.c`：AE（只调传感器曝光 0x3E00–0x3E02）和 AWB（灰像素统计 + 限幅的光源估计），每个新统计帧跑一次，结果写 ISP 增益寄存器。算法和寄存器表见 docs/video_architecture.md 第 4 节。
+- 固件总共约 6.2 KB（text 3,148 + data 958 + bss 2,076），OCR 16 KB。
 
 单独编译：
 
@@ -246,8 +256,9 @@ make BSP=efinix/EfxSapphireSoc
    适合做按键消抖/状态寄存器这类"带寄存器映射"的逻辑，RPU 侧用
    `read_u32/write_u32` 访问。
 
-当前顶层 APB 主机已被引出但**悬空**（`w_soc_apb_*` 未接从机，`PREADY=1`），
-直接挂模块即可，不用改 SoC 配置。
+现在 APB 从机已经接上：`rtl/ui_regs.sv` 占 APB 偏移 0x8000–0x803F（固件里 `IO_APB_SLAVE_0_INPUT + off`），
+包括控制、风格菜单、ISP 增益和 ISP 统计，寄存器表见 docs/video_architecture.md 第 4 节。
+APB 的其余地址目前没有从机，读 0。
 
 ---
 
@@ -256,8 +267,8 @@ make BSP=efinix/EfxSapphireSoc
 - **不是上个电就能看的成品**：本次交付到"综合/布局布线/bitstream 全过 + 时序收敛 +
   固件编译并嵌入"为止，**没有上板验证**（本机 `lsusb` 里没有 Efinix 下载器，
   也无法接摄像头/显示器）。
-- 板上资源余量：XLR 52.4%（31873/60800）、Memory Block 65%（166/256）、DSP 9/160。
-  片上 RAM 已占 64 KB（79 个 BRAM），再加大 SoC 空间要留意 Memory Block。
+- 板上资源（最终版 91514ca）：XLR 99.25%（60342/60800）、Memory Block 256/256、DSP 159/160，几乎没有余量，见 docs/st-resource-report.md。
+- 白平衡在部分场景下仍容易偏绿（docs/video_architecture.md 第 8 节），暂时没继续调。
 - UART0 已在 SoC 里使能但**未接引脚**（`rxd` 固定 1），所以固件里的
   `CAM_I2C_VERBOSE` 打开也看不到输出。
   （注意别和 §12 的**片上状态 UART** 搞混：那个是 FPGA 侧驱动 `GPIOR_28`

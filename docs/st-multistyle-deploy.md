@@ -3,7 +3,8 @@
 2026-11-03，feat/st-guided（82f4c34）。第一次部署的是 2 个风格：whitebox 和 sky。
 模型来自 `fpga_st_train/experiments/tiny_dw_whitebox_sky_480p`。
 
-**当前上板的模型**（feat/st-fmax，125 MHz）是 `fpga_st_train/runs/astra2/final_s3b`：3 个风格（0 bright、1 gouache、2 comic），带 packet_guide 结构，见第 8 节。
+**当前上板的模型（最终版）**（feat/st-fmax 91514ca，125 MHz，已写入 Flash）是 `fpga_st_train/runs/astra2/train/s3d`：3 个风格（0 bright、1 gouache、2 comic），带 packet_guide 结构，修正了 final_s3b 的整体偏黄，见第 9 节。
+第 8 节的 final_s3b 是它的前一版，结构相同，3 风格和 packet_guide 的硬件实现都在第 8 节。
 
 之前上板的是 `fpga_st_train/runs/codex_fix`：在上面那个模型的基础上做了权重空间编辑，见它的 README。
 导出在 `st_work/cf`，`st_work/board_w8a8` 指向 `cf/w8a8`；第一版的导出还留在 `st_work/ms2`。
@@ -108,7 +109,8 @@ python3 tools/st_gen_prelut.py
 - 移位 SZ/SG/SB 取各风格拟合结果的最小值（`st_guided.film_shifts`），保证没有风格溢出。
 - `st_gen_film.build_styles` 会检查所有风格的共享常数确实相等。
 - 第一版双风格模型是 sz26 sg24 sb20、c0 21922、kb900，和 p90 单风格版本不同（p90 是 sg23、c0 26755）。
-- 最终版 final_s3b 是 sz25 sg24 sb20、c0 8391、kb900。
+- final_s3b 是 sz25 sg24 sb20、c0 8391、kb900。
+- 最终版 s3d 是 sz25 sg23 sb19、c0 13468、kb900。
 
 **golden**：`tools/st_guided.py --style k` 用第 k 个风格包。两个风格的硬件输出对 fp32 都在 37.8 dB 以上。
 
@@ -188,6 +190,7 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 | 文件 | 作用 |
 |---|---|
 | `tools/st_split_styles.py` | 把多风格检查点拆成单风格模型 |
+| `tools/st_split_packets.py` | 把 astra torch 训练器的 `params.pt` 拆成单风格模型，并把每个风格的仿射折进卷积（第 9 节） |
 | `tools/st_merge_calib.py` | 合并各风格的校准结果，逐点取最大值 |
 | `tools/st_merge_styles.py` | 合并各风格的 W8A8 导出，生成 `style_packets` |
 | `tools/st_guided.py` | golden，`--style k`；`film_shifts` 计算共享的 FiLM 移位 |
@@ -195,7 +198,7 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 | `rtl/st_accel_new/engine/st_norm.sv`、`st_film.sv`、`st_engine.sv` | 按风格选址、锁存 |
 | `rtl/vid/common/fifo_srl_core.sv` | SRL 实现的小 FIFO |
 
-## 8. 最终版：3 个风格和 packet_guide（final_s3b）
+## 8. 3 个风格和 packet_guide（final_s3b）
 
 2026-11-03，feat/st-fmax。导出在 `st_work/s3b`，`board_w8a8` 指向 `s3b/w8a8`。
 
@@ -263,3 +266,43 @@ ln -sfn s3b/w8a8 st_work/board_w8a8
 **仿真**：`make -C sim tb_st_norm`（多了 ln_s2）、`make -C sim tb_st_film`（`FILM_STYLES` 默认是 `0 1 2`）、`make -C sim tb_st_engine ENGINE_STYLE=k`（k = 0、1、2 都要跑，整帧全部字节一致）。
 
 **余量**：RAM 已经用满。以后要加东西，就把 OCR 从 16 KB 降到 8 KB，能腾出 8 个 RAM10（见第 6 节）。
+
+## 9. 最终版：s3d
+
+2026-11-03，feat/st-fmax（8776b5e 换模型，91514ca 已写入 Flash）。导出在 `st_work/s3d`，`board_w8a8` 指向 `s3d/w8a8`。
+
+| 项目 | 数值 |
+|---|---|
+| 风格 | 0 bright、1 gouache、2 comic；菜单在 1–3 之间循环 |
+| 每帧周期 | 仿真 6,413,390（3 个风格相同）；板上 7.36M–7.50M |
+| 板上 | 125 MHz 时 16.7–17.0 fps，`errors 0`，摄像头不丢帧 |
+| 资源 | RAM10 256/256，XLR 60342/60800（99.25%，含同期的固件 AWB/AE 改动），DSP 159/160 |
+| hw 对 fp32 | bright 37.3–40.9 dB，gouache 35.8–38.7 dB，comic 32.7–37.3 dB，和训练端 int 推理一致 |
+| 联合校准的损失 | 对比各风格单独校准（6 张图平均）：bright 2.0 dB，gouache 3.1 dB，comic 0.0 dB；scale 最多放大 2.43 倍 |
+
+**为什么换**：final_s3b 的输出整体偏黄。对比相机输入、FPGA 输出和 fp32 后确认 FPGA 输出等于 fp32，偏色来自模型本身（相机输入本来也偏暖）。
+训练端在 s3d 里修正了这个问题（训练仓库 `docs/astra-weight-mining.md` §10），黄度从 +0.095/+0.092/+0.150 降到 +0.004/+0.005/+0.004。
+
+**为什么是 s3d 不是 s3e**：两者画面差不多。s3e 多了 head 和输出的逐风格仿射，联合校准时 scale 最多放大 3.35 倍（s3d 是 2.43 倍），共享量化的损失更大。s3d 只有 guide 仿射，和 final_s3b 的风格包、packet 结构完全一样，RTL 不用改。
+
+**拆分**：s3d 和 s3e 是 astra torch 训练器的产物，只有 `params.pt`，没有训练端拆好的单风格检查点。`tools/st_split_packets.py` 读 `params.pt`，用一个同结构的单风格检查点做模板，写出 `style0..2`：
+
+- 风格 k 的 LN、FiLM 放到普通字段；
+- 每个风格的仿射 `x·exp(log_gain) + bias` 折进前面的卷积：guide_affine → guide.conv，head_affine → head_sep.dw.conv，out_affine → head_sep.pw.conv（s3d 只有第一个）；
+- 折完用 Rust `infer` 对比训练器的 torch 前向，结果写到 `split_report.json`（s3d 三个风格 MAE 约 0.001，最大误差在最底下几行，是补边约定不同）。
+
+```bash
+cd /data/competition/2026fpga
+W=st_work/s3d
+~/.venvs/astra/bin/python fpga_src-st-fmax/tools/st_split_packets.py \
+    --params fpga_st_train/runs/astra2/train/s3d/params.pt \
+    --template fpga_st_train/runs/astra2/split/bright --out $W
+```
+
+之后的校准（`--batches 20`）、联合校准、导出、合并和第 8 节的命令一样，把 `s3b` 换成 `s3d`；最后 `ln -sfn s3d/w8a8 st_work/board_w8a8`。
+另外用每个风格自己的校准导出了 `w8a8_own_s$k`，只用来评估联合校准的损失，不上板。
+
+**生成器的改动**：`st_gen_guided.py` 的 `ST_RQ_STRIDE` 改成所有按风格变化的层里最大的输出通道数（4 对齐），每个风格块放在 `rq_base + s × stride`。
+这样 s3e 那种多个层都有逐风格 requant 的模型也能生成；s3d 只有 guide 一层，stride 仍是 8，rq ROM 和 RAM 不变。
+
+**验证**：tb_st_engine 风格 0–2（各 6,413,390 周期，整帧字节一致），tb_st_norm（ln_s1、ln_s2），tb_st_film（3 个风格），lint 全部通过。

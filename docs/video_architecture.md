@@ -30,7 +30,7 @@ vid_testgen ─ vdma_wr ─ 测试环 ─ vdma_rd ─ vid_testchk   (DMA 自检)
 |---|---|---|
 | `isp/csi_capture` | pclk | 每拍 4 像素 RAW10，行末拍补 eol，帧首补 sof；FIFO 满时丢拍并计数。`CSI_PATTERN=1` 换成固定图（保留传感器时序） |
 | `isp/line_release` | pclk → core | 双时钟 FIFO；一行的 eol 进 FIFO 后才整行连续放出（每拍 2 像素），行间强制间隙 |
-| `isp/isp_top` | core | `isp_blc_wb` → `isp_demosaic`（双线性，输出第 k 行以输入第 k−1 行为中心，第 0 行黑）→ `isp_gamma`（三张 1024×10 表）→ `isp_sat`（1.5×）→ `isp_dither565`（2×2 有序抖动）；`isp_stats` 统计原始四相位均值、过曝/近黑数。`bypass_all` 时原始值高 8 位作灰度直出 |
+| `isp/isp_top` | core | `isp_blc_wb` → `isp_demosaic`（双线性，输出第 k 行以输入第 k−1 行为中心，第 0 行黑）→ `isp_gamma`（三张 1024×10 表）→ `isp_sat`（1.5×）→ `isp_dither565`（2×2 有序抖动）；`isp_blc_wb` 的 R/G/B 增益（Q4.8，已含黑电平拉伸）每帧 sof 时从 `ui_regs` 锁存，乘法用 `mul_nodsp`（视频子系统保持 0 DSP）；`isp_stats` 统计原始四相位和、过曝数、帧计数；`isp_gray_stats` 在去马赛克之后统计接近灰色的像素的 R/G/B 和（给固件 AWB）。`bypass_all` 时原始值高 8 位作灰度直出 |
 | `dma/vdma_wr` | core | 字在 FIFO 前打包成整拍，FIFO 里够一个突发才发 AW，W 每时钟一拍；逐拍核对 sof/eol，短帧/长帧/错位帧 ABORT；帧签名 `sig = rotl(sig,1) ^ word` |
 | `dma/vdma_rd` | core（输出可异步） | 按行按裁切窗口发读突发，按 FIFO 余量计信用，R 每时钟一拍进 FIFO，FIFO 后拆字；最后一拍收到后释放帧 |
 | `proc/proc_engine` | core | 以 NEW_ONLY 读 ISP 环每个新帧 → `proc_stub`（PASS / INVERT / SOBEL）→ 写 PROC 环，结果帧带源帧 `src_seq` |
@@ -67,8 +67,30 @@ DSP 全部留给神经网络：子系统里所有乘法经 `common/mul_nodsp.sv`
 | `TP_EN` | 0 | 1 = HDMI 本地彩条，与视频通路无关 |
 | `ENABLE_ST_ACCEL` | 0 | ST 加速器，打开时它的 AXI 主机接 `vid_subsystem` 外部端口 |
 
-ISP 参数是 `vid_subsystem` 的 `ISP_CFG`（`vid_pkg::isp_cfg_t`，默认 `ISP_CFG_DEFAULT`）。所有参数都是编译期常量，
-但各级已经按结构体端口接收，以后换成 CPU 寄存器只改来源。
+ISP 参数是 `vid_subsystem` 的 `ISP_CFG`（`vid_pkg::isp_cfg_t`，默认 `ISP_CFG_DEFAULT`）。黑电平、gamma、饱和度等仍是编译期常量；
+R/G/B 增益从 0f2a1b7 起是运行时输入 `isp_gain`（`vid_pkg::isp_gain_t`），由 `ui_regs` 驱动，复位值等于 `isp_gain_of(ISP_CFG_DEFAULT)`（R 273、G 141、B 273）。
+
+`ui_regs`（APB，0x8000–0x803F，和 ISP 同在 sys_clk，不需要跨时钟）：
+
+| 地址 | 内容 |
+|---|---|
+| 0x8000 | CTRL |
+| 0x8004 | MENU（bits[4:3] 风格） |
+| 0x8008 | GAIN_RG：[11:0] R，[27:16] G（Q4.8） |
+| 0x800C | GAIN_B：[11:0] B |
+| 0x8010–0x801C | 原始统计：四个 CFA 相位的和（相位 R = 2、B = 1、G = 0/3） |
+| 0x8020 | 过曝（削顶）计数 |
+| 0x8024 | DARK，已去掉，读 0 |
+| 0x8028 | FRAMES[7:0]，每锁存一次统计加 1 |
+| 0x802C–0x8034 | 灰像素 R、G、B 和（每个分量 >>2 后累加） |
+
+**固件 AWB/AE**（`embedded_sw/.../cameraI2c/src/isp_ctrl.c`，主循环轮询按键时顺带调用，每个新统计帧跑一次）：
+
+- AE 只调传感器曝光（0x3E00–0x3E02）：原始 G 均值目标是 2·T，±25% 死区；10 ms 以上取 10 ms 的整数倍（防工频闪烁），最长 40 ms；改一次等 3 帧。
+- 亮度：G 增益 = 150·256 / G 均值。
+- 白平衡：光源估计 `rg_q8`、`bg_q8` 限制在 R/G 115–205、B/G 90–166 内；灰像素足够多（G 和 ≥ 2000·32）时，用灰像素的 R/G、B/G 残差更新。R/B 增益 = G 增益·256 / 估计值。所有更新每次只走目标的 1/4。
+- 灰像素：去马赛克后的偶数列，G ≥ 64，R/G/B < 1000，|R−G| 和 |B−G| < 3/16·G。
+- 代码约 3 KB（text 3,148 B），固件总共约 6.2 KB，OCR 16 KB 不用改。
 
 ## 5. 接入一个加速器
 
@@ -83,7 +105,11 @@ ISP 参数是 `vid_subsystem` 的 `ISP_CFG`（`vid_pkg::isp_cfg_t`，默认 `ISP
 - `python3 tools/board_smoke_test.py --vid`：遥测每 0.5 s 一帧，按 seq 低 2 位轮换四页——0 显示、1 摄像头路径（含帧签名）、
   2 原始统计（含 CSI 错误位）、3 自检与处理单元。`ok` 要求时钟/复位/1080p60 正常且所有帧环无协议错误。
 
-## 7. 资源（Phase 4 完成时）
+## 7. 资源
+
+最终版（91514ca，带 ST 加速器）：u_vid 7,381 XLR、31 RAM10、0 DSP，其中 ISP 2,996 XLR（灰像素统计 397）。全片见 docs/st-resource-report.md。
+
+Phase 4 完成时（还没有加速器）：
 
 全片 XLR 29.1k / 60.8k、Memory 196 / 256、DSP 4（只有 SoC）。u_vid：10.6k XLR、63 块 Memory、0 DSP
 （Sobel 的两行亮度缓冲 4 块）。
@@ -93,7 +119,8 @@ Memory 大头：SoC 81、DDR 控制器 39、CSI RX 11；u_vid 中每个 DMA 引�
 ## 8. 已知限制
 
 - 帧率约 22 fps；30 fps 需 VTS ≈ 2048 并相应缩短曝光。
-- 曝光、增益、白平衡固定；AE/AWB 可由固件读 `isp_stats` 实现（需 APB 寄存器）。
+- AE/AWB 已由固件实现（第 4 节），但白平衡在部分场景下仍容易偏绿：灰像素 3/16 的容差偏宽、Bayer 上 G 占一半采样，也没有色彩校正矩阵（CCM）。暂时没继续调，XLR 只剩约 458。
+- 原始统计不再统计近黑像素数（为省 XLR 去掉了），DARK 寄存器读 0。
 - 去马赛克是双线性，细节处有轻微彩色噪点。
 - RGB565 量化靠 2×2 抖动掩盖，暗部渐变仍可能看到细纹。
 - Sobel 输出相对原图右移 2 像素、下移 1 行（每个输出拍随输入拍产生，弹性流里不需要单独补发）。

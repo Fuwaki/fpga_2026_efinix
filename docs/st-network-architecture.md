@@ -6,10 +6,11 @@
 - 参数量统计表；
 - 与标准网络（简化版 CycleGAN）在画质（PSNR/SSIM）和推理延迟上的对比。
 
-**部署网络（最终版）**：`tiny_dw_guided` 的 3 风格版本 `fpga_st_train/runs/astra2/final_s3b`。风格是 0 bright、1 gouache、2 comic，带 packet_guide 结构（§2.3）。
-W8A8 导出在 `st_work/s3b/w8a8`。卷积结构和通道数与 prune90 `ln` 版本（`st_work/p90_ln_w8a8`）相同，所以 §3 的逐层参数和 MAC 表仍然适用。
+**部署网络（最终版）**：`tiny_dw_guided` 的 3 风格版本 `fpga_st_train/runs/astra2/train/s3d`。风格是 0 bright、1 gouache、2 comic，带 packet_guide 结构（§2.3）。
+它和上一版 final_s3b 结构完全相同，训练时修正了输出整体偏黄的问题（固定参考、去均值色度、偏色惩罚项，见训练仓库 `docs/astra-weight-mining.md` §10）：黄度从 s3b 的 +0.095/+0.092/+0.150 降到 +0.004/+0.005/+0.004。
+W8A8 导出在 `st_work/s3d/w8a8`。卷积结构和通道数与 prune90 `ln` 版本（`st_work/p90_ln_w8a8`）相同，所以 §3 的逐层参数和 MAC 表仍然适用。
 
-**板上实现**：分支 feat/st-fmax（dad8cb8，已写入 SPI Flash），用户逻辑跑在 125 MHz。
+**板上实现**：分支 feat/st-fmax（91514ca，已写入 SPI Flash），用户逻辑跑在 125 MHz。
 设计见 docs/st-guided-adr.md，多风格部署见 docs/st-multistyle-deploy.md 第 8 节，资源见 docs/st-resource-report.md。
 
 **复现**：所有数字都能用文末的命令复现。测试图是 6 张 demo 图（animal、cat、city、landscape、portrait、water）。
@@ -26,7 +27,7 @@ W8A8 导出在 `st_work/s3b/w8a8`。卷积结构和通道数与 prune90 `ln` 版
 | 部署存储（W8A8，见 §3） | **约 39 KB**（3 个风格） | 约 7.8 MB | 约 11.4 MB | 约 1.5 MB |
 | 计算量 @640×360 | **0.59 GMAC** | 123.2 GMAC | 174.2 GMAC | 28.8 GMAC |
 | 对教师 PSNR / SSIM（板上数据通路，单风格 prune90） | **30.2 dB / 0.908** | 未训练，见 §4.2 | 未训练 | 参考（∞ / 1） |
-| FPGA 推理延迟（Ti60F225） | **59.4 ms/帧，实测 16.8 fps（125 MHz）** | 放不下；按同一引擎峰值折算 ≥ 7.7 s | ≥ 10.9 s | ≥ 1.8 s |
+| FPGA 推理延迟（Ti60F225） | **约 59.6 ms/帧，实测 16.8 fps（125 MHz）** | 放不下；按同一引擎峰值折算 ≥ 7.7 s | ≥ 10.9 s | ≥ 1.8 s |
 | CPU 延迟（Ryzen 9 5900X，ORT，单线程） | 26.8 ms | 2695 ms | 3695 ms | 688 ms |
 
 3 个风格加起来，fp32 参数存储约是 500 KB 上限的 1/4，部署形态约 39 KB。
@@ -123,15 +124,16 @@ flowchart LR
 - 推理时没有额外的乘加，帧率和单风格一样。
 
 **量化**：卷积和 requant 共享，所以各风格必须用同一套激活 scale。做法是逐点取各风格校准结果的最大值（联合校准）。
-各风格因此比单独校准低 0.2–1.2 dB（对 fp32；bright 1.2、gouache 0.6、comic 0.2），这是多风格共享卷积的代价。
+各风格因此比单独校准低 0–3 dB（对 fp32，6 张图平均；bright 2.0、gouache 3.1、comic 0.0），这是多风格共享卷积的代价。联合校准时 scale 最多放大 2.43 倍（to_guide 的输入）。
+候选的 s3e（多了 head/out 仿射）这一项放大到 3.35 倍，画面和 s3d 差不多，所以选了 s3d。
 
 **硬件输出对 fp32 的保真度**（`st_guided.py`，与 RTL 逐位一致，6 张图的范围）：
 
 | 风格 | 硬件对 fp32 | 训练端 int 推理对 fp32 |
 |---|---|---|
-| 0 bright | 34.9–38.6 dB | 34.9–38.5 dB |
-| 1 gouache | 36.4–39.1 dB | 36.4–39.0 dB |
-| 2 comic | 31.8–37.0 dB | 31.9–37.0 dB |
+| 0 bright | 37.3–40.9 dB | 37.3–40.9 dB |
+| 1 gouache | 35.8–38.7 dB | 35.8–38.7 dB |
+| 2 comic | 32.7–37.3 dB | 32.7–37.5 dB |
 
 硬件和训练端的整数推理基本一致，硬件化没有带来额外损失。comic 偏低是这个风格量化以后的特性。
 
@@ -240,7 +242,7 @@ SSIM 按 Wang 2004 计算：11 抽头高斯窗，σ=1.5，K1=0.01，K2=0.03，�
 
 **FPGA（Ti60F225，sys_clk 125 MHz，DDR 控制器内核 100 MHz）**：
 
-- 最终版实测每帧约 7.42M 周期，即 59.4 ms，板上 16.8 fps，`errors 0`。仿真为 6.41M 周期，3 个风格相同。
+- 最终版实测每帧 7.36M–7.50M 周期，即约 59.6 ms，板上 16.7–17.0 fps，`errors 0`。仿真为 6.41M 周期，3 个风格相同。
 - 早先 100 MHz 的单风格版本是每帧 6.85M 周期、68 ms、14.7 fps。频率提高 25%，帧率提高约 14%：DDR 内核没有跟着提频，访存等待按周期算变长了。
 - PW 阵列是 8×16 = 128 MAC/周期。按板上周期算整帧平均 80 MAC/周期，利用率 62%；按仿真周期算 92 MAC/周期。主干 PW pass（enc1/res）达到 127.5 MAC/周期，接近满载。
 - 其余网络在同一块芯片上**放不下**：
@@ -251,7 +253,7 @@ SSIM 按 Wang 2004 计算：11 抽头高斯窗，σ=1.5，K1=0.01，K2=0.03，�
 
 | 网络 | GMAC @640×360 | 峰值下限 | 按本网络实测效率（87 MAC/周期） |
 |---|---|---|---|
-| 本网络 | 0.59 | 37 ms | **59.4 ms（实测）** |
+| 本网络 | 0.59 | 37 ms | **59.6 ms（实测）** |
 | 教师 White-box | 28.75 | 1.8 s | 2.9 s |
 | CycleGAN-R6 | 123.2 | 7.7 s | 12.3 s |
 | CycleGAN-R9 | 174.2 | 10.9 s | 17.4 s |
@@ -294,12 +296,12 @@ $PY $E --latency neteval/onnx/guided.onnx ../teachers/whitebox/cartoonizer.onnx 
 ```bash
 cd /data/competition/2026fpga/fpga_src-st-fmax
 for k in 0 1 2; do
-  python3 tools/st_guided.py --manifest ../st_work/s3b/w8a8 --style $k \
-      --compare ../st_work/g360/in ../st_work/s3b/eval/s$k/int ../st_work/s3b/eval/s$k/fp32
+  python3 tools/st_guided.py --manifest ../st_work/s3d/w8a8 --style $k \
+      --compare ../st_work/g360/in ../st_work/s3d/eval/s$k/int ../st_work/s3d/eval/s$k/fp32
 done
 ```
 
-`eval/s$k/fp32` 和 `eval/s$k/int` 是训练端 `infer --mode fp32 / int` 在 `g360/in` 上的输出（模型分别是 `s3b/style$k` 和 `s3b/w8a8_s$k`）。
+`eval/s$k/fp32` 和 `eval/s$k/int` 是训练端 `infer --mode fp32 / int` 在 `g360/in` 上的输出（模型分别是 `s3d/style$k` 和 `s3d/w8a8_s$k`）。`eval/s$k/int_own` 是用风格自己的校准导出（`w8a8_own_s$k`）的结果，用来算联合校准的损失。
 
 640×427 那组的参考图和 fp32 输出是训练 trial 目录里的 `target_000500_*.png` 和 `sample_002000_*.png`，整数输出在 `p90_eval/int`。
 这里算出的 PSNR 和训练日志 `metrics.jsonl` 里的 `psnr_vs_teacher` 一致（例如 portrait 31.32、water 28.10）。
