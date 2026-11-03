@@ -1,19 +1,23 @@
 // isp_blc_wb.sv -- black level and white balance on the raw Bayer stream.
 //
 //   d = max(v - blc_level, 0);  w = min((d * gain[c]) >> 8, 1023)
-//   gain[c] = (blc_gain * wb[c]) >> 8
+//
+// gain[c] (Q4.8, c = R/G/B) comes from firmware AWB/AE at run time; its reset
+// value (ui_regs) is (blc_gain * wb[c]) >> 8 of the compile-time cfg.  It
+// is taken at sof, so a frame is never split between two white balances.
 //
 // c is the colour of the site, from the row parity (counted from sof) and the
 // column parity (element index: a beat starts on an even column).  Each
-// element only ever sees two colours, one per row parity, so both products
-// are formed and one is selected: with cfg constant, each multiplier has a
-// constant operand and reduces to adders.  Latency 2.
+// element only ever sees two colours, one per row parity, so stage 1 selects
+// the element's gain and stage 2 has one multiplier per element, registered
+// before the clamp in stage 3 (a full 10x12 product, no DSP).  Latency 3.
 module isp_blc_wb
     import vid_pkg::*;
 (
     vpush_if.snk     i,      // raw10_t x 2
     vpush_if.src     o,      // raw10_t x 2
-    input isp_cfg_t  cfg
+    input isp_cfg_t  cfg,
+    input isp_gain_t gain
 );
     wire clk = i.clk, rst_n = i.rst_n;
 
@@ -24,16 +28,15 @@ module isp_blc_wb
         return 2'd1;
     endfunction
 
-    logic [19:0] g_prod [3];
-    mul_nodsp #(.AW(10), .BW(10)) u_gr (.a(cfg.blc_gain), .b(cfg.wb_r), .p(g_prod[0]));
-    mul_nodsp #(.AW(10), .BW(10)) u_gg (.a(cfg.blc_gain), .b(cfg.wb_g), .p(g_prod[1]));
-    mul_nodsp #(.AW(10), .BW(10)) u_gb (.a(cfg.blc_gain), .b(cfg.wb_b), .p(g_prod[2]));
-
-    logic [11:0] gain [2][2];        // [row parity][element]
-    always_comb
-        for (int p = 0; p < 2; p++)
-            for (int e = 0; e < 2; e++)
-                gain[p][e] = g_prod[colour(p[0], e[0], cfg.cfa_r)][19:8];
+    // Gain of this frame: the input at sof, held until the next sof.  Every
+    // pixel follows a sof, so the reset value is never used (and a computed
+    // one is not constant-folded by Efinity: it took a DSP).
+    isp_gain_t gain_q;
+    always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n)                  gain_q <= '0;
+        else if (i.valid && i.sof)   gain_q <= gain;
+    isp_gain_t gain_f;
+    assign gain_f = (i.valid && i.sof) ? gain : gain_q;
 
     // Row parity of the line at the input.
     logic row_p;
@@ -44,29 +47,46 @@ module isp_blc_wb
     wire p_now = i.sof ? 1'b0 : row_p;
 
     // ---------------------------------------------------------- stage 1
-    logic        v1, sof1, eol1, p1;
+    logic        v1, sof1, eol1;
     logic [9:0]  d1 [2];
+    logic [11:0] g1 [2];
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            {v1, sof1, eol1, p1} <= '0;
+            {v1, sof1, eol1} <= '0;
             d1 <= '{default: '0};
+            g1 <= '{default: '0};
         end else begin
             v1   <= i.valid;
             sof1 <= i.valid && i.sof;
             eol1 <= i.valid && i.eol;
-            p1   <= p_now;
-            for (int e = 0; e < 2; e++)
+            for (int e = 0; e < 2; e++) begin
                 d1[e] <= (i.data[e] > cfg.blc_level) ? i.data[e] - cfg.blc_level : '0;
+                g1[e] <= gain_f[colour(p_now, e[0], cfg.cfa_r)];
+            end
         end
     end
 
     // ---------------------------------------------------------- stage 2
-    logic [21:0] prod [2][2];        // [row parity][element]
-    for (genvar p = 0; p < 2; p++) begin : g_p
-        for (genvar e = 0; e < 2; e++) begin : g_e
-            mul_nodsp #(.AW(10), .BW(12)) u_mul (.a(d1[e]), .b(gain[p][e]), .p(prod[p][e]));
+    logic [21:0] prod [2];
+    for (genvar e = 0; e < 2; e++) begin : g_e
+        mul_nodsp #(.AW(10), .BW(12)) u_mul (.a(d1[e]), .b(g1[e]), .p(prod[e]));
+    end
+
+    logic        v2, sof2, eol2;
+    logic [13:0] s2 [2];
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            {v2, sof2, eol2} <= '0;
+            s2 <= '{default: '0};
+        end else begin
+            v2   <= v1;
+            sof2 <= sof1;
+            eol2 <= eol1;
+            for (int e = 0; e < 2; e++) s2[e] <= prod[e][21:8];
         end
     end
+
+    // ---------------------------------------------------------- stage 3
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -75,14 +95,11 @@ module isp_blc_wb
             o.eol   <= 1'b0;
             o.data  <= '0;
         end else begin
-            o.valid <= v1;
-            o.sof   <= sof1;
-            o.eol   <= eol1;
-            for (int e = 0; e < 2; e++) begin
-                logic [13:0] s;
-                s = prod[p1][e][21:8];
-                o.data[e] <= (s > 14'd1023) ? 10'd1023 : s[9:0];
-            end
+            o.valid <= v2;
+            o.sof   <= sof2;
+            o.eol   <= eol2;
+            for (int e = 0; e < 2; e++)
+                o.data[e] <= (s2[e] > 14'd1023) ? 10'd1023 : s2[e][9:0];
         end
     end
 

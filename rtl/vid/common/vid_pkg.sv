@@ -167,6 +167,20 @@ package vid_pkg;
     sat:          10'd384
   };
 
+  // Per-colour gain of isp_blc_wb, Q4.8: (blc_gain * wb[c]) >> 8, c = R, G, B.
+  // The ISP takes these at run time (firmware AWB/AE through ui_regs); this
+  // is their reset value, the compile-time white balance above.
+  typedef logic [2:0][11:0] isp_gain_t;
+  /* verilator lint_off UNUSEDSIGNAL */
+  function automatic isp_gain_t isp_gain_of(input isp_cfg_t c);
+    logic [19:0] r, g, b;
+    r = 20'(c.blc_gain) * 20'(c.wb_r);
+    g = 20'(c.blc_gain) * 20'(c.wb_g);
+    b = 20'(c.blc_gain) * 20'(c.wb_b);
+    return {b[19:8], g[19:8], r[19:8]};
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
+
   // Placeholder processing (rtl/vid/proc/proc_stub.sv).
   typedef enum logic [1:0] {
     PROC_PASS   = 2'd0,
@@ -283,6 +297,7 @@ package vid_pkg;
     logic [3:0][31:0] raw_sum;        // raw statistics of the last frame, by {row, column} parity
     logic [31:0]      raw_clip;
     logic [31:0]      raw_dark;
+    logic [7:0]       raw_frames;     // frames whose statistics were latched, wraps
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern

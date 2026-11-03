@@ -3,14 +3,16 @@
 //
 // sum[2 * row parity + column parity] over the frame, and how many pixels are
 // clipped (>= 1020) or near black (< 80).  Results are latched when the next
-// frame starts.
+// frame starts, and st_frames counts the latches so firmware can tell a new
+// frame's numbers from the last one's.
 module isp_stats
     import vid_pkg::*;
 (
     vpush_if.snk          i,         // raw10_t x 2
     output logic [3:0][31:0] st_sum,
     output logic [31:0]   st_clip,
-    output logic [31:0]   st_dark
+    output logic [31:0]   st_dark,
+    output logic [7:0]    st_frames
 );
     wire clk = i.clk, rst_n = i.rst_n;
 
@@ -33,6 +35,7 @@ module isp_stats
             st_sum  <= '0;
             st_clip <= '0;
             st_dark <= '0;
+            st_frames <= '0;
         end else if (i.valid) begin
             if (i.eol) row_p <= !p_now;
             else       row_p <= p_now;
@@ -40,6 +43,7 @@ module isp_stats
                 st_sum  <= acc;
                 st_clip <= clip;
                 st_dark <= dark;
+                st_frames <= st_frames + 8'd1;
                 for (int k = 0; k < 4; k++) acc[k] <= '0;
                 acc[0] <= 32'(i.data[0]);
                 acc[1] <= 32'(i.data[1]);

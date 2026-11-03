@@ -15,6 +15,7 @@
 #include "gpio.h"
 #include "sc431hai_regs.h"
 #include "userDef.h"
+#include "isp_ctrl.h"
 
 /* 想通过串口看进度就打开；本板 UART 未引出，打开只会白等波特率时间 */
 #define CAM_I2C_VERBOSE 1
@@ -94,6 +95,7 @@ void main(void)
     /* OSD on.  MENU resets to SPLIT / cursor on the view row / style 0,
      * single_sel held at 1 (full screen is the processed layer). */
     ST_DBG32(0x8000) = 1u;
+    isp_ctrl_init();
     uint32_t view_full = 0u;
     uint32_t cursor = 0u;
     uint32_t style = 0u;
@@ -106,6 +108,7 @@ void main(void)
     while (1) {
         for (volatile uint32_t delay = 0; delay < 5000000u; ++delay) {
             if ((delay & 1023u) == 0u) {
+                isp_ctrl_poll();
                 uint32_t keys = gpio_getInput(GPIO_CTRL);
                 uint32_t rose = keys & ~keys_prev;
                 uint32_t changed = 0u;

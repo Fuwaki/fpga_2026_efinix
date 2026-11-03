@@ -16,9 +16,11 @@ module isp_top
     vpush_if.snk          i,         // raw10_t x 2
     vpush_if.src          o,         // rgb565_t x 2
     input isp_cfg_t       cfg,
+    input isp_gain_t      gain,      // per-colour BLC/WB gain, taken at sof
     output logic [3:0][31:0] st_sum,
     output logic [31:0]   st_clip,
-    output logic [31:0]   st_dark
+    output logic [31:0]   st_dark,
+    output logic [7:0]    st_frames
 );
     wire clk = i.clk, rst_n = i.rst_n;
 
@@ -28,8 +30,9 @@ module isp_top
     vpush_if #(.T(rgb888_t), .PPC(2)) s_sat (.clk(clk), .rst_n(rst_n));
     vpush_if #(.T(rgb565_t), .PPC(2)) s_out (.clk(clk), .rst_n(rst_n));
 
-    isp_stats     u_stats (.i(i), .st_sum(st_sum), .st_clip(st_clip), .st_dark(st_dark));
-    isp_blc_wb    u_wb    (.i(i),     .o(s_wb),  .cfg(cfg));
+    isp_stats     u_stats (.i(i), .st_sum(st_sum), .st_clip(st_clip), .st_dark(st_dark),
+                           .st_frames(st_frames));
+    isp_blc_wb    u_wb    (.i(i),     .o(s_wb),  .cfg(cfg), .gain(gain));
     isp_demosaic  u_dm    (.i(s_wb),  .o(s_dm),  .cfg(cfg));
     isp_gamma #(.CURVE(GAMMA_CURVE)) u_gm (.i(s_dm), .o(s_gm), .cfg(cfg));
     isp_sat       u_sat   (.i(s_gm),  .o(s_sat), .cfg(cfg));

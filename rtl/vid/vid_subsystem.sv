@@ -178,7 +178,10 @@ module vid_subsystem
     input  logic                  ui_single_sel = 1'b1,
     input  logic                  ui_cursor     = 1'b0,
     input  logic [1:0]            ui_style      = 2'd0,
-    input  logic                  ui_live       = 1'b0
+    input  logic                  ui_live       = 1'b0,
+    // ISP per-colour gain (firmware AWB/AE), core clock.  Defaults to the
+    // compile-time white balance of ISP_CFG.
+    input  isp_gain_t             isp_gain      = isp_gain_of(ISP_CFG)
 );
     localparam int NW = 4, NR = 5;
     // Lower index = higher priority.  The camera cannot wait and the display
@@ -331,8 +334,9 @@ module vid_subsystem
                 .o(raw), .st_holes(status.rel_holes));
 
             isp_top #(.GAMMA_CURVE(GAMMA_CURVE)) u_isp (
-                .i(raw), .o(img), .cfg(ISP_CFG),
-                .st_sum(status.raw_sum), .st_clip(status.raw_clip), .st_dark(status.raw_dark));
+                .i(raw), .o(img), .cfg(ISP_CFG), .gain(isp_gain),
+                .st_sum(status.raw_sum), .st_clip(status.raw_clip), .st_dark(status.raw_dark),
+                .st_frames(status.raw_frames));
 
             push2stream u_p2s (.p(img), .s(prod), .st_dropped(status.isp_dropped));
 
@@ -355,6 +359,7 @@ module vid_subsystem
             assign status.raw_sum     = '0;
             assign status.raw_clip    = '0;
             assign status.raw_dark    = '0;
+            assign status.raw_frames  = '0;
         end
 
         frame_ring #(.SLOTS(4), .NCONS(2)) u_ring (

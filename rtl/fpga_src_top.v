@@ -531,11 +531,14 @@ wire [31:0] w_soc_apb_paddr, w_soc_apb_pwdata, w_soc_apb_prdata;
 wire        w_soc_apb_psel, w_soc_apb_penable, w_soc_apb_pwrite;
 wire        w_soc_apb_pready;
 wire        w_soc_apb_pslverror;
-wire        ui_hit = (w_soc_apb_paddr[15:0] == 16'h8000) || (w_soc_apb_paddr[15:0] == 16'h8004);
+wire        ui_hit = (w_soc_apb_paddr[15:6] == 10'h200);   // 0x8000-0x803F: ui_regs
 wire [31:0] ui_prdata, accel_prdata;
 wire        ui_pready, accel_pready, ui_pslverr, accel_pslverr;
 wire        ui_osd_en, ui_view_full, ui_single_sel, ui_cursor;
 wire [1:0]  ui_style;
+vid_pkg::isp_gain_t ui_isp_gain;       // firmware AWB/AE -> ISP
+vid_pkg::vid_status_t w_vid_status;
+vid_pkg::vid_status_t vid_st_s2;       // w_vid_status, registered in sys_clk
 wire        key0_pressed, key2_pressed, key3_pressed;
 wire        w_st_irq;
 
@@ -726,7 +729,12 @@ ui_regs u_ui_regs (
 	.view_full  (ui_view_full),
 	.single_sel (ui_single_sel),
 	.cursor     (ui_cursor),
-	.style      (ui_style)
+	.style      (ui_style),
+	.isp_gain   (ui_isp_gain),
+	.raw_sum    (vid_st_s2.raw_sum),
+	.raw_clip   (vid_st_s2.raw_clip),
+	.raw_dark   (vid_st_s2.raw_dark),
+	.raw_frames (vid_st_s2.raw_frames)
 );
 assign w_soc_apb_prdata    = ui_hit ? ui_prdata  : accel_prdata;
 assign w_soc_apb_pready    = ui_hit ? ui_pready  : accel_pready;
@@ -808,7 +816,6 @@ assign o_cam_rst_p = ~w_arstn;
 // accelerator's AXI master is its external port (master 0, highest priority),
 // enabled with the accelerator.  See docs/video_architecture.md.
 //=====================================================================================
-vid_pkg::vid_status_t w_vid_status;
 wire [7:0] vid_pix_r, vid_pix_g, vid_pix_b;
 wire       vid_pix_de, vid_pix_hs, vid_pix_vs;
 
@@ -891,7 +898,8 @@ vid_subsystem #(
     .ui_single_sel (ui_single_sel),
     .ui_cursor     (ui_cursor_live),
     .ui_style      (ui_style),
-    .ui_live       (1'b1)
+    .ui_live       (1'b1),
+    .isp_gain      (ui_isp_gain)
 );
 
 ddr3_top                 u_ddr3_top
@@ -1339,7 +1347,6 @@ reg [7:0]  dbg_seq = 8'd0;
 
 // vid_subsystem status is in sys_clk already; one register stage keeps the
 // wide mux off the telemetry path.
-vid_pkg::vid_status_t vid_st_s2;
 always @(posedge sys_clk) vid_st_s2 <= w_vid_status;
 reg [31:0] st_cycles_s2 = 32'd0;
 always @(posedge sys_clk) st_cycles_s2 <= st_pr_cycles;
