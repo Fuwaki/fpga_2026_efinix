@@ -52,10 +52,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_golden import f32_parts  # noqa: E402
 from st_guided import Guided  # noqa: E402
 
-# The board work tree: the p90_ln_w8a8 export and the 640x360 test images
+# The board work tree: the board_w8a8 export and the 640x360 test images
 # (docs/st-guided-adr.md).  --manifest / --image override either.
 ST_WORK = Path("/data/competition/2026fpga/st_work")
-MANIFEST = ST_WORK / "p90_ln_w8a8"
+MANIFEST = ST_WORK / "board_w8a8"
 IMAGE = ST_WORK / "g360/in/cat.png"
 
 

@@ -64,6 +64,7 @@
         <efx:design_file name="rtl/vid/common/axi4_if.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/mul_nodsp.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/fifo_sync_core.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/common/fifo_srl_core.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/fifo_async_core.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/vstream_fifo.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/common/push2stream.sv" version="default" library="default" />

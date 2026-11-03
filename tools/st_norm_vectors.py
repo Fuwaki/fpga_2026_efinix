@@ -47,7 +47,7 @@ import st_guided as G  # noqa: E402
 from st_golden import Net  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 DEFAULT_IMAGE = "/data/competition/2026fpga/st_work/g360/in/cat.png"
 
 GROUP = 4                       # lanes per group beat
@@ -122,6 +122,18 @@ def case_ln(out: Path, cache: Path) -> None:
     write_case(out, 1, g_n, x, exp)
     print(f"st_norm_vectors: ln: {x.shape[0]} ch {x.shape[2]}x{x.shape[1]}, "
           f"{g_n} groups, {x.shape[1] * x.shape[2]} pixels")
+
+
+def case_ln_style(out: Path, cache: Path, style: int) -> None:
+    """The real LN input (shared by every style) through style k's packet;
+    the tb runs it with +STYLE=k, so st_norm reads LN image k."""
+    spec = G.style_packets(SPEC)[style]["norm_layers"][0]
+    x = np.load(cache / f"p{LN_POINT}.npy").astype(np.int64)
+    exp = G.ln_int(x, spec, QMAX)
+    g_n = -(-x.shape[0] // GROUP)
+    write_case(out, 1, g_n, x, exp)
+    print(f"st_norm_vectors: ln style {style}: {x.shape[0]} ch, {g_n} groups, "
+          f"{x.shape[1] * x.shape[2]} pixels")
 
 
 def case_ln_syn(out: Path) -> None:
@@ -221,7 +233,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True,
-                    choices=["ln", "ln_syn", "ln_min", "film"])
+                    choices=["ln", "ln_s1", "ln_syn", "ln_min", "film"])
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--image", default=DEFAULT_IMAGE)
@@ -231,10 +243,12 @@ def main() -> int:
     SPEC = json.loads((a.manifest / "manifest.json").read_text())
     QMAX = int(SPEC["act_qmax"])
     cache = a.cache or (a.out.parent / "st_norm_golden")
-    if a.case in ("ln", "film"):
+    if a.case in ("ln", "ln_s1", "film"):
         cache = golden(Path(a.image), cache, a.manifest)
     if a.case == "ln":
         case_ln(a.out, cache)
+    elif a.case == "ln_s1":
+        case_ln_style(a.out, cache, 1)
     elif a.case == "ln_syn":
         case_ln_syn(a.out)
     elif a.case == "ln_min":

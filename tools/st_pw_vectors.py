@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_golden import Net, f32_parts  # noqa: E402
 from st_gen_params import hex_lines, pw_word, rq_word  # noqa: E402
 
-MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 IMG_W, IMG_H = 50, 40           # 2000 pixels per case
 GROUP = 4                       # lanes per group beat
 WIDE_BYTES = 16                 # int8 values per wide input beat

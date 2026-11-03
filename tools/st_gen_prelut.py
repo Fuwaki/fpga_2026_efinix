@@ -9,7 +9,7 @@ with s0 = point_scales[0] of the manifest.  st_pre applies it to the 2x2 box
 average of the unpacked RGB8 codes, so the table is taken from the golden
 model itself rather than recomputed here: the RTL and the reference cannot
 disagree.  The default manifest is the guided net's
-(/data/competition/2026fpga/st_work/p90_ln_w8a8); --manifest picks another.
+(/data/competition/2026fpga/st_work/board_w8a8); --manifest picks another.
 
 Output (--out): one 8-bit value per line, two hex digits, addressed by the
 average 0..255; the file is read with $readmemh.
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_golden import Net  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 DEFAULT_OUT = ROOT / "rtl/st_accel_new/gen/guided/st_pre_lut.hex"
 
 

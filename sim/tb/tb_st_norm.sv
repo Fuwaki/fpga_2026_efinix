@@ -44,6 +44,8 @@ module tb_st_norm #(
     logic [17:0]  coef_mul [4];
     logic [23:0]  coef_off [4];
 
+    logic [1:0] style = '0;                 // +STYLE: the LN image
+
     st_norm #(.OUT_DEPTH(OUT_DEPTH)) dut (
         .clk      (clk),
         .rst_n    (rst_n),
@@ -64,6 +66,7 @@ module tb_st_norm #(
         .cfg_mode (cfg_mode),
         .cfg_g    (cfg_g),
         .cfg_npix (cfg_npix),
+        .style    (style),
         .coef_we  (coef_we),
         .coef_grp (coef_grp),
         .coef_mul (coef_mul),
@@ -85,6 +88,7 @@ module tb_st_norm #(
         int fd, r;
         if (!$value$plusargs("CASE_DIR=%s", case_dir))
             $fatal(1, "tb_st_norm: +CASE_DIR= is required");
+        if ($value$plusargs("STYLE=%d", r)) style = 2'(r);
         // the case name is the last path component of CASE_DIR
         case_name = case_dir;
         for (int i = 0; i < case_dir.len(); i++)

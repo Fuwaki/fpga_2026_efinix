@@ -93,7 +93,7 @@ module st_add (
 
     // --------------------------------------------------------- output FIFO
     logic f_full;
-    fifo_sync_core #(.W(TW), .DEPTH(DEPTH)) u_fifo (
+    fifo_srl_core #(.W(TW), .DEPTH(DEPTH)) u_fifo (
         .clk(clk), .rst_n(rst_n),
         .wen(f_wen), .wdata({tag[42:40], sum}), .wfull(f_full),
         .rready(out_ready), .rvalid(f_rvalid),

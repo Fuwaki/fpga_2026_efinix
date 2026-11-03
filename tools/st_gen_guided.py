@@ -35,10 +35,11 @@ from st_gen_params import (DDR_BASE, DW_LANES, KIND_DW, KIND_IM2COL, KIND_PW,  #
                            decode_dw, decode_pw, dw_matrix, dw_word, f32_parts, hex_lines,
                            layer_clamp, layer_kind, load_manifest, parse_hex, pw_matrix,
                            pw_word, roundup16, rq_word)
-from st_guided import CAM_H, CAM_W, NET_H, NET_W, Guided  # noqa: E402
+from st_guided import CAM_H, CAM_W, FILM_PLANE, NET_H, NET_W, Guided, style_packets  # noqa: E402
+from st_gen_film import build_styles as film_build_styles  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 DEFAULT_OUT = ROOT / "rtl/st_accel_new/gen/guided"
 
 NORM = {None: 0, "ln": 1, "film": 2}
@@ -213,6 +214,9 @@ def build(mdir: Path):
         add_rq_base=add_rq_base, layers=ltbl, passes=ptbl, adds=list(add_tbl.values()),
         regions=[dict(r, base_hex=f"0x{r['base']:08x}") for r in regions],
         region_bytes=cursor - DDR_BASE,
+        styles=len(style_packets(m)),
+        film={k: v for k, v in film_build_styles(m, FILM_PLANE)[1][0].items()
+              if k in ("sz", "sg", "sb", "c0", "kb")},
     )
     return net, pw_words, dw_words, rq_words, wts, m
 
@@ -298,6 +302,17 @@ def sv_pkg(net) -> str:
     a(f"  localparam int ST_N_LAYERS  = {len(net['layers'])};")
     a(f"  localparam int ST_N_PASSES  = {len(net['passes'])};")
     a(f"  localparam int ST_N_REGIONS = {len(net['regions'])};")
+    a("")
+    a(f"  // Style packets (LN coefficients and FiLM MLP, st_gen_norm / st_gen_film):")
+    a(f"  // st_norm's LN image of style k at words 20k.., st_film's ROM at 512k..")
+    a(f"  localparam int ST_STYLES = {net['styles']};")
+    f = net["film"]
+    a(f"  // st_film constants, shared by every style (st_gen_film.py --params)")
+    a(f"  localparam int ST_FILM_SZ = {f['sz']};   // zq  = (A*Mz + 2**(SZ-1)) >>> SZ")
+    a(f"  localparam int ST_FILM_SG = {f['sg']};   // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG")
+    a(f"  localparam int ST_FILM_SB = {f['sb']};   // off = (Bb*Mb + 2**(SB-1)) >>> SB")
+    a(f"  localparam int ST_FILM_C0 = {f['c0']};   // affine offset, 19-bit signed")
+    a(f"  localparam int ST_FILM_KB = {f['kb']};   // reduce bias scale, br_o * KB")
     a(f"  localparam int ST_ADD_RQ_BASE = {net['add_rq_base']};")
     a(f"  localparam int ST_NET_W = {net['img_w']};")
     a(f"  localparam int ST_NET_H = {net['img_h']};")

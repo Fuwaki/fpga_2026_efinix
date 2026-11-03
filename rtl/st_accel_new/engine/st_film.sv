@@ -55,8 +55,12 @@
 // SZ, SG, SB, C0 and KB are per-network constants, so they are parameters
 // rather than ROM words: the shift is then a wiring shift, the rounding term
 // a constant, and the whole barrel shifter and its variable round-off
-// disappear.  tools/st_gen_film.py prints the localparams the package wants
-// (ST_FILM_SZ / SG / SB / C0 / KB); the defaults are the p90_ln_w8a8 net's.
+// disappear.  The defaults are st_net_pkg's ST_FILM_SZ / SG / SB / C0 / KB
+// (tools/st_gen_guided.py, from st_gen_film): one set for every style.
+//
+// Styles.  The ROM holds STYLES images of 512 words, style k at 512k; the
+// style input selects one for the whole MLP (the engine holds it for a run).
+// The constants above are shared, so a style is only its ROM image.
 //
 // One DSP block does every product, in two steps of an 18x18 signed
 // multiplier: a is 36-bit signed and splits into a[17:0] (unsigned) and
@@ -69,8 +73,9 @@
 //
 // Storage.  The GAP sums are 1000 bits, which map to 100 SRLs and ~150 FF;
 // zq is 10 x 24 bit; the four (mul, off) pairs of the group being filled are
-// 4 x 42 bit.  The parameter ROM is one 512x40 array with a registered read:
-// 2 RAM10 blocks in 512x20, 380 words used.  Measured (efx map, standalone):
+// 4 x 42 bit.  The parameter ROM is one (512*STYLES)x40 array with a
+// registered read: 2 RAM10 blocks per style (512x20 / 1024x10), 380 words of
+// each 512 used.  Measured (efx map, standalone):
 // 664 FF, 1118 LUT, 124 SRL, 223 ADD, 2 RAM10, 1 DSP.
 //
 // ROM image (st_film.hex, one 10-digit hex word per line, written by
@@ -91,15 +96,18 @@
 // five products and holds the address for the whole word, so the read data
 // is the byte source directly (no word buffer).
 module st_film #(
-    parameter int    SZ  = 26,        // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
-    parameter int    SG  = 23,        // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
-    parameter int    SB  = 20,        // off = (Bb*Mb + 2**(SB-1)) >>> SB
-    parameter int    C0  = 26755,     // affine offset, 19-bit signed
-    parameter int    KB  = 900,       // reduce bias scale, br_o * KB
+    parameter int    SZ     = st_net_pkg::ST_FILM_SZ,  // zq  = (A*Mz + 2**(SZ-1)) >>> SZ
+    parameter int    SG     = st_net_pkg::ST_FILM_SG,  // mul = C0 + (Gb*Mg + 2**(SG-1)) >>> SG
+    parameter int    SB     = st_net_pkg::ST_FILM_SB,  // off = (Bb*Mb + 2**(SB-1)) >>> SB
+    parameter int    C0     = st_net_pkg::ST_FILM_C0,  // affine offset, 19-bit signed
+    parameter int    KB     = st_net_pkg::ST_FILM_KB,  // reduce bias scale, br_o * KB
+    parameter int    STYLES = st_net_pkg::ST_STYLES,   // ROM images, 1, 2 or 4
     parameter string HEX = "rtl/st_accel_new/gen/guided/st_film.hex"
 ) (
     input  logic        clk,
     input  logic        rst_n,
+
+    input  logic [1:0]  style,        // ROM image of the MLP; < STYLES, held by the engine
 
     input  logic [4:0]  cfg_g,        // group beats per pixel (10)
 
@@ -121,7 +129,9 @@ module st_film #(
     localparam int NC    = 40;        // channels of the FiLM plane
     localparam int NO    = 10;        // hidden units of the MLP
     localparam int GB    = NC / 4;    // group beats per pixel
-    localparam int DEPTH = 512;       // ROM words (380 used)
+    localparam int SDEPTH = 512;               // ROM words per style (380 used)
+    localparam int DEPTH  = SDEPTH * STYLES;
+    localparam int SB_W   = (STYLES > 1) ? $clog2(STYLES) : 1;
     localparam int GS    = 6;         // Sg = (S + 2**(GS-1)) >>> GS
     localparam int F     = 8;         // bg_c * 2**F  (golden FILM_F)
 
@@ -204,7 +214,15 @@ module st_film #(
         $readmemh(HEX, rom);
     end
 
-    always_ff @(posedge clk) rom_dout <= rom[rom_addr];
+    // the style's image: style k at 512k
+    wire [$clog2(DEPTH)-1:0] rom_a;
+    if (STYLES > 1) begin : g_sty
+        assign rom_a = {style[SB_W-1:0], rom_addr};
+    end else begin : g_one
+        assign rom_a = rom_addr;
+    end
+
+    always_ff @(posedge clk) rom_dout <= rom[rom_a];
 
     // ---------------------------------------------------------- serial MAC
     // One DSP block, 18x18 signed, in two steps.  a is 36-bit signed and
@@ -605,6 +623,11 @@ module st_film #(
             $error("st_film: C0 %0d does not fit 19-bit signed", C0);
         if (KB < -(1 << 17) || KB > (1 << 17) - 1)
             $error("st_film: KB %0d does not fit 18-bit signed", KB);
+        if (STYLES != 1 && STYLES != 2 && STYLES != 4)
+            $error("st_film: STYLES %0d, must be 1, 2 or 4", STYLES);
     end
+    always @(posedge clk)
+        if (rst_done && busy && 32'(style) >= STYLES)
+            $error("st_film: style %0d of %0d", style, STYLES);
 `endif
 endmodule

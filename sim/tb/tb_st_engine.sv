@@ -25,11 +25,12 @@ module tb_st_engine;
     logic        start = 0, busy, pre_done, err;
     logic [3:0]  pass, first = 0, last = 4'(ST_N_PASSES - 1);
     logic [31:0] cycles;
+    logic [1:0]  style = '0;                // +STYLE
 
     st_engine u_eng (
         .clk(clk), .rst_n(rst_n), .m_wr(dw), .m_rd(dr),
         .start(start), .isp_base(ISP), .proc_base(PROC),
-        .first_pass(first), .last_pass(last),
+        .first_pass(first), .last_pass(last), .style(style),
         .busy(busy), .pre_done(pre_done), .err(err), .pass(pass), .cycles(cycles));
 
     string dir;
@@ -97,6 +98,10 @@ module tb_st_engine;
         if (!$value$plusargs("DIR=%s", dir)) $fatal(1, "tb_st_engine: +DIR missing");
         void'($value$plusargs("FIRST=%d", fa));
         void'($value$plusargs("LAST=%d", la));
+        begin
+            int s;
+            if ($value$plusargs("STYLE=%d", s)) style = 2'(s);
+        end
         first = 4'(fa);
         last  = 4'(la);
 

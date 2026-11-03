@@ -62,6 +62,9 @@ module st_accel_wrapper
     input  logic               dst_ok,
     input  logic [RING_SLOT_W-1:0] dst_slot,
 
+    // ─── Style packet (ui_regs MENU style, same clock), sampled per frame ───
+    input  logic [1:0]         style,
+
     // ─── Status ─────────────────────────────────────────────────────────────
     output logic               busy,
     output logic [SEQ_W-1:0]   st_frames,    // PROC frames committed
@@ -113,7 +116,7 @@ module st_accel_wrapper
   st_engine u_engine (
     .clk(clk), .rst_n(rst_n), .m_wr(mwr), .m_rd(mrd),
     .start(eng_go), .isp_base(isp_base), .proc_base(proc_base),
-    .first_pass(4'd0), .last_pass(4'(st_net_pkg::ST_N_PASSES - 1)),
+    .first_pass(4'd0), .last_pass(4'(st_net_pkg::ST_N_PASSES - 1)), .style(style),
     .busy(eng_busy), .pre_done(eng_pre_done), .err(eng_err),
     .pass(unused_pass), .cycles(st_cycles));
 

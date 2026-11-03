@@ -53,7 +53,7 @@
 // affine    p2 = t*G_c + B_c + 2^21, y = clamp(p2 >>> 22) in LN; in FILM
 //           t = x with (mul_c, off_c, 15) instead: p2 = x*mul_c + off_c +
 //           2^14.  Four DSP in both modes -- the same four multipliers.
-// output    OUT_DEPTH-beat FIFO in block RAM, credit-checked at issue, so no
+// output    OUT_DEPTH-beat FIFO in SRL cells, credit-checked at issue, so no
 //           fixed-latency pipeline is ever back-pressured.  In FILM the
 //           credit also gates the input, which has no buffer of its own.
 //
@@ -74,6 +74,7 @@
 // the stricter G >= 8 the timing above assumes.
 module st_norm #(
     parameter int    OUT_DEPTH = 16,        // output beats in the FIFO
+    parameter int    STYLES    = st_net_pkg::ST_STYLES,  // LN images in the store
     parameter string LN_HEX    = "rtl/st_accel_new/gen/guided/st_ln.hex",
     parameter string LUT_HEX   = "rtl/st_accel_new/gen/guided/st_ln_lut.hex"
 ) (
@@ -104,6 +105,7 @@ module st_norm #(
     input  logic [1:0]   cfg_mode,      // 1 LN, 2 FILM
     input  logic [4:0]   cfg_g,         // groups per pixel
     input  logic [17:0]  cfg_npix,      // pixels of the pass
+    input  logic [1:0]   style,         // LN image (words 20*style..); held for the pass
 
     // FiLM coefficient write port, while idle: one group of four channels
     input  logic         coef_we,
@@ -152,7 +154,8 @@ module st_norm #(
     // group beat and one write stores a group.  Words 0..19 are the LN image;
     // words 128..147 are the FiLM coefficients, written through the
     // coefficient port while idle.  A pass is one mode, so the two regions
-    // never meet.
+    // never meet.  With STYLES > 1 style k's LN image is words 20k..20k+19,
+    // all of them below the FiLM region.
     //
     // 256 x 180 is nine RAM10 blocks (256x20 each); four 48-bit lane arrays
     // were twelve, because a RAM's cost is ceil(width/20) whenever the depth
@@ -609,7 +612,9 @@ module st_norm #(
     // registers take it when it reaches s3).  FILM: the group of the beat
     // being accepted, since its coefficients are read the cycle it is
     // registered in f1.
-    assign coef_addr = (ln_mode ? 8'd0 : 8'(CBASE_FILM))
+    // LN image base: 20 * style
+    wire [7:0] ln_base = (STYLES > 1) ? {2'd0, style, 4'd0} + {4'd0, style, 2'd0} : 8'd0;
+    assign coef_addr = (ln_mode ? ln_base : 8'(CBASE_FILM))
                      + (ln_mode ? {3'd0, s2_g} : {3'd0, beat_cnt});
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -678,7 +683,7 @@ module st_norm #(
     end
 
     // -------------------------------------------------------- output FIFO
-    fifo_sync_core #(.W(FW), .DEPTH(OUT_DEPTH)) u_ofifo (
+    fifo_srl_core #(.W(FW), .DEPTH(OUT_DEPTH)) u_ofifo (
         .clk    (clk),
         .rst_n  (rst_n),
         .wen    (s5_v),
@@ -762,6 +767,8 @@ module st_norm #(
             $error("st_norm: coefficient word layout changed");
         if (CBASE_FILM + GMAX > COEF_DEPTH)
             $error("st_norm: FiLM coefficients do not fit the store");
+        if (STYLES < 1 || STYLES > 4 || STYLES * GMAX > CBASE_FILM)
+            $error("st_norm: %0d LN images do not fit below the FiLM region", STYLES);
     end
 
 endmodule

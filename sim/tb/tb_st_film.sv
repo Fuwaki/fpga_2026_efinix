@@ -41,8 +41,10 @@ module tb_st_film;
     logic [17:0] coef_mul [4];
     logic [23:0] coef_off [4];
 
+    logic [1:0] style = '0;                     // +STYLE: the ROM image
+
     st_film dut (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_n), .style(style),
         .cfg_g(cfg_g), .gap_clear(gap_clear),
         .tap_valid(tap_valid), .tap_ready(tap_ready),
         .tap_data(tap_data), .tap_last(tap_last),
@@ -66,6 +68,10 @@ module tb_st_film;
     initial begin
         string dir;
         if (!$value$plusargs("DIR=%s", dir)) $fatal(1, "tb_st_film: no +DIR");
+        begin
+            int s;
+            if ($value$plusargs("STYLE=%d", s)) style = 2'(s);
+        end
         fd = $fopen({dir, "/meta.txt"}, "r");
         if (fd == 0 || $fscanf(fd, "%d %d %d\n", mbeat, mpix, mg) != 3)
             $fatal(1, "tb_st_film: cannot read %s/meta.txt", dir);

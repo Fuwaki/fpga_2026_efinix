@@ -649,6 +649,8 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
         .src_ok  (st_src_ok),  .src_token (st_src_token),
         .dst_req (st_dst_req), .dst_op (st_dst_op), .dst_src_seq (st_dst_src_seq),
         .dst_ack (st_dst_ack), .dst_ok (st_dst_ok), .dst_slot (st_dst_slot),
+        // Style packet: the menu's style row (ui_regs, core_clk)
+        .style      (ui_style),
         // Status
         .busy       (accel_busy),
         .st_frames  (st_pr_frames),

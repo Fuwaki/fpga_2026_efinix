@@ -1,8 +1,8 @@
 {
  "format": "st-net-guided-v1",
- "source": "/data/competition/2026fpga/st_work/p90_ln_w8a8",
+ "source": "/data/competition/2026fpga/st_work/board_w8a8",
  "arch": "tiny_dw_guided",
- "manifest_sha256": "0fc4868cbcc379f025edee0879661d20694fd2c4e2e4898ad3327c3ec2c83b3e",
+ "manifest_sha256": "0516210e003f68539e94ea0fcc597e3f6232023a14e119aaf1f78e7dbcff2b6c",
  "img_w": 640,
  "img_h": 360,
  "cam_w": 1280,
@@ -617,24 +617,24 @@
    "dst_point": 10,
    "src_point": 6,
    "rq_index": 839,
-   "factor": 0.2754720151424408,
-   "mant": 9243307,
+   "factor": 0.2809503376483917,
+   "mant": 9427129,
    "k": 25
   },
   {
    "dst_point": 17,
    "src_point": 16,
    "rq_index": 840,
-   "factor": 0.5150517225265503,
-   "mant": 8641134,
+   "factor": 0.6949921250343323,
+   "mant": 11660033,
    "k": 24
   },
   {
    "dst_point": 19,
    "src_point": 20,
    "rq_index": 841,
-   "factor": 0.5305849313735962,
-   "mant": 8901738,
+   "factor": 0.6615291833877563,
+   "mant": 11098618,
    "k": 24
   }
  ],
@@ -772,5 +772,13 @@
    "base_hex": "0x0907e000"
   }
  ],
- "region_bytes": 20979712
+ "region_bytes": 20979712,
+ "styles": 2,
+ "film": {
+  "sz": 26,
+  "sg": 24,
+  "sb": 20,
+  "c0": 21922,
+  "kb": 900
+ }
 }

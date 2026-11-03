@@ -3,10 +3,11 @@
 
 Writes into --out:
 
-  st_film.hex   512 words of 40 bits, one 10-digit hex word per line, MSB
-                first: the biases and multipliers of st_guided.film_consts
-                and the three weight matrices of the layer, arranged as the
-                RTL header documents:
+  st_film.hex   512 words of 40 bits per style (words 512k.. are style k),
+                one 10-digit hex word per line, MSB first: the biases and
+                multipliers of st_guided.film_consts and the three weight
+                matrices of the layer, arranged as the RTL header documents
+                (word offsets within a style's 512):
 
                   word   0 + o         [31:0] br_o, signed        (o < 10)
                   word  10 + o         [16:0] Mz_o, < 2**17       (o < 10)
@@ -20,10 +21,13 @@ Writes into --out:
                 Weights are int8 two's complement, one row per whole number of
                 words, so a row is a run of words with consecutive bytes.
                 SZ, SG, SB, C0 and KB are module parameters of st_film, not ROM
-                words: --params prints the localparams st_net_pkg wants.
+                words, one set for every style: the shifts are
+                st_guided.film_shifts (the smallest any style needs), and C0
+                and KB depend on the shared scales only.  --params prints the
+                localparams st_net_pkg wants.
 
-  st_film.json  the same constants in decimal, for the Python testbenches and
-                for a quick check against st_guided.film_consts.
+  st_film.json  style 0's constants in decimal, for the Python testbenches
+                and for a quick check against st_guided.film_consts.
 
 The values are st_guided.film_consts(spec, plane) -- the golden model, not a
 second implementation.  Every value is asserted to fit its field, the decoded
@@ -42,7 +46,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from st_guided import film_consts  # noqa: E402
+from st_guided import film_consts, film_shifts, style_packets  # noqa: E402
 
 NC, NO = 40, 10                 # channels and hidden units of the FiLM MLP
 WORD_BITS = 40
@@ -59,9 +63,9 @@ def _check(name, v, lo, hi):
     return int(v)
 
 
-def build(spec, plane):
+def build(spec, plane, shifts=None):
     """The ROM words and the constants, from the golden film_consts."""
-    c = film_consts(spec, plane)
+    c = film_consts(spec, plane, shifts)
     h = c["heads"]
     wr, bg = h["reduce"]["w"], h["reduce"]["b"]
     wg, gg = h["gamma"]["w"], h["gamma"]["b"]
@@ -158,6 +162,30 @@ def check(words, consts):
     assert max(len(words), USED) <= DEPTH
 
 
+def build_styles(m, plane, layer=None):
+    """Every style's ROM words, concatenated at DEPTH words per style, and the
+    per-style constants.  The shared constants are asserted equal."""
+    packets = style_packets(m)
+
+    def pick(films):
+        return films[0] if layer is None else next(f for f in films if f["name"] == layer)
+
+    specs = [pick(p["film_layers"]) for p in packets]
+    shifts = film_shifts(specs, plane)
+    words, consts = [], []
+    for k, spec in enumerate(specs):
+        w, c = build(spec, plane, shifts)
+        check(w, c)
+        check_range(c)
+        for key in ("sz", "sg", "sb", "c0", "kb"):
+            if consts:
+                assert c[key] == consts[0][key], \
+                    f"style {k}: {key} {c[key]} differs from style 0's {consts[0][key]}"
+        words += w
+        consts.append(c)
+    return words, consts
+
+
 def params_text(consts):
     """The st_net_pkg localparams st_film's parameters are fed from."""
     return "\n".join([
@@ -184,11 +212,9 @@ def main():
         ap.error("--out is required unless --params is given")
 
     m = json.loads((Path(a.manifest) / "manifest.json").read_text())
-    films = m["film_layers"]
-    spec = films[0] if a.layer is None else next(f for f in films if f["name"] == a.layer)
-    words, consts = build(spec, a.plane)
-    check(words, consts)
-    a_max, zq_max = check_range(consts)
+    words, styles = build_styles(m, a.plane, a.layer)
+    consts = styles[0]
+    a_max, zq_max = max(check_range(c) for c in styles)
     if a.params:
         print(params_text(consts))
         return
@@ -199,7 +225,8 @@ def main():
         for w in words:
             fh.write(f"{w:010x}\n")
     (out / "st_film.json").write_text(json.dumps(consts, indent=1) + "\n")
-    print(f"st_gen_film: {out}/st_film.hex, {USED} of {DEPTH} words, layer {spec['name']} "
+    print(f"st_gen_film: {out}/st_film.hex, {len(styles)} styles x {USED} of {DEPTH} words, "
+          f"layer {consts['layer']} "
           f"(sz {consts['sz']} sg {consts['sg']} sb {consts['sb']} c0 {consts['c0']} "
           f"kb {consts['kb']})")
     print(f"st_gen_film: |A| <= {a_max} < 2**36, zq <= {zq_max} < 2**24")

@@ -50,7 +50,7 @@ module tb_st_accel #(
         .src_req(src_req), .src_op(src_op), .src_ack(src_ack), .src_ok(src_ok), .src_token(src_token),
         .dst_req(dst_req), .dst_op(dst_op), .dst_src_seq(dst_src_seq),
         .dst_ack(dst_ack), .dst_ok(dst_ok), .dst_slot(dst_slot),
-        .busy(), .st_frames(frames), .st_miss(miss), .st_errors(errors), .st_skipped(skipped),
+        .style(2'd0), .busy(), .st_frames(frames), .st_miss(miss), .st_errors(errors), .st_skipped(skipped),
         .st_cycles(cycles));
 
     vid_subsystem #(.ENABLE_SELFTEST(0), .PAT_FRAME_CYCLES(1_500_000), .PAT_LINE_CYCLES(2_000),

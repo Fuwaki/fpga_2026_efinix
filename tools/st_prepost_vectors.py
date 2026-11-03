@@ -43,7 +43,7 @@ from st_golden import CAM_H, CAM_W  # noqa: E402
 from st_guided import NET_H, NET_W, Guided, isp565, pool_int, post, post_rep, pre  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+DEFAULT_MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 DEFAULT_FRAME = Path("/data/competition/2026fpga/st_work/g360/cam/cat.png")
 BEAT_PIX = 8
 PROC_BPL = CAM_W // BEAT_PIX           # 160 DDR beats per PROC/ISP line

@@ -23,7 +23,7 @@
 // 1280x720 PROC slot, aligned pixel for pixel with it.  Blocks a pass does
 // not use are never started, so they keep in_ready low and out_valid low.
 //
-// start (while idle) samples isp_base, proc_base and the pass range; a
+// start (while idle) samples isp_base, proc_base, style and the pass range; a
 // subrange lets a test run one pass on a preloaded DDR image.  pre_done rises
 // when the isp_last pass has finished, so the ISP frame can be released
 // early.  cycles is the length of the last complete run, err a DMA or
@@ -43,6 +43,7 @@ module st_engine
     input  logic [AXI_AW-1:0]  proc_base,   // PROC slot to write
     input  logic [3:0]         first_pass,  // passes run: first_pass..last_pass;
     input  logic [3:0]         last_pass,   // 0 and ST_N_PASSES-1 except in tests
+    input  logic [1:0]         style,       // style packet, taken modulo ST_STYLES
     output logic               busy,
     output logic               pre_done,    // isp_last pass complete: ISP slot no longer read
     output logic               err,         // sticky for the run
@@ -216,6 +217,10 @@ module st_engine
     assign ni_e = add_in ? ad_e : mn_e;
     assign ni_s = add_in ? ad_s : mn_s;
 
+    // The run's style packet (pass sequencer, sampled on start): st_norm's LN
+    // image and st_film's ROM image.  Declared before its first use.
+    logic [1:0]  style_q;
+
     // FiLM coefficients: st_film -> st_norm, one group of four channels
     logic        cf_we;
     logic [3:0]  cf_grp;
@@ -227,6 +232,7 @@ module st_engine
     st_norm u_norm (
         .clk(clk), .rst_n(rst_n),
         .start(go && use_norm), .cfg_mode(norm_mode), .cfg_g(dw_g), .cfg_npix(in_npix),
+        .style(style_q),
         .busy(nm_busy),
         .in_valid(ni_v && use_norm), .in_ready(ni_r), .in_data(ni_d),
         .in_last(ni_l), .in_eol(ni_e), .in_sof(ni_s),
@@ -288,7 +294,7 @@ module st_engine
     // FiLM GAP: every beat st_pack takes in the gap pass (the tap never stalls)
     logic film_tap_r;
     st_film u_film (
-        .clk(clk), .rst_n(rst_n), .cfg_g(pk_g),
+        .clk(clk), .rst_n(rst_n), .cfg_g(pk_g), .style(style_q),
         .gap_clear(go && use_gap),
         .tap_valid(use_gap && pki_v && pk_in_r), .tap_ready(film_tap_r), .tap_data(pki_d), .tap_last(pki_l),
         .mlp_start(mlp_start), .mlp_busy(mlp_busy),
@@ -342,6 +348,7 @@ module st_engine
             isp_q     <= '0;
             proc_q    <= '0;
             last_q    <= '0;
+            style_q   <= '0;
         end else begin
             go        <= 1'b0;
             mlp_start <= 1'b0;
@@ -352,6 +359,7 @@ module st_engine
                     isp_q    <= isp_base;
                     proc_q   <= proc_base;
                     last_q   <= last_pass;
+                    style_q  <= style & 2'(ST_STYLES - 1);  // ST_STYLES is 1, 2 or 4
                     pass     <= first_pass;
                     pre_done <= 1'b0;
                     err      <= 1'b0;

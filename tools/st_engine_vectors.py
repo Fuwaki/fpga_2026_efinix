@@ -25,7 +25,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_guided import CAM_H, CAM_W, Guided, isp565, post, pre  # noqa: E402
 
-MANIFEST = Path("/data/competition/2026fpga/st_work/p90_ln_w8a8")
+MANIFEST = Path("/data/competition/2026fpga/st_work/board_w8a8")
 
 
 def synth_frame() -> np.ndarray:
@@ -55,6 +55,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--frame", type=Path)
+    ap.add_argument("--style", type=int, default=0, help="style packet (the tb's +STYLE)")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
@@ -64,7 +65,7 @@ def main() -> int:
     rgb = pre(f565)
     dump = a.out / "npy"
     dump.mkdir(exist_ok=True)
-    y = Guided(str(MANIFEST)).run(rgb, str(dump))
+    y = Guided(str(MANIFEST), style=a.style).run(rgb, str(dump))
     proc = post(y)
 
     (a.out / "frame.hex").write_text(hexbeats(f565.astype("<u2").tobytes()))

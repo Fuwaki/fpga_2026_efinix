@@ -12,7 +12,7 @@ VFLAGS := --binary --timing --assert -j 0 -Wall -Wno-fatal \
 
 RTL := $(addprefix $(ROOT)/rtl/vid/, \
          common/vid_pkg.sv common/vstream_if.sv common/vpush_if.sv common/axi4_if.sv \
-         common/mul_nodsp.sv common/fifo_sync_core.sv common/fifo_async_core.sv \
+         common/mul_nodsp.sv common/fifo_sync_core.sv common/fifo_srl_core.sv common/fifo_async_core.sv \
          common/vstream_fifo.sv common/push2stream.sv \
          dma/ring_if.sv dma/frame_ring_core.sv dma/frame_ring.sv \
          dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv \
@@ -146,7 +146,8 @@ tb_st_pw:
 # pixels whose statistics hit the ends of the datapath, and the real FiLM of
 # the net with its coefficients written through the port.  Each case runs with
 # random gaps and back-pressure, then clean for the cycles/pixel figure.
-NORM_CASES := ln ln_syn ln_min film
+# ln_s1 is the real LN through style 1's packet (+STYLE=1).
+NORM_CASES := ln ln_syn ln_min film ln_s1
 NORM_DIR   := $(OBJ)/tb_st_norm
 EXTRA_tb_st_norm := $(ST_ENG)
 
@@ -157,7 +158,7 @@ tb_st_norm:
 	  cd $(ROOT) && tools/st_norm_vectors.py --case $$c --out $(NORM_DIR)/$$c \
 	    || exit 1; \
 	  cd $(ROOT) && $(NORM_DIR)/Vtb_st_norm +verilator+seed+$(SEED) +verilator+rand+reset+2 \
-	    +CASE_DIR=$(NORM_DIR)/$$c || exit 1; \
+	    +CASE_DIR=$(NORM_DIR)/$$c +STYLE=$$(case $$c in *_s1) echo 1;; *) echo 0;; esac) || exit 1; \
 	done
 
 # Pass 0 (pre, FULL and POOL) and the head pass (post) against
@@ -185,30 +186,32 @@ tb_st_prepost:
 # and -254, and a random plane.  Each case is a whole 320x180 plane (576000
 # tap beats) plus the 40 coefficient writes.
 FILM_CASES := real max min rand
+FILM_STYLES ?= 0 1
 FILM_DIR   := $(OBJ)/tb_st_film
 EXTRA_tb_st_film := $(ST_ENG)
 tb_st_film:
 	@mkdir -p $(FILM_DIR)
 	$(call build,$@,$@,$@,)
-	@for c in $(FILM_CASES); do \
-	  cd $(ROOT) && tools/st_film_vectors.py --case $$c --out $(FILM_DIR)/$$c || exit 1; \
+	@for s in $(FILM_STYLES); do for c in $(FILM_CASES); do \
+	  cd $(ROOT) && tools/st_film_vectors.py --case $$c --style $$s --out $(FILM_DIR)/$$c$$s || exit 1; \
 	  cd $(ROOT) && $(FILM_DIR)/Vtb_st_film +verilator+seed+$(SEED) +verilator+rand+reset+2 \
-	    +DIR=$(FILM_DIR)/$$c || exit 1; \
-	done
+	    +DIR=$(FILM_DIR)/$$c$$s +STYLE=$$s || exit 1; \
+	done; done
 
 # The whole block engine on one frame against tools/st_engine_vectors.py:
 # every DDR region and the PROC right half, byte-exact.  ENGINE_PASSES=a..b
 # runs a subrange on golden-preloaded DDR (one pass takes 1-3 minutes).
 ENGINE_PASSES ?= 0..12
+ENGINE_STYLE  ?= 0
 EXTRA_tb_st_engine := $(ROOT)/rtl/st_accel_new/dma/tile_dma_rd.sv \
                       $(ROOT)/rtl/st_accel_new/dma/tile_dma_wr.sv $(ST_ENG)
 tb_st_engine:
 	@mkdir -p $(OBJ)/$@
-	$(ROOT)/tools/st_engine_vectors.py --out $(OBJ)/$@/vec
+	$(ROOT)/tools/st_engine_vectors.py --out $(OBJ)/$@/vec --style $(ENGINE_STYLE)
 	$(call build,$@,$@,$@,)
 	cd $(ROOT) && $(OBJ)/$@/V$@ +verilator+seed+$(SEED) +verilator+rand+reset+2 \
 	  +DIR=$(OBJ)/$@/vec +FIRST=$(firstword $(subst .., ,$(ENGINE_PASSES))) \
-	  +LAST=$(lastword $(subst .., ,$(ENGINE_PASSES)))
+	  +LAST=$(lastword $(subst .., ,$(ENGINE_PASSES))) +STYLE=$(ENGINE_STYLE)
 
 # st_unpack / st_pack / st_add against tools/st_io_vectors.py (the guided
 # net's activations at 640x360; DDR beats from Guided.ddr_image).  One build,

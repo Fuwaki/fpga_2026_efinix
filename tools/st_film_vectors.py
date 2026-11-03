@@ -42,7 +42,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from st_guided import Guided, film_coeffs  # noqa: E402
 
-MANIFEST = "/data/competition/2026fpga/st_work/p90_ln_w8a8"
+MANIFEST = "/data/competition/2026fpga/st_work/board_w8a8"
 IMAGE = "/data/competition/2026fpga/st_work/g360/in/cat.png"
 NET_H, NET_W = 360, 640
 GAP_H, GAP_W = NET_H // 2, NET_W // 2          # the FiLM plane is H/2
@@ -53,10 +53,10 @@ OFF_MAX = (1 << 23) - 1
 LANE_MAX = 254                                  # |add output| <= 254
 
 
-def plane(case: str, manifest: str, image: str) -> np.ndarray:
+def plane(case: str, manifest: str, image: str, style: int) -> np.ndarray:
     """(NC, H, W) int codes of the FiLM pass input."""
     if case == "real":
-        net = Guided(manifest)
+        net = Guided(manifest, style=style)
         rgb = np.asarray(Image.open(image).convert("RGB"))
         assert rgb.shape[:2] == (NET_H, NET_W), f"{image} is not {NET_W}x{NET_H}"
         net.run(rgb)
@@ -95,14 +95,17 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--manifest", default=MANIFEST)
     ap.add_argument("--image", default=IMAGE)
+    ap.add_argument("--style", type=int, default=0, help="style packet (the tb's +STYLE)")
     a = ap.parse_args()
 
-    x = plane(a.case, a.manifest, a.image)
-    spec = Guided(a.manifest).film["film_h2"]
+    x = plane(a.case, a.manifest, a.image, a.style)
+    net = Guided(a.manifest, style=a.style)
+    spec = net.film["film_h2"]
     assert spec["in_point"] == 17 and spec["channels"] == NC
     gap_sum = x.sum((1, 2))
     assert (np.abs(gap_sum) < (1 << 24)).all(), "a GAP sum exceeds 2**24"
-    mul, off, _ = film_coeffs(spec, gap_sum, PLANE)
+    # the shifts st_film has: one set for every style
+    mul, off, _ = film_coeffs(spec, gap_sum, PLANE, net.film_sh["film_h2"])
     assert mul.shape == (NC,) and off.shape == (NC,)
     assert (np.abs(mul) <= MUL_MAX).all() and (np.abs(off) <= OFF_MAX).all()
 
@@ -120,7 +123,7 @@ def main():
             o = " ".join(f"{int(off[4*grp + j]) & 0xFFFFFF:06x}" for j in range(4))
             fh.write(f"{grp} {m} {o}\n")
     (out / "meta.txt").write_text(f"{nbeat} {PLANE} {G}\n")
-    print(f"st_film_vectors: {a.case}: {nbeat} beats, {PLANE} pixels, "
+    print(f"st_film_vectors: {a.case} style {a.style}: {nbeat} beats, {PLANE} pixels, "
           f"mul {int(mul.min())}..{int(mul.max())}, off {int(off.min())}..{int(off.max())}")
 
 

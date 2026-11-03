@@ -19,6 +19,7 @@ Usage:
   st_guided.py --manifest DIR --image in.png --out out.png [--ref] [--dump DIR]
   st_guided.py --manifest DIR --frame cam.png --out proc.png [--dump DIR]
   st_guided.py --manifest DIR --compare IN_DIR INT_DIR FP32_DIR
+Every form takes --style K for a multi-style manifest (st_merge_styles.py).
 --image takes the 640x360 network input.  --frame takes a 1280x720 camera
 frame and runs the board path (RGB565, pre, network, 2x2 post); --out is
 then the PROC slot.  --dump writes every point as its producer writes it to DDR (int16 CHW
@@ -99,6 +100,7 @@ def ln_ref(x, spec, qmax):
 # All constants are 18-bit signed multipliers with a per-layer shift.
 FILM_F = 8          # zq = z * 2^F / in_scale
 FILM_P = 15         # affine: y = (x*mul + off + 2^(P-1)) >> P
+FILM_PLANE = 320 * 180  # the H/2 plane the FiLM runs on
 FILM_GS = 6         # GAP sum pre-shift: Sg = (S + 32) >> 6
 MBITS = 17          # |multiplier| < 2^17
 MUL_MAX = (1 << 17) - 1
@@ -114,8 +116,15 @@ def _fit(vals):
     return s, np.round(np.asarray(vals, np.float64) * 2 ** s).astype(np.int64)
 
 
-def film_consts(spec, plane):
-    """Integer MLP constants of a film layer for a plane of `plane` pixels."""
+def _refit(s, vals):
+    """vals at a given shift s (no larger than _fit's own)."""
+    return s, np.round(np.asarray(vals, np.float64) * 2 ** s).astype(np.int64)
+
+
+def film_consts(spec, plane, shifts=None):
+    """Integer MLP constants of a film layer for a plane of `plane` pixels.
+    shifts = (sz, sg, sb) overrides the fitted ones: st_film has one set for
+    every style, the smallest each style needs (film_shifts)."""
     s_in, s_out = spec["in_scale"], spec["out_scale"]
     hd = {}
     for k in ("reduce", "gamma", "beta"):
@@ -128,17 +137,34 @@ def film_consts(spec, plane):
     c["sg"], c["mg"] = _fit(hd["gamma"]["ws"] * s_in * s_in / s_out * 2 ** (FILM_P - FILM_F))
     c["sb"], c["mb"] = _fit(hd["beta"]["ws"] * s_in / s_out * 2 ** (FILM_P - FILM_F))
     c["c0"] = int(round(2 ** FILM_P * s_in / s_out))
+    if shifts is not None:
+        for k, sh in zip(("z", "g", "b"), shifts):
+            assert sh <= c["s" + k], f"film shift s{k} {sh} above the fitted {c['s' + k]}"
+        c["sz"], c["mz"] = _refit(shifts[0], hd["reduce"]["ws"] * 2 ** (FILM_F + FILM_GS) / plane)
+        c["sg"], c["mg"] = _refit(shifts[1], hd["gamma"]["ws"] * s_in * s_in / s_out * 2 ** (FILM_P - FILM_F))
+        c["sb"], c["mb"] = _refit(shifts[2], hd["beta"]["ws"] * s_in / s_out * 2 ** (FILM_P - FILM_F))
     return c
+
+
+def film_shifts(specs, plane):
+    """(sz, sg, sb) shared by the film layers of every style: the smallest."""
+    cs = [film_consts(s, plane) for s in specs]
+    return tuple(min(c[k] for c in cs) for k in ("sz", "sg", "sb"))
+
+
+def style_packets(m):
+    """The manifest's style packets; a one-style manifest is its own packet."""
+    return m.get("style_packets") or [{k: m[k] for k in ("norm_layers", "film_layers")}]
 
 
 def rshift_round(v, s):
     return (v + (np.int64(1) << (s - 1))) >> s if s > 0 else v << (-s)
 
 
-def film_coeffs(spec, gap_sum, plane):
+def film_coeffs(spec, gap_sum, plane, shifts=None):
     """Per-channel (mul, off) from the per-channel code sums of the input.
     This is the sequencer between the producer pass and the FiLM pass."""
-    c = film_consts(spec, plane)
+    c = film_consts(spec, plane, shifts)
     h = c["heads"]
     sg = (gap_sum.astype(np.int64) + (1 << (FILM_GS - 1))) >> FILM_GS
     a = h["reduce"]["b"] * c["kb"] + h["reduce"]["w"] @ sg
@@ -151,9 +177,9 @@ def film_coeffs(spec, gap_sum, plane):
     return mul, off, dict(sg=sg, a=a, zq=zq, g=big_g, b=big_b)
 
 
-def film_int(x, spec, qmax):
+def film_int(x, spec, qmax, shifts=None):
     plane = x.shape[1] * x.shape[2]
-    mul, off, _ = film_coeffs(spec, x.astype(np.int64).sum((1, 2)), plane)
+    mul, off, _ = film_coeffs(spec, x.astype(np.int64).sum((1, 2)), plane, shifts)
     y = (x.astype(np.int64) * mul[:, None, None] + off[:, None, None] + (1 << (FILM_P - 1))) >> FILM_P
     return np.clip(y, -qmax, qmax)
 
@@ -234,11 +260,19 @@ def post(rgb):
 
 # ------------------------------------------------------------------- network
 class Guided(Net):
-    def __init__(self, mdir, ref=False):
+    def __init__(self, mdir, ref=False, style=0):
         super().__init__(mdir, False)
         self.ref = ref
-        self.norm = {n["name"]: n for n in self.m.get("norm_layers", [])}
-        self.film = {f["name"]: f for f in self.m.get("film_layers", [])}
+        packets = style_packets(self.m)
+        assert 0 <= style < len(packets), f"style {style}: the manifest has {len(packets)}"
+        pk = packets[style]
+        self.norm = {n["name"]: n for n in pk["norm_layers"]}
+        self.film = {f["name"]: f for f in pk["film_layers"]}
+        # one set of FiLM shifts for all styles, per film layer
+        self.film_sh = {}
+        for f in pk["film_layers"]:
+            specs = [next(g for g in p["film_layers"] if g["name"] == f["name"]) for p in packets]
+            self.film_sh[f["name"]] = film_shifts(specs, FILM_PLANE)
         # DDR element width: a point is int16 when an add writes it before it
         # goes to DDR (the add runs in its producer pass); an add after an
         # upsample runs on chip in the consumer pass.
@@ -285,8 +319,10 @@ class Guided(Net):
                 pts[op["point"]] = f(pts[op["source_point"]], spec, self.qmax)
             elif k == "film":
                 spec = self.film[op["layer"]]
-                f = film_ref if self.ref else film_int
-                pts[spec["out_point"]] = f(pts[spec["in_point"]], spec, self.qmax)
+                x = pts[spec["in_point"]]
+                assert x.shape[1] * x.shape[2] == FILM_PLANE, x.shape
+                pts[spec["out_point"]] = (film_ref(x, spec, self.qmax) if self.ref else
+                                          film_int(x, spec, self.qmax, self.film_sh[op["layer"]]))
             elif k == "quantize_u8_output":
                 break
             else:
@@ -318,8 +354,8 @@ def psnr(a, b):
     return 99.0 if mse == 0 else 10 * np.log10(255 ** 2 / mse)
 
 
-def compare(mdir, in_dir, int_dir, fp_dir):
-    hw, rf = Guided(mdir, False), Guided(mdir, True)
+def compare(mdir, in_dir, int_dir, fp_dir, style=0):
+    hw, rf = Guided(mdir, False, style), Guided(mdir, True, style)
     for f in sorted(glob.glob(os.path.join(in_dir, "*.png"))):
         n = os.path.basename(f)
         rgb = np.asarray(Image.open(f).convert("RGB"))
@@ -341,11 +377,12 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--ref", action="store_true")
     ap.add_argument("--dump")
+    ap.add_argument("--style", type=int, default=0, help="style packet of a multi-style manifest")
     a = ap.parse_args()
     if a.compare:
-        compare(a.manifest, *a.compare)
+        compare(a.manifest, *a.compare, a.style)
         return
-    net = Guided(a.manifest, a.ref)
+    net = Guided(a.manifest, a.ref, a.style)
     if a.dump:
         os.makedirs(a.dump, exist_ok=True)
     if a.frame:
