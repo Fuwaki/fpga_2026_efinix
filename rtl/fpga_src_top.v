@@ -237,6 +237,14 @@ module fpga_src #(
 
 );
 
+// sys_clk: every user clock domain (SoC, video, ST accelerator, the DDR AXI
+// port).  It is the MIPI TX PLL's 125 MHz output; the MIPI TX is unused.
+// core_clk (100 MHz, the same PLL) stays on the DDR3 controller only: its
+// PHY crossings are timed against sdram_clk at the fixed 4:1 ratio, and its
+// AXI port reaches it through the controller's own dual-clock FIFOs.
+wire sys_clk = i_mipi_tx_pclk;
+localparam integer SYS_HZ = 125_000_000;
+
 function integer log2;
 	input	integer	val;
 	integer	i;
@@ -349,7 +357,7 @@ inst_reset_ctrl
 
 
 reg [25:0] cnt = 'd0;
-always @( posedge core_clk)
+always @( posedge sys_clk)
 begin 
        cnt <= cnt + 1'b1;
 end
@@ -359,7 +367,7 @@ assign led[0]  = cal_done ? cnt[24] : 1'b0;
 //MIPI RX
 //========================================================================================================
 wire i_mipi_clk ;
-assign i_mipi_clk = core_clk;
+assign i_mipi_clk = sys_clk;
 
 		assign	cam_d0_RST		= 1'b0;
 		assign	cam_d1_RST		= 1'b0;
@@ -492,7 +500,7 @@ wire mdebug_receive_error      = mipi_debug_out[14];
 // 摄像头 SC431HAI 的 I2C 寄存器初始化由这颗 CPU 上的固件完成，FPGA 侧不再有
 // ROM 表驱动的 I2C 主机。
 //   - 复位: 与其它逻辑共用 w_arstn（所有 PLL 锁定后才释放）
-//   - 时钟: core_clk @100MHz（SoC 配置 Frequency=100）
+//   - 时钟: sys_clk @125MHz（SoC 配置 Frequency=125）
 //   - I2C0 : 接摄像头排线的 io_cam_scl / io_cam_sda（开漏，靠外部上拉）
 //   - GPIO0: 4 位，留给后面的按键/拨码
 //   - APB0 : st_accel @ IO_APB_SLAVE_0_INPUT (0xF810_0000)
@@ -506,7 +514,7 @@ assign w_soc_rst_n_release = w_arstn & cal_done;
 
 // 与 Ti60F225_devkit/top_soc.v 一致：asyncReset 相对 systemClk 做同步释放
 reg [4:0] soc_rst_sync;
-always @(posedge core_clk or negedge w_soc_rst_n_release) begin
+always @(posedge sys_clk or negedge w_soc_rst_n_release) begin
 	if (!w_soc_rst_n_release)
 		soc_rst_sync <= 5'b0;
 	else
@@ -627,7 +635,7 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
     // ── st_accel_wrapper: takes each new ISP frame, writes the PROC ring ────
     wire accel_busy;
     st_accel_wrapper u_st_accel_wrapper (
-        .clk            (core_clk),
+        .clk            (sys_clk),
         .rst_n          (vid_rst_n),
         // AXI4 master → vid_subsystem ext_* (write channel)
         .m_axi_awid     (st_awid),    .m_axi_awaddr (st_awaddr),
@@ -649,7 +657,7 @@ if (ENABLE_ST_ACCEL) begin : gen_st_accel
         .src_ok  (st_src_ok),  .src_token (st_src_token),
         .dst_req (st_dst_req), .dst_op (st_dst_op), .dst_src_seq (st_dst_src_seq),
         .dst_ack (st_dst_ack), .dst_ok (st_dst_ok), .dst_slot (st_dst_slot),
-        // Style packet: the menu's style row (ui_regs, core_clk)
+        // Style packet: the menu's style row (ui_regs, sys_clk)
         .style      (ui_style),
         // Status
         .busy       (accel_busy),
@@ -704,7 +712,7 @@ end
 endgenerate
 
 ui_regs u_ui_regs (
-	.clk        (core_clk),
+	.clk        (sys_clk),
 	.rst_n      (~w_soc_async_reset),
 	.paddr      (w_soc_apb_paddr),
 	.psel       (w_soc_apb_psel & ui_hit),
@@ -724,16 +732,16 @@ assign w_soc_apb_prdata    = ui_hit ? ui_prdata  : accel_prdata;
 assign w_soc_apb_pready    = ui_hit ? ui_pready  : accel_pready;
 assign w_soc_apb_pslverror = ui_hit ? ui_pslverr : accel_pslverr;
 
-key_debounce u_key0 (.clk(core_clk), .rst_n(~w_soc_async_reset), .pin(key0), .pressed(key0_pressed));
-key_debounce u_key2 (.clk(core_clk), .rst_n(~w_soc_async_reset), .pin(key2), .pressed(key2_pressed));
-key_debounce u_key3 (.clk(core_clk), .rst_n(~w_soc_async_reset), .pin(key3), .pressed(key3_pressed));
+key_debounce u_key0 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key0), .pressed(key0_pressed));
+key_debounce u_key2 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key2), .pressed(key2_pressed));
+key_debounce u_key3 (.clk(sys_clk), .rst_n(~w_soc_async_reset), .pin(key3), .pressed(key3_pressed));
 // Hold KEY2 and the style row highlights immediately; hold KEY0 and the
 // view row does.  Firmware still latches the choice into ui_cursor.
 wire ui_cursor_live = key2_pressed | (ui_cursor & ~key0_pressed);
 
 riscv_soc0 u_riscv_soc0
 (
-	.io_systemClk                 (core_clk            ),
+	.io_systemClk                 (sys_clk            ),
 	.io_asyncReset                (w_soc_async_reset   ),
 	.io_systemReset               (w_soc_system_reset  ),
 
@@ -833,7 +841,7 @@ vid_subsystem #(
     .PROC_EXT        (ENABLE_ST_ACCEL),   // the accelerator is the PROC engine
     .EXT_EN          (ENABLE_ST_ACCEL)
 ) u_vid (
-    .clk         (core_clk),
+    .clk         (sys_clk),
     .rst_n       (vid_rst_n),
 
     .ext_awid     (st_awid),    .ext_awaddr (st_awaddr), .ext_awlen  (st_awlen),
@@ -888,7 +896,7 @@ vid_subsystem #(
 ddr3_top                 u_ddr3_top
 (
 
-.axi_clk                (core_clk            ),
+.axi_clk                (sys_clk            ),
 .core_clk               (core_clk            ),
 .sdram_clk              (sdram_clk           ),  
 .rx_cal_clk             (rx_cal_clk          ),
@@ -1189,7 +1197,7 @@ assign jtag_inst1_TDO = ^w_unused_peri_in;
 //
 // 现用它把 HDMI 关键内部状态发回 PC：115200 8N1，每 0.5s 一帧 48 字节
 //   AA 55 | D[4] H[4] V[4] | SH[2] XH[2] | R | SEQ | ST_TILES[4] | ST_BUSY | DE_WIDTH[2] | RSV
-//   D/H/V  enc_de/enc_hs/enc_vs 上升沿计数（core_clk 域，已 2-FF 同步）
+//   D/H/V  enc_de/enc_hs/enc_vs 上升沿计数（sys_clk 域，已 2-FF 同步）
 //          720p60 标称值：D=43200/s  H=45000/s  V=60/s
 //   SH     hdmi_tx_slow_clk(74.25MHz) 心跳计数，标称约 283 次/0.5s
 //   XH     vid_clk_dvi2(74.25MHz)    心跳计数，标称约 283 次/0.5s
@@ -1198,9 +1206,9 @@ assign jtag_inst1_TDO = ^w_unused_peri_in;
 //           SoC_GPIO0[0](摄像头I2C配置完成)}   标称 0x0F
 //   SEQ    帧序号，用于发现丢帧
 //=============================================================================
-localparam integer UART_DIV = 868;              // 100MHz / 115200 = 868.06
+localparam integer UART_DIV = (SYS_HZ + 57600) / 115200;   // 1085 at 125 MHz
 localparam integer MSG_LEN  = 48;
-localparam [25:0]  RELOAD   = 26'd50_000_000;   // 0.5s @ core_clk=100MHz
+localparam [25:0]  RELOAD   = SYS_HZ / 2;      // 0.5 s
 // 0 = 关闭诊断（综合会整块裁掉，时序回到基线）；1 = 打开，led[2] 输出状态帧。
 // 注意实测：打开时 DDR 命令 FIFO 的 raddr->CE 会掉出 ~0.05ns 负 slack，
 // 所以交付基线保持 0，需要现场排查 HDMI 时再置 1。
@@ -1210,23 +1218,23 @@ localparam DBG_UART_EN      = 1'b1;
 // normal binary telemetry protocol below.
 localparam SOC_UART_DEBUG   = 1'b0;
 
-// CDC 约定：所有要被 core_clk 采样的计数一律在 core_clk 域产生，跨域信号走
+// CDC 约定：所有要被 sys_clk 采样的计数一律在 sys_clk 域产生，跨域信号走
 // 2-FF 同步；否则会在时序报告里留下 -1.193ns 的假违例（已实测踩过）。
 // enc_* 是视频域电平信号，高/低电平分别维持 538ns~17.2µs，远大于 10ns 采样周期，
 // 2-FF 同步不会丢沿。
 reg [2:0] sync_de = 3'd0, sync_hs = 3'd0, sync_vs = 3'd0;
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	sync_de <= {sync_de[1:0], enc_de};
 	sync_hs <= {sync_hs[1:0], enc_hs};
 	sync_vs <= {sync_vs[1:0], enc_vs};
 end
 wire de_q = sync_de[2], hs_q = sync_hs[2], vs_q = sync_vs[2];
 
-// DE/HS/VS 上升沿计数（core_clk 域）
+// DE/HS/VS 上升沿计数（sys_clk 域）
 reg [31:0] dbg_d_cnt = 32'd0, dbg_h_cnt = 32'd0, dbg_v_cnt = 32'd0;
 reg        dbg_d_r = 1'b0,    dbg_h_r = 1'b0,    dbg_v_r = 1'b0;
 reg [15:0] dbg_de_width = 16'd0, dbg_de_last_width = 16'd0;
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	dbg_d_r <= de_q;
 	dbg_h_r <= hs_q;
 	dbg_v_r <= vs_q;
@@ -1237,7 +1245,7 @@ always @(posedge core_clk) begin
 	else if (dbg_d_r) begin dbg_de_last_width <= dbg_de_width; dbg_de_width <= 16'd0; end
 end
 
-// 时钟心跳：各自域内每 2^16 周期翻转一次，core_clk 侧同步后数上升沿。
+// 时钟心跳：各自域内每 2^16 周期翻转一次，sys_clk 侧同步后数上升沿。
 // 预期每 0.5s：hdmi_tx_slow_clk(74.25MHz) 约 283 次，vid_clk_dvi2(74.25MHz) 约 283 次。
 // 时钟一停该计数就不再增长 —— 这是判断 TMDS 像素钟/视频钟是否在跑的直接依据。
 reg [15:0] dbg_s_div = 16'd0, dbg_x_div = 16'd0;
@@ -1254,7 +1262,7 @@ end
 reg [2:0] sync_shb = 3'd0, sync_xhb = 3'd0;
 reg       dbg_shb_r = 1'b0, dbg_xhb_r = 1'b0;
 reg [15:0] dbg_s_hb_cnt = 16'd0, dbg_x_hb_cnt = 16'd0;
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	sync_shb <= {sync_shb[1:0], dbg_s_hb};
 	sync_xhb <= {sync_xhb[1:0], dbg_x_hb};
 	dbg_shb_r <= sync_shb[2];
@@ -1263,7 +1271,7 @@ always @(posedge core_clk) begin
 	if ( sync_xhb[2] & ~dbg_xhb_r) dbg_x_hb_cnt <= dbg_x_hb_cnt + 16'd1;
 end
 
-// ST accelerator telemetry crosses from core_clk (accelerator control) into
+// ST accelerator telemetry crosses from sys_clk (accelerator control) into
 // the UART/core domain.  The frame counter increments once per completed
 // 16x16 inference tile; it is the direct proof that the network is making
 // forward progress even when no display is attached.
@@ -1280,7 +1288,7 @@ reg [15:0] cpu_hb_sync1 = 16'd0, cpu_hb_sync2 = 16'd0;
 // CSI-2 RX error flags, sticky since reset: {receive, frame_vc0, line_vc0,
 // undersize, ecc2, ecc1, crc, pixel_fifo_full}.
 reg [7:0]  cp_err_s1 = 8'd0, cp_err_s2 = 8'd0, cp_err_sticky = 8'd0;
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	cp_err_s1 <= {mdebug_receive_error, mdebug_frame_vc0_error,
 	              mdebug_line_vc0_error, mdebug_undersize_pkt_error,
 	              mdebug_ecc_2bit_error, mdebug_ecc_1bit_error,
@@ -1289,7 +1297,7 @@ always @(posedge core_clk) begin
 	cp_err_sticky <= cp_err_sticky | cp_err_s2;
 end
 
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	st_frame_sync1 <= w_st_frame_cnt;
 	st_frame_sync2 <= st_frame_sync1;
 	st_busy_sync1 <= w_st_pipe_busy;
@@ -1328,12 +1336,12 @@ reg [15:0] c_cpu_hb;
 reg [23:0] c_frame_pix_num;
 reg [7:0]  dbg_seq = 8'd0;
 
-// vid_subsystem status is in core_clk already; one register stage keeps the
+// vid_subsystem status is in sys_clk already; one register stage keeps the
 // wide mux off the telemetry path.
 vid_pkg::vid_status_t vid_st_s2;
-always @(posedge core_clk) vid_st_s2 <= w_vid_status;
+always @(posedge sys_clk) vid_st_s2 <= w_vid_status;
 reg [31:0] st_cycles_s2 = 32'd0;
-always @(posedge core_clk) st_cycles_s2 <= st_pr_cycles;
+always @(posedge sys_clk) st_cycles_s2 <= st_pr_cycles;
 reg [7:0]  dbg_msg [0:MSG_LEN-1];
 integer dbg_i;
 reg [7:0] dbg_crc;
@@ -1374,7 +1382,7 @@ always @(*) begin
 	dbg_msg[47] = {5'd0, key3_pressed, key2_pressed, key0_pressed};
 end
 
-// --- 115200 8N1 发送器（core_clk 域） ---------------------------------------
+// --- 115200 8N1 发送器（sys_clk 域） ---------------------------------------
 reg [25:0] dbg_tick    = 26'd0;
 reg        dbg_pend    = 1'b0;
 reg        dbg_sending = 1'b0;
@@ -1386,7 +1394,7 @@ reg [3:0]  dbg_bit     = 4'd0;
 reg [15:0] dbg_baud    = 16'd0;
 reg        dbg_uart_tx = 1'b1;
 
-always @(posedge core_clk) begin
+always @(posedge sys_clk) begin
 	// 每 0.5s：锁存计数并请求发送一帧
 	if (dbg_tick == 26'd0) begin
 		dbg_tick <= RELOAD;

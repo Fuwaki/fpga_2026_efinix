@@ -12,5 +12,5 @@
     #define GPIO_CTRL           SYSTEM_GPIO_0_IO_CTRL
 #endif
 
-#define I2C_CTRL_HZ         SYSTEM_CLINT_HZ   /* SoC Frequency = 100 MHz */
+#define I2C_CTRL_HZ         SYSTEM_CLINT_HZ   /* SoC Frequency = 125 MHz (sys_clk) */
 #define I2C_FREQUENCY       100000            /* 100 kHz 标准模式 */

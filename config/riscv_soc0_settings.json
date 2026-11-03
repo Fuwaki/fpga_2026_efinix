@@ -29,7 +29,7 @@
         "TAP_MODE": "1'b0",
         "TAP_COUNT": "1",
         "TAP_SEL": "8",
-        "Frequency": "100",
+        "Frequency": "125",
         "PeriFrequencyEnable": "1'b0",
         "PeriFrequency": "50",
         "UART2_FIFODEPTH": "128",

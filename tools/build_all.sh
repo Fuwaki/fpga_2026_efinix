@@ -36,7 +36,7 @@ BSP_SOC_H="$ROOT/embedded_sw/riscv_soc0/bsp/efinix/EfxSapphireSoc/include/soc.h"
 # SoC 配置 (与 ip/riscv_soc0 当前设置保持一致；改这里必须重跑 IP 生成)
 SOC_PARAMS=(
   "SOC_MODE=0"            # Standard
-  "Frequency=100"
+  "Frequency=125"         # sys_clk (i_mipi_tx_pclk)
   "DDR=1'b0"              # 不用外部 DDR，代码/数据全在片上 RAM
   "OCRSize=16384"         # 16KB 片上 RAM
   "Cache=1'b0"            # 代码在片上 RAM，缓存不省访问

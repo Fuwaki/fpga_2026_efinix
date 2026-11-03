@@ -58,7 +58,7 @@ def frames(port, seconds):
             }
 
 
-def decode_vid(got):
+def decode_vid(got, clk_hz):
     """vid_subsystem telemetry: page = seq & 3, see the TELEM_VID branch in
     rtl/fpga_src_top.v.  Uses the latest frame of each page."""
     pages = {}
@@ -129,9 +129,9 @@ def decode_vid(got):
             "layer1_bad_lines": p["st_tiles"] & 0xFFFF,
             "seq_gap":        p["last_y"],
             # ENABLE_ST_ACCEL builds: bad_words carries the block engine's
-            # cycles for the last frame (100 MHz core_clk)
+            # cycles for the last frame (sys_clk)
             "st_cycles":      p["cap_tiles"],
-            "st_fps_bound":   round(100e6 / p["cap_tiles"], 1) if p["cap_tiles"] else None,
+            "st_fps_bound":   round(clk_hz / p["cap_tiles"], 1) if p["cap_tiles"] else None,
         }
     errs = [vid.get("display", {}).get("isp_ring_err"), vid.get("camera", {}).get("isp_ring_err"),
             vid.get("selftest", {}).get("ring_proto_err"), vid.get("proc", {}).get("ring_err")]
@@ -146,6 +146,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit JSON only")
     ap.add_argument("--vid", action="store_true",
                     help="decode the vid_subsystem status slots (TELEM_VID=1 builds)")
+    ap.add_argument("--clk-mhz", type=float, default=125.0,
+                    help="sys_clk of the build (100 before feat/st-fmax)")
     args = ap.parse_args()
     try:
         import serial
@@ -169,17 +171,18 @@ def main():
     #   R = {PLLs locked, DDR calibrated, video reset released, camera I2C done}
     #   per 0.5 s: 21600 DE and 22500 HS rising edges, 30 VS, heartbeats
     #   ~283 (74.25 MHz) on both slow and vid_clk_dvi2; one DE is 1280 px
-    #   = 1724 core clocks
+    #   = 17.24 us of sys_clk (1724 cycles at 100 MHz, 2155 at 125 MHz)
+    de_cyc = 17.24 * args.clk_mhz
     ok = bool(latest and delta and latest["status"] == 0x0F and
               20000 <= delta["de"] <= 23000 and
               21000 <= delta["hs"] <= 24000 and
               28 <= delta["vs"] <= 32 and
               250 <= delta["slow_hb"] <= 320 and
               250 <= delta["video_hb"] <= 320 and
-              1650 <= latest["de_width_core_cycles"] <= 1800)   # 1280 px = 17.2 us
+              0.96 * de_cyc <= latest["de_width_core_cycles"] <= 1.04 * de_cyc)
     result = {"ok": ok, "frames": len(got), "latest": latest, "delta": delta}
     if args.vid and latest is not None:
-        result["vid"] = decode_vid(got)
+        result["vid"] = decode_vid(got, args.clk_mhz * 1e6)
         result["ok"] = ok and result["vid"]["ok"]
     if args.json:
         print(json.dumps(result, separators=(",", ":")))
