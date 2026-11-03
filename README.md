@@ -1,10 +1,10 @@
 # fpga_src — Ti60F225 + SC431HAI 摄像头 → HDMI
 
-> **当前版本（最终版，2026-11-03）**：分支 feat/st-fmax a83d75c，已写入 SPI Flash。
+> **当前版本（最终版，2026-11-03）**：分支 feat/st-fmax 896af33，已写入 SPI Flash。
 > - 摄像头 1280×720 → ISP（固件 AE/AWB）→ 3 风格风格迁移加速器（模型 s3d：bright / gouache / comic，按键切换）→ HDMI。
 > - 用户逻辑 125 MHz，板上约 16.8 fps，`errors 0`。
-> - 按键：KEY0 选视图行，KEY2 选风格行，KEY3 确认；KEY1 短按 = 对白纸标定白平衡并锁定，长按约 1 秒 = 回到自动（KEY1 不再是复位键）。OSD 第 4 行显示 `WB AUTO` / `WB CAL` / `WB LOCK`。
-> - 资源：XLR 60318/60800（99.21%），RAM10 256/256，DSP 159/160；sys_clk fmax 142.1 MHz。
+> - 按键：KEY2 在视图行（SPLIT/FULL）和风格行（STY）之间切换，KEY3 确认；KEY0 短按 = 对白纸标定白平衡并锁定，长按约 1 秒 = 回到自动。KEY1 不再是复位键，也没有功能（板上按了读不到，原因未查明）。OSD 第 4 行显示 `WB AUTO` / `WB CAL` / `WB LOCK`。
+> - 资源：XLR 60191/60800（99.0%），RAM10 256/256，DSP 159/160；sys_clk fmax 139.7 MHz。
 > - 文档：docs/st-resource-report.md（资源）、docs/st-network-architecture.md（网络和对比）、docs/st-multistyle-deploy.md（模型部署）、docs/video_architecture.md（视频通路、ISP、AE/AWB 寄存器）、docs/st-engineering-notes.md（工程经验）。
 > - 下面第 1–13 节有不少是早期移植阶段的记录，数字以上面这些文档为准。
 
@@ -231,7 +231,7 @@ assign io_cam_sda_OE  = ~w_soc_i2c_sda_write;
 - `src/main.c`：主循环轮询按键（风格菜单、分屏等，写 `ui_regs`），并输出 UART 遥测。
 - `src/isp_ctrl.c`：AE（只调传感器曝光 0x3E00–0x3E02）和 AWB（灰像素统计 + 限幅的光源估计），每个新统计帧跑一次，结果写 ISP 增益寄存器。算法和寄存器表见 docs/video_architecture.md 第 4 节。
 - 固件总共约 7.2 KB（text 4,104 + data 1,018 + bss 2,100），OCR 16 KB。
-- `isp_ctrl.c` 还处理 KEY1（ui_regs 0x8024）：短按白纸标定并锁定白平衡，长按回到自动。
+- `isp_ctrl.c` 还处理 KEY0（ui_regs 0x8024）：短按白纸标定并锁定白平衡，长按回到自动。
 
 单独编译：
 
@@ -269,8 +269,8 @@ APB 的其余地址目前没有从机，读 0。
 - **不是上个电就能看的成品**：本次交付到"综合/布局布线/bitstream 全过 + 时序收敛 +
   固件编译并嵌入"为止，**没有上板验证**（本机 `lsusb` 里没有 Efinix 下载器，
   也无法接摄像头/显示器）。
-- 板上资源（最终版 a83d75c）：XLR 99.21%（60318/60800）、Memory Block 256/256、DSP 159/160，几乎没有余量，见 docs/st-resource-report.md。
-- 自动白平衡在部分场景下仍容易偏绿（docs/video_architecture.md 第 8 节）；演示时用 KEY1 对白纸标定锁定。
+- 板上资源（最终版 896af33）：XLR 99.0%（60191/60800）、Memory Block 256/256、DSP 159/160，几乎没有余量，见 docs/st-resource-report.md。
+- 自动白平衡在部分场景下仍容易偏绿（docs/video_architecture.md 第 8 节）；演示时用 KEY0 对白纸标定锁定。
 - UART0 已在 SoC 里使能但**未接引脚**（`rxd` 固定 1），所以固件里的
   `CAM_I2C_VERBOSE` 打开也看不到输出。
   （注意别和 §12 的**片上状态 UART** 搞混：那个是 FPGA 侧驱动 `GPIOR_28`
