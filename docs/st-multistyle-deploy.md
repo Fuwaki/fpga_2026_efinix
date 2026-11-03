@@ -99,7 +99,7 @@ python3 tools/st_gen_prelut.py
 | 生成物 | 内容 |
 |---|---|
 | `st_ln.hex` | 风格 k 的 LN 系数放在第 20k 到 20k+19 行（FiLM 区从第 128 行开始，所以最多 6 个风格） |
-| `st_film.hex` | 每个风格 512 行，风格 k 从第 512k 行开始；2 个风格共 1024 行 |
+| `st_film.hex`、`st_film_hi.hex` | 每个风格 384 行，风格 k 从第 384k 行开始；0..1023 行在 `st_film.hex`，其余在 `st_film_hi.hex`（第 8 节） |
 | `st_net_pkg.sv` | `ST_STYLES`，以及所有风格共用的 FiLM 常数 `ST_FILM_SZ/SG/SB/C0/KB` |
 
 **FiLM 常数共享**：
@@ -107,7 +107,8 @@ python3 tools/st_gen_prelut.py
 - C0 和 KB 只取决于量化 scale，联合校准后所有风格都一样。
 - 移位 SZ/SG/SB 取各风格拟合结果的最小值（`st_guided.film_shifts`），保证没有风格溢出。
 - `st_gen_film.build_styles` 会检查所有风格的共享常数确实相等。
-- 这个模型两个风格都是 sz26 sg24 sb20、c0 21922、kb900。注意和 p90 单风格版本不同（p90 是 sg23、c0 26755）。
+- 第一版双风格模型是 sz26 sg24 sb20、c0 21922、kb900，和 p90 单风格版本不同（p90 是 sg23、c0 26755）。
+- 最终版 final_s3b 是 sz25 sg24 sb20、c0 8391、kb900。
 
 **golden**：`tools/st_guided.py --style k` 用第 k 个风格包。两个风格的硬件输出对 fp32 都在 37.8 dB 以上。
 
@@ -123,23 +124,26 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 
 ## 5. 硬件实现
 
+本节先写的是双风格版本，3 个风格时改了的地方在每条后面注明，细节见第 8 节。
+
 **风格从哪来**：
 
-- 固件已经有风格菜单：`ui_regs` 的 MENU 寄存器 bits[4:3]，按键在 0–3 之间循环。
+- 固件已经有风格菜单：`ui_regs` 的 MENU 寄存器 bits[4:3]。双风格时按键在 0–3 之间循环；现在在 0..`ST_NUM_STYLES`-1（3 个风格时是 0–2）之间循环。
 - `fpga_src_top.v` 把 `ui_style` 接到 `st_accel_wrapper` 的 `style` 端口。
-- `ui_regs` 和加速器都在 core_clk 上，不需要跨时钟同步。
+- `ui_regs` 和加速器在同一个时钟上（feat/st-fmax 里是 125 MHz 的 sys_clk），不需要跨时钟同步。
 
 **锁存**：
 
-- `st_engine` 在一帧开始（start）时锁存 `style & (ST_STYLES-1)` 到 `style_q`，再送给 `st_norm` 和 `st_film`。
+- `st_engine` 在一帧开始（start）时锁存 style 到 `style_q`，再送给 `st_norm`、`st_film`，并用来选 guide 层的 rq 基址。
+  `ST_STYLES` 是 2 的幂时按它取模；`ST_STYLES = 3` 时把 3 映射成 0。
 - 所以一帧里不会混用两套参数，切换在下一帧生效。
-- 菜单的 4 个值按 2 取模：屏幕显示的 1、3 是风格 0，2、4 是风格 1。
+- 双风格时菜单的 4 个值按 2 取模：屏幕显示的 1、3 是风格 0，2、4 是风格 1。
 
 **读地址**：
 
 - `st_norm`：LN 模式下的读基址是 `style × 20`，用 `style<<4 + style<<2` 算，不需要乘法器。FiLM 区的基址不变。
-- `st_film`：ROM 深度是 `512 × STYLES`，读地址是 `{style, rom_addr}`。
-- `STYLES` 只能是 1、2、4（断言检查）。
+- `st_film`：双风格时 ROM 深度是 `512 × STYLES`，读地址是 `{style, rom_addr}`。
+  现在每个风格的步长是 384（`style<<8 + style<<7 + rom_addr`），`STYLES` 可以是 1 到 4。
 
 **腾出 RAM**：
 
@@ -163,15 +167,19 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 `board_w8a8` 换目标以后测试向量必须跟着重新生成。`st_norm_vectors.py` 的 golden 缓存按 manifest 内容做 key，`st_io_vec` 在 make 里依赖 manifest，其余的向量每次运行都会重新生成。
 以前缓存按路径做 key，换模型后会误用旧缓存。
 
+**同样 3 个风格、换训练结果**：重跑第 8 节的流程（拆分 → 校准 → 联合校准 → 导出 → 合并 → 生成 → 仿真 3 个风格 → 编译上板）。
+只要结构不变，RTL 不用改。合并时如果有别的层也按风格变了，`st_merge_styles.py` 会报错，要先确认它是不是也是折进卷积的正系数仿射。
+
 **4 个风格**：
 
 - LN：4 × 20 = 80 行，coef_ram 放得下。
-- FiLM ROM：要 8 个 RAM10，比现在多 4 个，而现在只剩 2 个。还需要再腾出 2 个以上。候选有：
+- FiLM ROM：4 × 384 = 1536 字，拆成 1024 + 512 两个数组，要 4 + 2 = 6 个 RAM10 以上，比现在至少多 2 个。现在 RAM 已经 256/256，要先腾出来。候选有：
   - OCR 从 16 KB 降到 8 KB，能省 8 个（见 docs/st-multistyle-packets.md 方案 B）；
   - st_dw 的 `u_fifo`（131 位 × 64 深，7 个 RAM10）。
-- 菜单本来就是 4 个值，取模的逻辑自动变成 `& 3`。
+- guide 的 rq 块：每个风格 8 个字，rq ROM 放得下。
+- 固件里 `ST_NUM_STYLES` 改成 4，引擎按 `& 3` 取模。
 
-**3 个风格**：`STYLES` 必须是 2 的幂，所以 3 个风格要按 4 个的资源来做，第 4 个槽位可以重复放一个风格。
+**3 个风格**：已经实现，见第 8 节。
 
 **网络结构变了**（通道数、层数）：pass 表、ROM 形状都会变，要按 docs/st-guided-adr.md 的流程整套重新生成和验证。
 
@@ -203,7 +211,34 @@ make -C sim tb_st_engine ENGINE_STYLE=1
 | hw 对 fp32 | bright 34.9–38.6 dB，gouache 36.4–39.1 dB，comic 31.8–37.0 dB，和训练端 int 推理一致 |
 
 **拆分**：训练端已经把风格拆成单风格模型（`runs/astra2/split/{bright,gouache,comic}`），不需要 `st_split_styles.py`。
-之后的校准、联合校准、导出和合并跟第 3 节一样，只是有 3 个风格。
+之后的校准、联合校准、导出和合并跟第 3 节一样，只是有 3 个风格：
+
+```bash
+cd /data/competition/2026fpga
+W=st_work/s3b; S=fpga_st_train/runs/astra2/split
+cp -r $S/bright $W/style0; cp -r $S/gouache $W/style1; cp -r $S/comic $W/style2
+cd fpga_st_train
+for k in 0 1 2; do
+  ./target/release/fpga_st_train --device cpu calibrate --model ../$W/style$k \
+      --content ../style-transfer/data/content --batches 20 --safety 1.0 --bits w8a8 \
+      --out ../$W/style$k/calibration.json
+done
+cd ..
+python3 fpga_src-st-fmax/tools/st_merge_calib.py --out $W/calibration_joint.json \
+    $W/style0/calibration.json $W/style1/calibration.json $W/style2/calibration.json
+cd fpga_st_train
+for k in 0 1 2; do
+  ./target/release/fpga_st_train --device cpu export-int8 --model ../$W/style$k \
+      --calibration ../$W/calibration_joint.json --out ../$W/w8a8_s$k
+done
+cd ..
+python3 fpga_src-st-fmax/tools/st_merge_styles.py --out $W/w8a8 $W/w8a8_s0 $W/w8a8_s1 $W/w8a8_s2
+#   -> "layer guide: per-style weight_scale, bias, bias_int32, requant"
+ln -sfn s3b/w8a8 st_work/board_w8a8
+```
+
+然后在 `fpga_src-st-fmax` 里重跑第 4 节的 4 个生成命令，跑下面的仿真，最后 `tools/build_all.sh --no-ip`（固件也要重编），JTAG 加载，跑 `tools/board_smoke_test.py --vid --json --seconds 10 --clk-mhz 125`。
+确认无误后 `tools/build_all.sh --no-fpga --flash` 写入 Flash。
 
 **packet_guide**：每个风格的 guide 输出是 `relu(guide_conv(x)·g_s + b_s)`。拆分时它已经折进 guide 卷积，权重是 W·g、偏置是 b·g + b_s，g > 0。
 所以各风格 int8 权重码完全一样，`weights.bin` 仍然共享。不同的只有 guide 层的 `weight_scale`、`bias`、`bias_int32` 和 `requant`。

@@ -6,27 +6,32 @@
 - 参数量统计表；
 - 与标准网络（简化版 CycleGAN）在画质（PSNR/SSIM）和推理延迟上的对比。
 
-**部署网络**：`tiny_dw_guided`，即 prune90 `ln` 检查点的 W8A8 导出（`st_work/p90_ln_w8a8`）。
+**部署网络（最终版）**：`tiny_dw_guided` 的 3 风格版本 `fpga_st_train/runs/astra2/final_s3b`。风格是 0 bright、1 gouache、2 comic，带 packet_guide 结构（§2.3）。
+W8A8 导出在 `st_work/s3b/w8a8`。卷积结构和通道数与 prune90 `ln` 版本（`st_work/p90_ln_w8a8`）相同，所以 §3 的逐层参数和 MAC 表仍然适用。
 
-**板上实现**：分支 feat/st-guided（cfb1faa），设计见 docs/st-guided-adr.md。
+**板上实现**：分支 feat/st-fmax（dad8cb8，已写入 SPI Flash），用户逻辑跑在 125 MHz。
+设计见 docs/st-guided-adr.md，多风格部署见 docs/st-multistyle-deploy.md 第 8 节，资源见 docs/st-resource-report.md。
 
 **复现**：所有数字都能用文末的命令复现。测试图是 6 张 demo 图（animal、cat、city、landscape、portrait、water）。
+
+**各节数据的出处**：§4.2 对教师的 PSNR/SSIM 和 §4.3 的 CPU 延迟是在单风格 prune90 版本上测的（教师是 White-box）。
+最终版各风格对 fp32 的保真度见 §2.3，对各自教师的 PSNR 还没有重新测。
 
 ## 1. 结论一览
 
 | 指标 | 本网络 | 简化版 CycleGAN（ResNet-6） | CycleGAN（ResNet-9） | 教师 White-box（CVPR20） |
 |---|---|---|---|---|
-| 参数量 | **30,621** | 7,837,699 | 11,378,179 | 1,467,132 |
-| 参数存储（fp32） | 122 KB | 31.4 MB | 45.5 MB | 5.9 MB |
-| 部署存储（W8A8，见 §3） | **约 33 KB** | 约 7.8 MB | 约 11.4 MB | 约 1.5 MB |
+| 参数量 | **33,569**（3 个风格；共享 29,171，每个风格 1,466） | 7,837,699 | 11,378,179 | 1,467,132 |
+| 参数存储（fp32） | 134 KB | 31.4 MB | 45.5 MB | 5.9 MB |
+| 部署存储（W8A8，见 §3） | **约 39 KB**（3 个风格） | 约 7.8 MB | 约 11.4 MB | 约 1.5 MB |
 | 计算量 @640×360 | **0.59 GMAC** | 123.2 GMAC | 174.2 GMAC | 28.8 GMAC |
-| 对教师 PSNR / SSIM（板上数据通路） | **30.2 dB / 0.908** | 未训练，见 §4.2 | 未训练 | 参考（∞ / 1） |
-| FPGA 推理延迟（Ti60F225） | **68 ms/帧，实测 14.7 fps** | 放不下；按同一引擎峰值折算 ≥ 9.6 s | ≥ 13.6 s | ≥ 2.2 s |
+| 对教师 PSNR / SSIM（板上数据通路，单风格 prune90） | **30.2 dB / 0.908** | 未训练，见 §4.2 | 未训练 | 参考（∞ / 1） |
+| FPGA 推理延迟（Ti60F225） | **59.4 ms/帧，实测 16.8 fps（125 MHz）** | 放不下；按同一引擎峰值折算 ≥ 7.7 s | ≥ 10.9 s | ≥ 1.8 s |
 | CPU 延迟（Ryzen 9 5900X，ORT，单线程） | 26.8 ms | 2695 ms | 3695 ms | 688 ms |
 
-本网络的参数量约是 500 KB 上限的 1/16（fp32），部署形态约 33 KB。
-和简化版 CycleGAN 相比，参数少 256 倍，计算量少 208 倍。
-在整条板上数据通路（RGB565 输入、整数网络、565 输出抖动）下，对教师的 PSNR 为 30.2 dB、SSIM 为 0.908。
+3 个风格加起来，fp32 参数存储约是 500 KB 上限的 1/4，部署形态约 39 KB。
+和简化版 CycleGAN 相比，参数少约 230 倍，计算量少 208 倍。
+单风格 prune90 版本在整条板上数据通路（RGB565 输入、整数网络、565 输出抖动）下，对教师的 PSNR 为 30.2 dB、SSIM 为 0.908。
 
 ## 2. 网络结构
 
@@ -34,7 +39,7 @@
 
 ```mermaid
 flowchart LR
-    IN["输入 RGB<br/>640×360（H）"] --> G["guide<br/>3×3 conv 3→8"]
+    IN["输入 RGB<br/>640×360（H）"] --> G["guide<br/>3×3 conv 3→8<br/>+ 每风格逐通道仿射"]
     IN --> P["avg_pool 2×2<br/>320×180（H/2）"]
     P --> HG["h2_guide 3×3 conv 3→10"] --> HP["h2_proj 1×1 10→40"]
     P --> S["stem 3×3 conv 3→16"]
@@ -85,7 +90,7 @@ flowchart LR
    - 在 H/2 上做全局平均池化（GAP），经 40→10→80 的小 MLP 得到每个通道的 γ、β。
    - 这给了网络一个"看整幅画面"的入口，用于整体色调和对比度。
    - 硬件上 GAP 在写 DDR 时顺路累加，不需要多一遍读。
-   - FiLM 和 LN 也是多风格切换时每个风格唯一需要换的参数（每个风格约 2.3 KB，见 docs/st-multistyle-packets.md）。
+   - FiLM、LN 和 guide 仿射是多风格切换时每个风格需要换的全部参数（每个风格约 2.4 KB，见 §2.3）。
 5. **输入池化**：主干和 H/2 分支吃 2×2 平均池化后的输入，只有 guide 读全分辨率。
 6. **蒸馏加剪枝**：
    - 以 White-box Cartoonization 为教师，在 COCO 上做蒸馏（像素、梯度、平坦区、笔触、线条等损失）。
@@ -97,6 +102,38 @@ flowchart LR
    - LN 的 1/√D 用 768 项 LUT 加移位实现，不需要除法器。
    - FiLM 的 MLP 用整数 MAC。
    - 这些整数定义相对 fp32 最多损失 0.08 dB（docs/st-guided-adr.md）。
+
+### 2.3 多风格：风格包和 packet_guide
+
+最终版一个网络带 3 个风格。所有卷积共享，每个风格只有一个"风格包"：
+
+| 风格包内容 | 参数量 | 作用 |
+|---|---|---|
+| 主干 LayerNorm 的 γ、β | 160 | 主干的整体统计 |
+| H/2 FiLM 的 MLP（40→10→80） | 1,290 | 按画面全局内容调色调和对比度 |
+| guide 的逐通道仿射 g_s、b_s（packet_guide） | 16 | 每个风格自己调全分辨率细节分支的强弱 |
+| **合计** | **1,466** | int8/定点形态约 2.4 KB |
+
+**packet_guide**：guide 分支的输出改成 `relu(guide_conv(x) · g_s + b_s)`，g_s = exp(log_gain_s) > 0。
+因为 g_s > 0，仿射可以折进卷积：权重变成 W·g_s，偏置变成 b·g_s + b_s。
+按通道 int8 量化时，权重乘一个正的逐通道系数，int8 码不变，只有这个通道的 scale 变了。所以：
+
+- 3 个风格的卷积权重（28,334 B）完全一样，片上只存一份；
+- guide 层每个风格只多 8 个 requant 字（新的 scale 和偏置），放在已有的 rq ROM 里；
+- 推理时没有额外的乘加，帧率和单风格一样。
+
+**量化**：卷积和 requant 共享，所以各风格必须用同一套激活 scale。做法是逐点取各风格校准结果的最大值（联合校准）。
+各风格因此比单独校准低 0.2–1.2 dB（对 fp32；bright 1.2、gouache 0.6、comic 0.2），这是多风格共享卷积的代价。
+
+**硬件输出对 fp32 的保真度**（`st_guided.py`，与 RTL 逐位一致，6 张图的范围）：
+
+| 风格 | 硬件对 fp32 | 训练端 int 推理对 fp32 |
+|---|---|---|
+| 0 bright | 34.9–38.6 dB | 34.9–38.5 dB |
+| 1 gouache | 36.4–39.1 dB | 36.4–39.0 dB |
+| 2 comic | 31.8–37.0 dB | 31.9–37.0 dB |
+
+硬件和训练端的整数推理基本一致，硬件化没有带来额外损失。comic 偏低是这个风格量化以后的特性。
 
 ## 3. 参数量统计表
 
@@ -125,7 +162,10 @@ flowchart LR
 | guide | conv + ReLU | 3 | 8 | 3×3 | 1 | 640×360 | 224 | 49.77 |
 | head.dw | DW + ReLU（2× 上采样、相加后） | 8 | 8 | 3×3 | 1 | 640×360 | 80 | 16.59 |
 | head.pw | PW → u8 | 8 | 3 | 1×1 | 1 | 640×360 | 27 | 5.53 |
-| **合计** | | | | | | | **30,621** | **591.1** |
+| **合计（单风格）** | | | | | | | **30,621** | **591.1** |
+| 另 2 个风格的风格包（trunk.ln、film_h2、guide 仿射） | | | | | | | 2 × 1,466 | – |
+| guide 仿射（第 1 个风格） | | | | | | | 16 | 0（折进 guide） |
+| **合计（3 个风格）** | | | | | | | **33,569** | **591.1** |
 
 按分辨率分组：
 
@@ -139,11 +179,15 @@ flowchart LR
 
 存储：
 
-- fp32：30,621 × 4 B = 122.5 KB。
-- 部署形态：卷积权重 int8 共 28,334 B，837 个偏置 int32 共 3,348 B，加上 LN 和 FiLM 的系数，**约 33 KB**。
+- fp32：33,569 × 4 B = 134.3 KB（3 个风格）。
+- 部署形态：
+  - 卷积权重 int8 共 28,334 B，3 个风格共用；
+  - 837 个偏置 int32 共 3,348 B，加上另 2 个风格的 guide 偏置 64 B；
+  - 每个风格的 LN 和 FiLM 系数约 2.4 KB；
+  - 合计**约 39 KB**。
 - 都远低于 500 KB。
 
-片上占用：PW 权重 ROM 26 个 RAM10，DW 权重 ROM 和 rq ROM 各若干块，全部常驻片上，推理时不从 DDR 读权重。
+片上占用：PW 权重 ROM 26 个 RAM10，DW 权重 ROM 15 个，两套 rq ROM 各 9 个，3 个风格的 FiLM ROM 共 6 个，全部常驻片上，推理时不从 DDR 读权重（docs/st-resource-report.md）。
 
 ## 4. 与标准网络对比
 
@@ -194,10 +238,11 @@ SSIM 按 Wang 2004 计算：11 抽头高斯窗，σ=1.5，K1=0.01，K2=0.03，�
 
 ### 4.3 推理延迟
 
-**FPGA（Ti60F225，core_clk 100 MHz）**：
+**FPGA（Ti60F225，sys_clk 125 MHz，DDR 控制器内核 100 MHz）**：
 
-- 本网络实测每帧约 6.8M 周期，即 68 ms，板上 14.7 fps，`errors 0`。仿真为 6.41M 周期。
-- PW 阵列是 8×16 = 128 MAC/周期。本网络整帧平均 87 MAC/周期，利用率 68%。主干 PW pass（enc1/res）达到 127.5 MAC/周期，接近满载。
+- 最终版实测每帧约 7.42M 周期，即 59.4 ms，板上 16.8 fps，`errors 0`。仿真为 6.41M 周期，3 个风格相同。
+- 早先 100 MHz 的单风格版本是每帧 6.85M 周期、68 ms、14.7 fps。频率提高 25%，帧率提高约 14%：DDR 内核没有跟着提频，访存等待按周期算变长了。
+- PW 阵列是 8×16 = 128 MAC/周期。按板上周期算整帧平均 80 MAC/周期，利用率 62%；按仿真周期算 92 MAC/周期。主干 PW pass（enc1/res）达到 127.5 MAC/周期，接近满载。
 - 其余网络在同一块芯片上**放不下**：
   - Ti60 片上 RAM 一共 256 × 10 Kbit ≈ 320 KB。
   - 教师 int8 权重约 1.5 MB，CycleGAN-R6 约 7.8 MB，都超过整个芯片的 RAM。
@@ -206,10 +251,12 @@ SSIM 按 Wang 2004 计算：11 抽头高斯窗，σ=1.5，K1=0.01，K2=0.03，�
 
 | 网络 | GMAC @640×360 | 峰值下限 | 按本网络实测效率（87 MAC/周期） |
 |---|---|---|---|
-| 本网络 | 0.59 | 46 ms | **68 ms（实测）** |
-| 教师 White-box | 28.75 | 2.2 s | 3.3 s |
-| CycleGAN-R6 | 123.2 | 9.6 s | 14.2 s |
-| CycleGAN-R9 | 174.2 | 13.6 s | 20.0 s |
+| 本网络 | 0.59 | 37 ms | **59.4 ms（实测）** |
+| 教师 White-box | 28.75 | 1.8 s | 2.9 s |
+| CycleGAN-R6 | 123.2 | 7.7 s | 12.3 s |
+| CycleGAN-R9 | 174.2 | 10.9 s | 17.4 s |
+
+（按 125 MHz 折算。最后一列用的是本网络板上的 80 MAC/周期。）
 
 **CPU 参考**（AMD Ryzen 9 5900X，ONNX Runtime 1.31 CPU EP，fp32，640×360，5 次中位数）：
 
@@ -241,6 +288,18 @@ $PY $E --teacher-macs --width 640 --height 360
 $PY $E --latency neteval/onnx/guided.onnx ../teachers/whitebox/cartoonizer.onnx \
     neteval/onnx/cyclegan_r6.onnx neteval/onnx/cyclegan_r9.onnx --runs 5 --threads 1 24
 ```
+
+最终版 3 个风格对 fp32 的保真度（§2.3）：
+
+```bash
+cd /data/competition/2026fpga/fpga_src-st-fmax
+for k in 0 1 2; do
+  python3 tools/st_guided.py --manifest ../st_work/s3b/w8a8 --style $k \
+      --compare ../st_work/g360/in ../st_work/s3b/eval/s$k/int ../st_work/s3b/eval/s$k/fp32
+done
+```
+
+`eval/s$k/fp32` 和 `eval/s$k/int` 是训练端 `infer --mode fp32 / int` 在 `g360/in` 上的输出（模型分别是 `s3b/style$k` 和 `s3b/w8a8_s$k`）。
 
 640×427 那组的参考图和 fp32 输出是训练 trial 目录里的 `target_000500_*.png` 和 `sample_002000_*.png`，整数输出在 `p90_eval/int`。
 这里算出的 PSNR 和训练日志 `metrics.jsonl` 里的 `psnr_vs_teacher` 一致（例如 portrait 31.32、water 28.10）。
