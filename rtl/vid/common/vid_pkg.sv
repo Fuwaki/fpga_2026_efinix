@@ -298,6 +298,7 @@ package vid_pkg;
     logic [31:0]      raw_clip;
     logic [31:0]      raw_dark;
     logic [7:0]       raw_frames;     // frames whose statistics were latched, wraps
+    logic [2:0][26:0] gray_sum;       // near-gray pixels after WB, R G B >> 2 (isp_gray_stats)
   } vid_status_t;
 
   // ------------------------------------------------------- test pattern

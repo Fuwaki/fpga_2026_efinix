@@ -80,6 +80,7 @@
         <efx:design_file name="rtl/vid/isp/csi_capture.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/isp/line_release.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/isp/isp_stats.sv" version="default" library="default" />
+        <efx:design_file name="rtl/vid/isp/isp_gray_stats.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/isp/isp_blc_wb.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/isp/isp_demosaic.sv" version="default" library="default" />
         <efx:design_file name="rtl/vid/isp/isp_gamma.sv" version="default" library="default" />

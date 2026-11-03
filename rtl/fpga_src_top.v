@@ -734,7 +734,8 @@ ui_regs u_ui_regs (
 	.raw_sum    (vid_st_s2.raw_sum),
 	.raw_clip   (vid_st_s2.raw_clip),
 	.raw_dark   (vid_st_s2.raw_dark),
-	.raw_frames (vid_st_s2.raw_frames)
+	.raw_frames (vid_st_s2.raw_frames),
+	.gray_sum   (vid_st_s2.gray_sum)
 );
 assign w_soc_apb_prdata    = ui_hit ? ui_prdata  : accel_prdata;
 assign w_soc_apb_pready    = ui_hit ? ui_pready  : accel_pready;

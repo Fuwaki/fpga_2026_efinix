@@ -165,6 +165,17 @@ def isp(raw, cfg=CFG_DEFAULT, table=None):
     return dither565(rgb8, cfg)
 
 
+def gray_stats(rgb10):
+    """isp_gray_stats: R, G, B (>> 2) sums of the near-gray pixels in the
+    even columns of the demosaic output."""
+    p = rgb10[:, 0::2].astype(np.int64)
+    r, g, b = p[..., 0], p[..., 1], p[..., 2]
+    tol = (g >> 3) + (g >> 4)
+    q = ((g >= 64) & (r < 1000) & (g < 1000) & (b < 1000)
+         & (np.abs(r - g) < tol) & (np.abs(b - g) < tol))
+    return [int((r[q] >> 2).sum()), int((g[q] >> 2).sum()), int((b[q] >> 2).sum())]
+
+
 def signature(frame565):
     words = (frame565[:, 0::2] | (frame565[:, 1::2] << 16)).astype(np.uint64).ravel()
     sig = 0
@@ -207,9 +218,12 @@ def read_dump(path):
     128-bit beat per line."""
     slots, sigs = {}, []
     cur = None
+    read_dump.gray = None
     for line in open(path):
         line = line.strip()
-        if line.startswith("# sig"):
+        if line.startswith("# gray"):
+            read_dump.gray = [int(t) for t in line.split()[2:]]
+        elif line.startswith("# sig"):
             sigs.append(int(line.split()[-1], 16))
         elif line.startswith("# slot"):
             cur = int(line.split()[-1])
@@ -274,6 +288,12 @@ def main():
         if not sigs or any(v != esig for v in sigs):
             print("FAIL: RTL signatures differ from the model")
             return 1
+        if not a.bypass and read_dump.gray is not None:
+            eg = gray_stats(demosaic(blc_wb(raw, cfg), cfg))
+            print(f"gray stats: RTL {read_dump.gray} expected {eg}")
+            if read_dump.gray != eg:
+                print("FAIL: near-gray statistics differ from the model")
+                return 1
         print("PASS isp_ref")
         return 0
 

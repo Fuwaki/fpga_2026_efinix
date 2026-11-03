@@ -336,7 +336,8 @@ module vid_subsystem
             isp_top #(.GAMMA_CURVE(GAMMA_CURVE)) u_isp (
                 .i(raw), .o(img), .cfg(ISP_CFG), .gain(isp_gain),
                 .st_sum(status.raw_sum), .st_clip(status.raw_clip), .st_dark(status.raw_dark),
-                .st_frames(status.raw_frames));
+                .st_frames(status.raw_frames),
+                .st_gray_sum(status.gray_sum));
 
             push2stream u_p2s (.p(img), .s(prod), .st_dropped(status.isp_dropped));
 
@@ -360,6 +361,7 @@ module vid_subsystem
             assign status.raw_clip    = '0;
             assign status.raw_dark    = '0;
             assign status.raw_frames  = '0;
+            assign status.gray_sum    = '0;
         end
 
         frame_ring #(.SLOTS(4), .NCONS(2)) u_ring (

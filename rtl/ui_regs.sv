@@ -9,8 +9,9 @@
 //   0x800C GAIN_B  [11:0] B                             } white balance
 //   0x8010-0x801C  raw sum of the last frame by {row, column} parity  (read only)
 //   0x8020 CLIP    pixels >= 1020 in the last frame                    (read only)
-//   0x8024 DARK    pixels < 80                                         (read only)
+//   0x8024 DARK    reads 0 (no longer counted)
 //   0x8028 FRAMES  [7:0] frames counted by the statistics, wraps       (read only)
+//   0x802C-0x8034  R, G, B (>> 2) sums of the near-gray pixels after WB (read only)
 // The ISP takes the gains at its next frame start.
 module ui_regs
     import vid_pkg::*;
@@ -36,7 +37,8 @@ module ui_regs
     input  logic [3:0][31:0] raw_sum,
     input  logic [31:0] raw_clip,
     input  logic [31:0] raw_dark,
-    input  logic [7:0]  raw_frames
+    input  logic [7:0]  raw_frames,
+    input  logic [2:0][26:0] gray_sum
 );
     localparam isp_gain_t GAIN_RST = isp_gain_of(ISP_CFG_DEFAULT);
 
@@ -83,6 +85,9 @@ module ui_regs
             4'd8:    prdata = raw_clip;
             4'd9:    prdata = raw_dark;
             4'd10:   prdata = {24'd0, raw_frames};
+            4'd11:   prdata = {5'd0, gray_sum[0]};
+            4'd12:   prdata = {5'd0, gray_sum[1]};
+            4'd13:   prdata = {5'd0, gray_sum[2]};
             default: prdata = 32'd0;
         endcase
     end

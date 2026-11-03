@@ -6,9 +6,14 @@
  *   - isp_blc_wb 用固件写入的 R/G/B 增益 (Q4.8, 已含黑电平拉伸), 帧起始时生效.
  * 计算全部在这里.
  *
- * AWB (灰世界): 每个颜色的增益 = T / m_c, m_c 是减去黑电平后的均值.
- *   三个通道输出均值都拉到 T, 所以这一步同时完成白平衡和亮度的细调.
- *   每帧只向目标走 1/4, 避免跳色.
+ * 亮度: G 增益 = T / m_g, m_g 是 G 减去黑电平后的均值.
+ * AWB (灰像素): 光源颜色用 rg、bg (原始 R/G、B/G) 表示, R、B 增益是 G 增益
+ *   除以它们.  isp_gray_stats 在白平衡之后统计"接近灰色"的像素 (R、B 和 G 相差
+ *   不到 3/16, 不太暗也不过曝) 的 R、G、B 之和.  白平衡对的话三者相等; 不等时
+ *   比值就是剩余的偏色, 光源估计乘上它.  手、木桌这类有颜色的物体不会被算进去,
+ *   所以不会像全画面灰世界那样把它们拉成灰色.  近灰像素太少 (画面里没有灰色
+ *   的东西) 时光源估计保持不变, 只调亮度.  光源估计限制在合理范围 (RG_*, BG_*).
+ *   光源估计和增益每帧都只向目标走 1/4, 避免跳色.
  * AE: 只调传感器曝光 (0x3E00-02), 不动模拟增益 (保持寄存器表的约 2x).
  *   让 G 的原始均值接近 2T, 这样 G 增益约 0.5, R/B 增益约 1 附近, 和原来的
  *   固定白平衡同一个工作点.  曝光 >= 10 ms 时取 10 ms 的整数倍 (50 Hz 灯光
@@ -28,6 +33,7 @@
 #define REG_SUM(k)      (0x8010u + 4u * (k))
 #define REG_CLIP        0x8020u
 #define REG_FRAMES      0x8028u
+#define REG_GRAY(k)     (0x802Cu + 4u * (k))  /* R, G, B (各取高 8 位) 之和 */
 
 /* cfa_r = 2'b10 (rtl/vid/common/vid_pkg.sv): 统计按 {行奇偶, 列奇偶} 编号,
  * R 在 {1,0} = 2, B 在 {0,1} = 1, G 在 0 和 3. */
@@ -42,9 +48,16 @@
 
 /* 输出目标: 增益后的线性 10 位均值.  上板前固定白平衡下实测约 140. */
 #define T_OUT          150u
-/* 偏色微调 (Q8, 256 = 中性): 想让画面整体偏冷就把 B 调大一点. */
-#define BIAS_R         256u
-#define BIAS_B         256u
+/* 合理的光源范围, Q8 (256 = 1.0).  中心约是办公室灯光下实测的 rg 0.64、bg 0.47,
+ * 各放宽约 25%.  只是兜底: 光源估计不会被拉出这个范围. */
+#define RG_MIN         115u         /* 0.45 */
+#define RG_MAX         205u         /* 0.80 */
+#define BG_MIN         90u          /* 0.35 */
+#define BG_MAX         166u         /* 0.65 */
+
+/* 近灰像素的 G (高 8 位) 之和至少这么大才更新光源: 约 2000 个中等亮度的像素
+ * (偶数列共 460800 个). */
+#define GRAY_G_MIN     (2000u * 32u)
 
 #define GAIN_MIN       32u          /* 0.125x */
 #define GAIN_MAX       1023u        /* 4x, 再大噪声太明显 */
@@ -55,6 +68,7 @@
 #define AE_SETTLE      3u           /* 改曝光后跳过的帧数 */
 
 static uint32_t g_q8[3];            /* 当前增益 R, G, B */
+static uint32_t rg_q8, bg_q8;       /* 光源估计 */
 static uint32_t exp_hl = EXP_40MS;  /* 当前曝光, 半行 */
 static uint32_t frames_seen;
 static uint32_t ae_wait;
@@ -78,12 +92,23 @@ static uint32_t clampu(uint32_t v, uint32_t lo, uint32_t hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* 向 tgt 走 1/4, 至少 1 */
+static uint32_t step(uint32_t cur, uint32_t tgt)
+{
+    int32_t d = (int32_t)tgt - (int32_t)cur;
+    int32_t q = d / 4;
+    if (q == 0 && d != 0) q = d > 0 ? 1 : -1;
+    return (uint32_t)((int32_t)cur + q);
+}
+
 void isp_ctrl_init(void)
 {
     uint32_t rg = UI32(REG_GAIN_RG);
     g_q8[0] = rg & 0xFFFu;
     g_q8[1] = (rg >> 16) & 0xFFFu;
     g_q8[2] = UI32(REG_GAIN_B) & 0xFFFu;
+    rg_q8 = clampu((256u * g_q8[1]) / g_q8[0], RG_MIN, RG_MAX);
+    bg_q8 = clampu((256u * g_q8[1]) / g_q8[2], BG_MIN, BG_MAX);
     exp_hl = EXP_40MS;
     frames_seen = UI32(REG_FRAMES) & 0xFFu;
     ae_wait = AE_SETTLE;
@@ -120,6 +145,9 @@ void isp_ctrl_poll(void)
     for (uint32_t k = 0; k < 4u; k++)
         s[k] = UI32(REG_SUM(k));
     uint32_t clip = UI32(REG_CLIP);
+    uint32_t gs[3];
+    for (uint32_t k = 0; k < 3u; k++)
+        gs[k] = UI32(REG_GRAY(k));
     if ((UI32(REG_FRAMES) & 0xFFu) != f0)           /* 读的时候换了帧, 下次再来 */
         return;
     frames_seen = f0;
@@ -145,15 +173,25 @@ void isp_ctrl_poll(void)
         }
     }
 
-    /* AWB + 亮度: 画面几乎全黑时不动, 避免把噪声拉成大增益 */
+    /* 画面几乎全黑时不动, 避免把噪声拉成大增益 */
     if (m[0] < 4u || m[1] < 4u || m[2] < 4u)
         return;
-    const uint32_t bias[3] = { BIAS_R, 256u, BIAS_B };
-    for (uint32_t c = 0; c < 3u; c++) {
-        uint32_t tgt = clampu((T_OUT * bias[c]) / m[c], GAIN_MIN, GAIN_MAX);
-        int32_t d = (int32_t)tgt - (int32_t)g_q8[c];
-        g_q8[c] = (uint32_t)((int32_t)g_q8[c] + d / 4);
-        if (d != 0 && d / 4 == 0) g_q8[c] += d > 0 ? 1u : (uint32_t)-1;
+
+    /* 光源估计: 近灰像素的剩余偏色 (Q8) 乘到估计上.  gs < 2^27, gs[1] >> 8 >= 250 */
+    if (gs[1] >= GRAY_G_MIN) {
+        uint32_t res_r = gs[0] / (gs[1] >> 8);
+        uint32_t res_b = gs[2] / (gs[1] >> 8);
+        rg_q8 = step(rg_q8, clampu((rg_q8 * res_r) >> 8, RG_MIN, RG_MAX));
+        bg_q8 = step(bg_q8, clampu((bg_q8 * res_b) >> 8, BG_MIN, BG_MAX));
     }
+
+    uint32_t gg = clampu((T_OUT * 256u) / m[1], GAIN_MIN, GAIN_MAX);
+    uint32_t tgt[3] = {
+        clampu((gg * 256u) / rg_q8, GAIN_MIN, GAIN_MAX),
+        gg,
+        clampu((gg * 256u) / bg_q8, GAIN_MIN, GAIN_MAX),
+    };
+    for (uint32_t c = 0; c < 3u; c++)
+        g_q8[c] = step(g_q8[c], tgt[c]);
     gains_write();
 }

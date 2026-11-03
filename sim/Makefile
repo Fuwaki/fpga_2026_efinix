@@ -17,7 +17,7 @@ RTL := $(addprefix $(ROOT)/rtl/vid/, \
          dma/ring_if.sv dma/frame_ring_core.sv dma/frame_ring.sv \
          dma/axi_arb.sv dma/vdma_wr.sv dma/vdma_rd.sv \
          dbg/vid_testgen.sv dbg/vid_testchk.sv dbg/vid_patgen.sv \
-         isp/csi_capture.sv isp/line_release.sv isp/isp_stats.sv isp/isp_blc_wb.sv \
+         isp/csi_capture.sv isp/line_release.sv isp/isp_stats.sv isp/isp_gray_stats.sv isp/isp_blc_wb.sv \
          isp/isp_demosaic.sv isp/isp_gamma.sv isp/isp_sat.sv isp/isp_dither565.sv isp/isp_top.sv \
          proc/proc_stub.sv proc/proc_engine.sv \
          disp/layer_unpack.sv disp/osd_font.sv disp/compositor.sv vid_subsystem.sv) \

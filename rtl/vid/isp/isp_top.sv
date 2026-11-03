@@ -20,7 +20,8 @@ module isp_top
     output logic [3:0][31:0] st_sum,
     output logic [31:0]   st_clip,
     output logic [31:0]   st_dark,
-    output logic [7:0]    st_frames
+    output logic [7:0]    st_frames,
+    output logic [2:0][26:0] st_gray_sum    // near-gray pixels after WB (isp_gray_stats)
 );
     wire clk = i.clk, rst_n = i.rst_n;
 
@@ -34,6 +35,7 @@ module isp_top
                            .st_frames(st_frames));
     isp_blc_wb    u_wb    (.i(i),     .o(s_wb),  .cfg(cfg), .gain(gain));
     isp_demosaic  u_dm    (.i(s_wb),  .o(s_dm),  .cfg(cfg));
+    isp_gray_stats u_gray (.i(s_dm), .st_sum(st_gray_sum));
     isp_gamma #(.CURVE(GAMMA_CURVE)) u_gm (.i(s_dm), .o(s_gm), .cfg(cfg));
     isp_sat       u_sat   (.i(s_gm),  .o(s_sat), .cfg(cfg));
     isp_dither565 u_dith  (.i(s_sat), .o(s_out), .cfg(cfg));

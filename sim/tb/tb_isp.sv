@@ -132,6 +132,10 @@ module tb_isp #(
         $display("tb_isp: hs falls %0d, eol written %0d, eol released %0d", n_hs, n_eol, n_rel_eol);
         $display("tb_isp: raw sums %0d %0d %0d %0d clip %0d dark %0d",
                  st.raw_sum[0], st.raw_sum[1], st.raw_sum[2], st.raw_sum[3], st.raw_clip, st.raw_dark);
+        $display("tb_isp: gray sums %0d %0d %0d (stat frames %0d)",
+                 st.gray_sum[0], st.gray_sum[1], st.gray_sum[2], st.raw_frames);
+        if (st.raw_frames >= 8'd2)
+            $fdisplay(fd, "# gray %0d %0d %0d", st.gray_sum[0], st.gray_sum[1], st.gray_sum[2]);
         for (int k = 0; k < 3; k++) begin
             $fdisplay(fd, "# slot %0d", k);
             for (int y = 0; y < CAM_H; y++)
