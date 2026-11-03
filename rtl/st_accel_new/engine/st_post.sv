@@ -115,7 +115,6 @@ module st_post
     wire [WB-1:0]  rd_addr = WB'(e_beat >> LB);
     wire [0:0]     e_off   = (BPW == 2) ? e_beat[0] : 1'b0;  // beat in the word
     logic [4*PB-1:0] rd_word;
-    logic [4*PB-1:0] lb_q;              // the line buffers at rd_bank, rd_addr
 
     // ------------------------------------------------------------- control
     typedef enum logic { ST_IDLE, ST_RUN } state_e;
@@ -146,9 +145,7 @@ module st_post
     // The read is gated by the issue: the word is captured for the beat being
     // issued and held while the output stalls.  Without the gate a stall right
     // after a line's last beat would latch the next line's word 0 instead of
-    // the beat's own.
-    always_ff @(posedge clk)
-        if (issue) rd_word <= lb_q;
+    // the beat's own.  The reads are in g_lb, after the fill.
 
     // --------------------------------------------------------------- fill
     // At most one source line ahead of the emitter.
@@ -215,7 +212,8 @@ module st_post
         logic [PB-1:0] mem [2][PW4];
         always_ff @(posedge clk)
             if (wr_en) mem[wr_bank][wr_addr] <= wr_word[PB*k +: PB];
-        assign lb_q[PB*k +: PB] = mem[rd_bank][rd_addr];
+        always_ff @(posedge clk)
+            if (issue) rd_word[PB*k +: PB] <= mem[rd_bank][rd_addr];
     end
 
     // --------------------------------------------------------------- emit

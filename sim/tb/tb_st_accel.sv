@@ -6,7 +6,8 @@
 // The pixels themselves are checked byte-exact by tb_st_engine against the
 // golden model; this test checks the ring level.  On every PROC commit the
 // whole slot is read back: every 2x2 block must be one pixel (st_post's
-// replication) and the content must not be constant.  Passes after NGOOD good frames with no aborts.
+// replication) up to its output dither -- each RGB565 field within one code
+// of the block's top-left pixel -- and the content must not be constant.  Passes after NGOOD good frames with no aborts.
 module tb_st_accel #(
     parameter int NGOOD = 2
 );
@@ -81,7 +82,14 @@ module tb_st_accel #(
         .status(st));
 
     // Check each committed PROC slot: every 2x2 block of the 1280x720 slot is
-    // one source pixel.
+    // one source pixel, dithered: a field is the code for t = 0 or one more.
+    function automatic bit near(input logic [15:0] p, input logic [15:0] q);
+        int dr, dg, db;
+        dr = int'(p[15:11]) - int'(q[15:11]);
+        dg = int'(p[10:5])  - int'(q[10:5]);
+        db = int'(p[4:0])   - int'(q[4:0]);
+        return dr >= -1 && dr <= 1 && dg >= -1 && dg <= 1 && db >= -1 && db <= 1;
+    endfunction
     int good = 0, checked = 0;
     always @(posedge clk) begin
         if (rst_n && dst_req && dst_ack && dst_op == RING_P_COMMIT) begin
@@ -103,7 +111,7 @@ module tb_st_accel #(
                 if (y % 2 == 0) top = px;      // the block's first line
                 for (int x = 0; x < CAM_W; x++) begin
                     bit ok;
-                    ok = (px[x] == top[x]) && (x % 2 == 0 || px[x] == px[x - 1]);
+                    ok = near(px[x], top[x - x % 2]);
                     if (^px[x] === 1'bx) ok = 0;
                     if (y == 0 && x == 0) first_px = px[x];
                     else if (px[x] != first_px) varies = 1;
